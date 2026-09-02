@@ -123,6 +123,33 @@ def test_auditor_preserves_partial_verdicts_and_reports_late_failure():
     assert agent.audit_state.issues == ["run-partial: auditor failed: comparator down"]
 
 
+def test_auditor_resets_state_between_reused_runs():
+    class FailsOnceComparator:
+        def __init__(self):
+            self.failed = False
+
+        def compare(self, claim, documents):
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("temporary comparator failure")
+            return "supported", "checked"
+
+    claim = Claim(id="reused", text="claim", citations=[citation()], confidence="high")
+    document = Document(source_id="s1", url=claim.citations[0].url, title="Source", text="source", published_at=None)
+    agent = AuditorAgent(
+        fetcher=FakeFetcher({claim.citations[0].url: document}),
+        comparator=FailsOnceComparator(),
+    )
+
+    first = agent.run(answer_with(claim), "run-first")
+    second = agent.run(answer_with(claim), "run-second")
+
+    assert first == []
+    assert agent.audit_state.status == "complete"
+    assert agent.audit_state.issues == []
+    assert second[0].status == "supported"
+
+
 def test_auditor_reports_persistence_and_trace_failures_in_audit_state():
     class BrokenMemory(FakeMemory):
         def save_claim(self, claim, verdict):

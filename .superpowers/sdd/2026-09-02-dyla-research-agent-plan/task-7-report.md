@@ -58,3 +58,18 @@ Added tests for duplicate/incomplete verdict coverage, duplicate claim IDs, run-
 
 - Trace event validation uses the repository’s current event vocabulary; adding a new producer event requires adding it to the quality-gate allowlist.
 - Adapter exceptions remain intentionally broad at external boundaries, but they are now surfaced in audit/quality state rather than silently discarded.
+
+## Review-fix report: audit state reset (2026-09-03)
+
+### Changes
+
+- Reset `AuditorAgent.audit_state` to a clean `complete` state at the start of every `run()` invocation.
+- Corrected state classification so a successful run with verdicts is `complete`; `partial` is reserved for runs with both verdicts and recorded issues.
+
+### Regression coverage
+
+- Added a reuse regression that runs a failing audit followed by a successful audit on the same `AuditorAgent` and verifies the second run has clean state and a supported verdict.
+
+### Verification
+
+- Focused: `.venv/bin/pytest -q tests/unit/test_auditor.py tests/unit/test_reliability.py tests/unit/test_orchestrator.py` — 20 passed.

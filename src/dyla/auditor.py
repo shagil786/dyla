@@ -47,6 +47,7 @@ class AuditorAgent:
         self.audit_state = AuditState("complete", [])
 
     def run(self, answer: AnalystAnswer, run_id: str) -> list[AuditVerdict]:
+        self.audit_state = AuditState("complete", [])
         verdicts: list[AuditVerdict] = []
         issues: list[str] = []
         try:
@@ -105,7 +106,8 @@ class AuditorAgent:
             self._warning(run_id, None, f"auditor failed: {exc}")
             self._trace(run_id, "auditor_failed", {"error": str(exc)})
         issues = list(dict.fromkeys([*issues, *self.audit_state.issues]))
-        self.audit_state = AuditState("partial" if verdicts else ("failed" if issues else "complete"), issues)
+        run_status: AuditRunStatus = "partial" if issues and verdicts else ("failed" if issues else "complete")
+        self.audit_state = AuditState(run_status, issues)
         return verdicts
 
     def _fetch(self, url: str) -> Any:
