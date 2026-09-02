@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from dyla.domain import AnalystAnswer, AuditVerdict, Claim, Metrics, RunEvent
+from dyla.domain import AnalystAnswer, AuditVerdict, Claim
 from dyla.orchestrator import RunOrchestrator
 
 
@@ -74,14 +74,37 @@ def test_ask_runs_analyst_auditor_memory_trace_quality_in_order(tmp_path):
 
 def test_orchestrator_aggregates_stage_metrics(tmp_path):
     events = []
-    auditor = FakeAuditor(events)
-    auditor.metrics = {
-        "input_tokens": 13, "output_tokens": 17, "estimated_cost": 0.75,
-        "duration_ms": 8, "searches": 1, "fetches": 2,
-        "memory_hits": 1, "parallel_calls": 2,
-    }
+
+    class MetricsAnalyst(FakeAnalyst):
+        def __init__(self, events):
+            super().__init__(events)
+            self.metrics: dict[str, int | float] = {field: 0 for field in self.metrics}
+
+        async def run(self, question, run_id):
+            self.metrics.update({
+                "input_tokens": 11, "output_tokens": 7, "estimated_cost": 0.25,
+                "duration_ms": 12, "searches": 2, "fetches": 3,
+                "memory_hits": 4, "parallel_calls": 5,
+            })
+            return await super().run(question, run_id)
+
+    class MetricsAuditor(FakeAuditor):
+        def __init__(self, events):
+            super().__init__(events)
+            self.metrics: dict[str, int | float] = {"input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0,
+                            "duration_ms": 0, "searches": 0, "fetches": 0,
+                            "memory_hits": 0, "parallel_calls": 0}
+
+        def run(self, answer, run_id):
+            self.metrics.update({
+                "input_tokens": 13, "output_tokens": 17, "estimated_cost": 0.75,
+                "duration_ms": 8, "searches": 1, "fetches": 2,
+                "memory_hits": 1, "parallel_calls": 2,
+            })
+            return super().run(answer, run_id)
+
     result = asyncio.run(RunOrchestrator(
-        analyst=FakeAnalyst(events), auditor=auditor, memory=FakeMemory(events),
+        analyst=MetricsAnalyst(events), auditor=MetricsAuditor(events), memory=FakeMemory(events),
         trace_writer=FakeTrace(tmp_path, events), quality_gate=None,
     ).ask("question"))
 
@@ -93,6 +116,46 @@ def test_orchestrator_aggregates_stage_metrics(tmp_path):
     assert result.metrics.memory_hits == 5
     assert result.metrics.parallel_calls == 7
     assert result.metrics.duration_ms >= 0
+
+
+def test_reused_orchestrator_reports_metrics_per_run(tmp_path):
+    events = []
+
+    class ReusedAnalyst(FakeAnalyst):
+        def __init__(self, events):
+            super().__init__(events)
+            self.metrics: dict[str, int | float] = {field: 0 for field in self.metrics}
+
+        async def run(self, question, run_id):
+            self.metrics["input_tokens"] += 10
+            self.metrics["searches"] += 1
+            return await super().run(question, run_id)
+
+    class ReusedAuditor(FakeAuditor):
+        def __init__(self, events):
+            super().__init__(events)
+
+            self.metrics: dict[str, int | float] = {"input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0,
+                            "duration_ms": 0, "searches": 0, "fetches": 0,
+                            "memory_hits": 0, "parallel_calls": 0}
+
+        def run(self, answer, run_id):
+            self.metrics["fetches"] += 2
+            return super().run(answer, run_id)
+
+    analyst = ReusedAnalyst(events)
+    auditor = ReusedAuditor(events)
+    orchestrator = RunOrchestrator(
+        analyst=analyst, auditor=auditor, memory=FakeMemory(events),
+        trace_writer=FakeTrace(tmp_path, events), quality_gate=None,
+    )
+    first = asyncio.run(orchestrator.ask("first"))
+    second = asyncio.run(orchestrator.ask("second"))
+
+    assert first.metrics == second.metrics
+    assert first.metrics.input_tokens == 10
+    assert first.metrics.searches == 1
+    assert first.metrics.fetches == 2
 
 
 def test_orchestrator_preserves_analyst_claims_when_audit_is_incomplete(tmp_path):

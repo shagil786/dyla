@@ -76,3 +76,25 @@ The named brief describes the provider-adapter slice, which was already present 
 
 - Running the default evaluation suite against live adapters still requires the configured Azure/You credentials and search service; tests use fakes and make no live requests.
 - Evaluation questions are the planned default suite in this repository because no separate Task 9 implementation or question-set file was present.
+
+## Task 8 review-fix report (metrics and trace validation)
+
+### Fixes
+
+- `RunOrchestrator` now snapshots component metrics before each run and aggregates only the post-run delta, so reused analyst/auditor instances produce isolated `Metrics` values for each evaluation question.
+- `_read_trace()` now requires every non-empty JSONL line to decode to a JSON object and raises a clear `typer.BadParameter` when it does not.
+
+### TDD evidence
+
+- Red: the reused-orchestrator regression observed growing metrics on the second run, and the non-object JSONL regression did not raise the promised CLI error.
+- Green: both regressions and the existing CLI/orchestrator tests pass after the focused changes.
+
+### Verification
+
+- `.venv/bin/pytest tests/unit/test_orchestrator.py::test_orchestrator_aggregates_stage_metrics tests/unit/test_orchestrator.py::test_reused_orchestrator_reports_metrics_per_run tests/unit/test_cli.py::test_read_trace_rejects_non_object_json_values tests/unit/test_cli.py tests/unit/test_orchestrator.py -q` — 12 passed.
+- `.venv/bin/pytest -q` — 110 passed, 1 skipped.
+- Final diagnostics are clean for the changed CLI, orchestrator, and regression-test files; `git diff --check` passed.
+
+### Concerns
+
+- Metric isolation relies on stage metrics being monotonic within a run; the concrete analyst/auditor counters follow that contract.

@@ -68,7 +68,14 @@ def _resolve_trace(value: str) -> Path:
 def _read_trace(value: str) -> tuple[Path, list[dict[str, Any]]]:
     path = _resolve_trace(value)
     try:
-        events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        events = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if not isinstance(event, dict):
+                raise typer.BadParameter(f"invalid trace artifact: {path}; each JSONL event must be a JSON object")
+            events.append(event)
     except (OSError, json.JSONDecodeError) as exc:
         raise typer.BadParameter(f"invalid trace artifact: {path}") from exc
     return path, events

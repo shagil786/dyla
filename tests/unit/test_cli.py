@@ -1,6 +1,7 @@
 import json
-from pathlib import Path
 
+import pytest
+from typer import BadParameter
 from typer.testing import CliRunner
 
 from dyla.cli import app
@@ -47,6 +48,16 @@ def test_audit_and_replay_accept_trace_artifacts_and_run_ids(tmp_path, monkeypat
     assert len(json.loads(replay.stdout)) == 1
     assert audit_by_id.exit_code == 0
     assert "Verdicts: 1" in audit_by_id.stdout
+
+
+def test_read_trace_rejects_non_object_json_values(tmp_path):
+    from dyla.cli import _read_trace
+
+    artifact = tmp_path / "not-an-event.jsonl"
+    artifact.write_text("[1, 2, 3]\n")
+
+    with pytest.raises(BadParameter, match="JSON object"):
+        _read_trace(str(artifact))
 
 
 def test_evaluate_writes_json_and_markdown_reports(tmp_path, monkeypatch):

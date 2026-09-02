@@ -42,6 +42,7 @@ class RunOrchestrator:
         if not question.strip():
             raise ValueError("question must not be empty")
         started = time.monotonic()
+        baseline = self._snapshot_metrics()
         run_id = str(self.run_id_factory())
         self.memory.initialize()
         answer = await self.analyst.run(question, run_id)
@@ -53,19 +54,31 @@ class RunOrchestrator:
         trace_path = self._trace_path(run_id)
         quality = self.quality_gate.validate(answer, verdicts, trace_path)
         self._trace(run_id, "quality_completed", {"status": quality.status, "issues": quality.issues})
-        metrics = self._aggregate_metrics(started)
+        metrics = self._aggregate_metrics(started, baseline)
         return RunResult(run_id, answer, verdicts, quality, metrics, trace_path)
 
-    def _aggregate_metrics(self, started: float) -> Metrics:
-        totals: dict[str, int | float] = {field: 0 for field in Metrics.model_fields}
+    def _snapshot_metrics(self) -> list[dict[str, int | float]]:
+        snapshots = []
         for component in (self.analyst, self.auditor, self.memory):
+            values = getattr(component, "metrics", {})
+            snapshots.append({
+                field: value for field, value in values.items()
+                if field in Metrics.model_fields and isinstance(value, (int, float))
+            } if isinstance(values, dict) else {})
+        return snapshots
+
+    def _aggregate_metrics(self, started: float, baseline: list[dict[str, int | float]]) -> Metrics:
+        totals: dict[str, int | float] = {field: 0 for field in Metrics.model_fields}
+        for index, component in enumerate((self.analyst, self.auditor, self.memory)):
             values = getattr(component, "metrics", {})
             if not isinstance(values, dict):
                 continue
+            previous = baseline[index]
             for field in totals:
                 value = values.get(field, 0)
-                if isinstance(value, (int, float)):
-                    totals[field] += value
+                before = previous.get(field, 0)
+                if isinstance(value, (int, float)) and isinstance(before, (int, float)):
+                    totals[field] += value - before
         totals["duration_ms"] = max(
             int((time.monotonic() - started) * 1000), int(totals["duration_ms"])
         )
