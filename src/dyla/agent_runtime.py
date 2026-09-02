@@ -104,10 +104,11 @@ class ToolRegistry:
     def has_unclassified(self) -> bool:
         return any(category == "generic" for _, category in self._handlers.values())
 
-    def scoped(self) -> ToolRegistry:
+    def scoped(self, *, share_runtime_context: bool = True) -> ToolRegistry:
         scoped = ToolRegistry()
         scoped._handlers = self._handlers.copy()
-        scoped._runtime_context = self._runtime_context
+        if share_runtime_context:
+            scoped._runtime_context = self._runtime_context
         return scoped
 
     def get(self, name: str) -> Handler:
@@ -145,7 +146,7 @@ class AgentRuntime:
         if self.tools.has_unclassified():
             raise ValueError("tool category is required for a budgeted run")
         ledger = BudgetLedger(budget)
-        tools = self.tools.scoped()
+        tools = self.tools.scoped(share_runtime_context=False)
         tools.ledger = ledger
         if self.model is not None:
             tools.model = BudgetedModel(self.model, ledger)
