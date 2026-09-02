@@ -1,0 +1,119 @@
+import json
+
+import httpx
+from pydantic import BaseModel
+
+from dyla.azure_models import AzureChatModel, AzureEmbeddingModel
+from dyla.config import Settings
+from dyla.models import ModelRequest
+
+
+class Answer(BaseModel):
+    answer: str
+    confidence: float
+
+
+def settings():
+    return Settings(
+        azure_openai_endpoint="https://azure.example",
+        azure_openai_api_key="super-secret-key",
+        azure_openai_api_version="2024-10-21",
+        azure_openai_chat_deployment="chat-deployment",
+        azure_openai_embedding_deployment="embedding-deployment",
+        azure_search_endpoint="https://search.example",
+        azure_search_api_key="search-key",
+        azure_search_index="evidence",
+    )
+
+
+def test_chat_model_parses_structured_output_and_usage_without_leaking_secret():
+    requests = []
+
+    def handler(request: httpx.Request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"answer":"grounded","confidence":0.9}'}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 7},
+            },
+        )
+
+    model = AzureChatModel(settings(), transport=httpx.MockTransport(handler))
+
+    response = model.complete(
+        ModelRequest(
+            messages=[{"role": "user", "content": "answer"}],
+            response_schema=Answer,
+            max_tokens=100,
+            temperature=0.2,
+        )
+    )
+
+    assert response.parsed == Answer(answer="grounded", confidence=0.9)
+    assert response.text == '{"answer":"grounded","confidence":0.9}'
+    assert (response.input_tokens, response.output_tokens) == (12, 7)
+    assert requests[0].headers["api-key"] == "super-secret-key"
+    assert "super-secret-key" not in repr(response)
+
+
+def test_embedding_model_batches_inputs_and_caches_unchanged_text(tmp_path):
+    calls = []
+
+    def handler(request: httpx.Request):
+        payload = json.loads(request.content)
+        calls.append(payload["input"])
+        return httpx.Response(
+            200,
+            json={"data": [{"index": i, "embedding": [float(i), 1.0]} for i in range(len(payload["input"]))]},
+        )
+
+    model = AzureEmbeddingModel(
+        settings(),
+        transport=httpx.MockTransport(handler),
+        cache_path=tmp_path / "embeddings.db",
+        batch_size=2,
+    )
+
+    assert model.embed(["alpha", "beta", "gamma"]) == [[0.0, 1.0], [1.0, 1.0], [0.0, 1.0]]
+    assert model.embed(["alpha", "beta", "gamma"]) == [[0.0, 1.0], [1.0, 1.0], [0.0, 1.0]]
+    assert calls == [["alpha", "beta"], ["gamma"]]
+
+
+def test_transient_status_is_retried_with_bounded_backoff():
+    attempts = 0
+    delays = []
+
+    def handler(request: httpx.Request):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            return httpx.Response(503, text="temporary outage")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+    model = AzureChatModel(
+        settings(),
+        transport=httpx.MockTransport(handler),
+        max_retries=2,
+        sleeper=delays.append,
+        backoff_base=0.1,
+    )
+
+    assert model.complete(ModelRequest([{"role": "user", "content": "hi"}], None, 10, 0.0)).text == "ok"
+    assert attempts == 3
+    assert delays == [0.1, 0.2]
+
+
+def test_secret_is_redacted_from_adapter_errors():
+    def handler(request: httpx.Request):
+        return httpx.Response(401, text="invalid super-secret-key")
+
+    model = AzureChatModel(settings(), transport=httpx.MockTransport(handler), max_retries=0)
+
+    try:
+        model.complete(ModelRequest([], None, 10, 0.0))
+    except RuntimeError as exc:
+        assert "super-secret-key" not in str(exc)
+        assert "[REDACTED]" in str(exc)
+    else:
+        raise AssertionError("expected adapter failure")
