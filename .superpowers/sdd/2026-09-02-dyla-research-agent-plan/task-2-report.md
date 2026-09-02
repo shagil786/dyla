@@ -99,5 +99,72 @@ Output:
 ## Concerns
 
 - Project-wide diagnostics still report a pre-existing error in `src/dyla/config.py` and a warning in `src/dyla/cli.py`; neither file was changed because they are outside Task 2. The new production files and both new test files have no diagnostics.
-- `run_id` is used directly as the JSONL filename, matching the required `logs/<run_id>.jsonl` interface. Callers should provide a filesystem-safe run identifier; filename sanitization was intentionally not added because it would alter the specified path contract.
 - No real credentials or external services were used.
+
+## Review-fix report (2026-09-02)
+
+### Findings addressed
+
+1. `TraceWriter.append()` now sanitizes the complete serialized event recursively, not only payload values. It handles dictionaries, lists, tuples, and strings, including secret-like text in `error`, `component`, `event`, and nested values. Key names matching `api_key`, `authorization`, `token`, or `secret` are still replaced with `[REDACTED]`; string assignments such as `authorization=real-secret` have their value replaced as well.
+2. `run_id` is validated as a safe filename component before creating or opening a file. Only IDs matching `[A-Za-z0-9][A-Za-z0-9._-]*` are accepted, preserving ordinary IDs while rejecting traversal and absolute path forms with `ValueError`.
+3. Regression tests cover secret text in `error`, nested tuple values, path traversal IDs, and absolute IDs.
+4. Contract tests now verify every allowed `AuditVerdict.status` value in addition to the existing invalid-status and required-field checks.
+
+### Review-fix TDD evidence
+
+#### RED
+
+Command:
+
+```text
+.venv/bin/pytest -q tests/unit/test_tracing.py
+```
+
+Output after adding the regression tests but before the tracing fix:
+
+```text
+..FF                                                                                         [100%]
+============================================= FAILURES =============================================
+... assert 'real-secret' not in ...
+... Failed: DID NOT RAISE <class 'ValueError'>
+2 failed, 2 passed in 0.06s
+```
+
+The failures reproduced the unredacted `error` string and accepted traversal ID.
+
+#### GREEN focused verification
+
+Command:
+
+```text
+.venv/bin/pytest -q tests/unit/test_domain.py tests/unit/test_tracing.py
+```
+
+Output:
+
+```text
+...........                                                                                  [100%]
+11 passed in 0.06s
+```
+
+#### GREEN full-suite verification
+
+Command:
+
+```text
+.venv/bin/pytest -q
+```
+
+Output:
+
+```text
+..............                                                                               [100%]
+14 passed in 0.06s
+```
+
+Diagnostics for `src/dyla/tracing.py`, `tests/unit/test_tracing.py`, and `tests/unit/test_domain.py` report no errors or warnings.
+
+### Review-fix concerns
+
+- The safe run-ID policy intentionally rejects IDs containing path separators or characters outside the conservative filename-component allowlist; callers using such IDs must normalize them before constructing `RunEvent`.
+- The pre-existing project-wide diagnostics in `src/dyla/config.py` and `src/dyla/cli.py` remain outside this fix scope.

@@ -116,6 +116,16 @@ def test_domain_models_accept_the_shared_contract_shapes():
     ).output_tokens == 2
 
 
+@pytest.mark.parametrize("status", ["supported", "unsupported", "contradicted", "uncited"])
+def test_audit_verdict_accepts_each_shared_status(status):
+    assert AuditVerdict(
+        claim_id="claim-1",
+        status=status,
+        explanation="Checked",
+        citations_checked=[],
+    ).status == status
+
+
 def test_audit_verdict_rejects_status_outside_the_shared_literal():
     with pytest.raises(ValidationError):
         AuditVerdict.model_validate(
