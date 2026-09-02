@@ -36,7 +36,7 @@ def test_load_settings_reads_you_provider_configuration(monkeypatch):
 def test_load_settings_requires_you_api_key_when_you_is_selected(monkeypatch):
     set_required_azure(monkeypatch)
     monkeypatch.setenv("DYLA_WEB_PROVIDER", "you")
-    monkeypatch.delenv("YOU_API_KEY", raising=False)
+    monkeypatch.setenv("YOU_API_KEY", "")
 
     with pytest.raises(ValueError, match="YOU_API_KEY"):
         load_settings()
