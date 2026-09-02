@@ -7,11 +7,12 @@ import inspect
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from .domain import AgentInput, AgentResult, Budget, RunEvent
 
 Handler = Callable[..., Awaitable[Any]]
+ToolCategory = Literal["generic", "web"]
 
 
 class BudgetLedger:
@@ -58,29 +59,38 @@ class BudgetedModel:
 
 class ToolRegistry:
     def __init__(self) -> None:
-        self._handlers: dict[str, Handler] = {}
+        self._handlers: dict[str, tuple[Handler, ToolCategory]] = {}
         self.model: BudgetedModel | None = None
         self.ledger: BudgetLedger | None = None
 
-    def register(self, name: str, handler: Handler) -> None:
-        callable_async = inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(getattr(handler, "__call__", None))
-        if not name.strip() or not callable(handler) or not callable_async:
+    def register(self, name: str, handler: Handler, *, category: ToolCategory = "generic") -> None:
+        callable_async = callable(handler) and (inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(handler.__call__))
+        if not name.strip() or not callable_async:
             raise ValueError("tool name and async handler are required")
         if name in self._handlers:
             raise ValueError(f"tool already registered: {name}")
-        self._handlers[name] = handler
+        self._handlers[name] = (handler, category)
+
+    def scoped(self) -> ToolRegistry:
+        scoped = ToolRegistry()
+        scoped._handlers = self._handlers.copy()
+        return scoped
 
     def get(self, name: str) -> Handler:
         try:
-            return self._handlers[name]
+            handler, category = self._handlers[name]
         except KeyError as exc:
             raise KeyError(f"unknown tool: {name}") from exc
 
+        async def guarded(*args: Any, **kwargs: Any) -> Any:
+            if self.ledger is not None and category == "web":
+                self.ledger.before_web_request()
+            return await handler(*args, **kwargs)
+
+        return guarded
+
     async def invoke(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        if self.ledger is not None and any(token in name.casefold() for token in ("web", "search", "fetch", "http")):
-            self.ledger.before_web_request()
-        result = self.get(name)(*args, **kwargs)
-        return await result
+        return await self.get(name)(*args, **kwargs)
 
     def names(self) -> tuple[str, ...]:
         return tuple(self._handlers)
@@ -99,13 +109,14 @@ class AgentRuntime:
     async def run(self, agent: Agent, input: AgentInput, budget: Budget) -> AgentResult:
         self._validate_budget(budget)
         ledger = BudgetLedger(budget)
-        self.tools.ledger = ledger
+        tools = self.tools.scoped()
+        tools.ledger = ledger
         if self.model is not None:
-            self.tools.model = BudgetedModel(self.model, ledger)
+            tools.model = BudgetedModel(self.model, ledger)
         started = time.monotonic()
-        self._trace(input, "started", {"tools": self.tools.names()})
+        self._trace(input, "started", {"tools": tools.names()})
         try:
-            result = await asyncio.wait_for(agent.run(input, self.tools), budget.deadline_seconds)
+            result = await asyncio.wait_for(agent.run(input, tools), budget.deadline_seconds)
             if not isinstance(result, AgentResult):
                 raise TypeError("agent must return AgentResult")
             metrics = dict(result.metrics)
@@ -120,7 +131,8 @@ class AgentRuntime:
             self._trace(input, "failed", {"error": str(exc)})
             raise
         finally:
-            self.tools.ledger = None
+            tools.model = None
+            tools.ledger = None
 
     @staticmethod
     def _validate_budget(budget: Budget) -> None:

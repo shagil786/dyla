@@ -99,3 +99,42 @@ Diagnostics after fixes:
 - A model provider can only report actual token/cost usage after a synchronous provider call returns; the wrapper prevents calls whose requested token ceiling exceeds remaining budget and rejects over-budget actual usage immediately afterward.
 - Web-request classification is based on registered tool names containing `web`, `search`, `fetch`, or `http`; callers should use descriptive names for externally backed tools.
 - Date constraints are currently year constraints. More granular dates require extending the shared `ResearchPlan` contract.
+
+# Second review-fix report
+
+## Findings fixed
+
+1. `AgentRuntime` now treats the supplied `ToolRegistry` as a reusable template. Every run receives a scoped copy with a private `BudgetLedger` and temporary `BudgetedModel`; both wrappers are cleared in `finally`, and the template model remains clear.
+2. Tool categories are explicit (`generic` or `web`) rather than inferred from names. Both `get()` and `invoke()` return/use guarded handlers, so direct handler access cannot bypass web accounting. Model access is only exposed through the run-scoped budgeted model.
+3. Analyst synthesis now rejects arbitrary narrative when the model returns no claims. Invalid citations or claims rejected for insufficient independent evidence produce deterministic `Insufficient evidence.` output with limitations.
+4. Non-year date constraints are reported as explicit limitations instead of being silently discarded; year constraints continue to produce inclusive-start/exclusive-next-year filters.
+
+## Tests and exact output
+
+Focused review-fix tests:
+
+```text
+.venv/bin/pytest -q tests/unit/test_agent_runtime.py tests/unit/test_query_planner.py tests/unit/test_analyst.py
+.................                                                                            [100%]
+17 passed in 0.36s
+```
+
+Full suite:
+
+```text
+.venv/bin/pytest -q
+s.......................................................................................     [100%]
+87 passed, 1 skipped in 0.50s
+```
+
+Diagnostics after fixes:
+
+- `src/dyla/agent_runtime.py`: no errors or warnings.
+- `src/dyla/analyst.py`: no errors or warnings.
+- Existing unrelated diagnostics remain in pre-existing project files.
+
+## Second review-fix concerns
+
+- A tool must be registered with `category="web"` to consume the web-request budget; unclassified tools are intentionally treated as generic rather than guessed from names.
+- Direct access to the original model object captured by arbitrary user code cannot be intercepted; the runtime-owned model boundary is `tools.model`, and agents must use that injected wrapper.
+- The shared `ResearchPlan.date_constraints` contract is still string-based; common non-year formats are surfaced as limitations rather than applied as potentially incorrect filters.

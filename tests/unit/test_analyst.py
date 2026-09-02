@@ -62,7 +62,7 @@ class FakeEmbedder:
 
 class FakeModel:
     def complete(self, request):
-        return type("Response", (), {"parsed": AnalystAnswer(answer="Answer", claims=[], limitations=[])})()
+        return type("Response", (), {"parsed": AnalystAnswer(answer="Answer", claims=[Claim(id="c1", text="evidence", citations=[Citation(url="https://example.com/1", title="Source", source_id="s1", chunk_id="c1")], confidence="high")], limitations=[])})()
 
 
 def test_analyst_runs_independent_searches_concurrently_and_returns_structured_answer():
@@ -118,6 +118,21 @@ def test_analyst_marks_weak_claim_without_independent_evidence():
     answer = asyncio.run(make_agent(model, plan).run("Q", "run-weak"))
     assert answer.claims == []
     assert any("independent" in item.lower() for item in answer.limitations)
+
+
+def test_analyst_rejects_narrative_when_model_returns_no_supported_claims():
+    model = type("Model", (), {"complete": lambda self, request: type("R", (), {"parsed": AnalystAnswer(answer="unsupported narrative", claims=[], limitations=[])})()})()
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}], entities=[], date_constraints=[])
+    answer = asyncio.run(make_agent(model, plan).run("Q", "run-narrative"))
+    assert answer.answer == "Insufficient evidence."
+    assert answer.claims == []
+
+
+def test_analyst_reports_unsupported_non_year_date_constraint():
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}], entities=[], date_constraints=["March 2025"])
+    answer = asyncio.run(make_agent(FakeModel(), plan, FakeIndex(evidence=[])).run("Q", "run-date"))
+    assert answer.answer == "Insufficient evidence."
+    assert any("date" in limitation.lower() for limitation in answer.limitations)
 
 
 def test_analyst_preserves_query_entity_attribution_and_date_filters():

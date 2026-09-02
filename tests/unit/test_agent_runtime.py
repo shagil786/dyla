@@ -56,7 +56,7 @@ def test_runtime_enforces_model_and_web_budgets_during_calls_not_final_metrics()
         return "page"
 
     registry = ToolRegistry()
-    registry.register("web_fetch", fetch)
+    registry.register("web_fetch", fetch, category="web")
 
     class Agent:
         async def run(self, input, tools):
@@ -70,6 +70,35 @@ def test_runtime_enforces_model_and_web_budgets_during_calls_not_final_metrics()
             Agent(), AgentInput(question="Q", context={}),
             Budget(deadline_seconds=1, max_model_tokens=5, max_cost=1, max_web_requests=1),
         ))
+
+
+def test_concurrent_runs_have_independent_ledgers_and_direct_handler_calls_are_counted():
+    registry = ToolRegistry()
+
+    async def fetch():
+        await asyncio.sleep(0.01)
+        return "page"
+
+    registry.register("fetch", fetch, category="web")
+
+    class Agent:
+        async def run(self, input, tools):
+            await tools.get("fetch")()
+            await asyncio.sleep(0.01)
+            return AgentResult(data=Output(value=input.question), metrics={})
+
+    async def run_pair():
+        runtime = AgentRuntime(tools=registry)
+        budget = Budget(deadline_seconds=1, max_model_tokens=1, max_cost=0, max_web_requests=1)
+        return await asyncio.gather(
+            runtime.run(Agent(), AgentInput(question="a", context={}), budget),
+            runtime.run(Agent(), AgentInput(question="b", context={}), budget),
+        )
+
+    results = asyncio.run(run_pair())
+    assert [result.metrics["web_requests"] for result in results] == [1, 1]
+    assert registry.model is None
+    assert registry.ledger is None
 
 
 def test_runtime_traces_query_expansion_with_run_id():

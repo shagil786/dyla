@@ -64,21 +64,24 @@ class AnalystAgent:
         for document, (_, ids) in zip(documents, hits_by_url.values()):
             await asyncio.to_thread(ingest_document, document, self.embedder, self.index, entity_ids=ids)
         vector = await asyncio.to_thread(self.embedder.embed, [question])
+        filters, date_limitations = self._filters(entity_ids, plan.date_constraints)
         evidence = await asyncio.to_thread(
-            self.index.hybrid_search, question, vector[0], self._filters(entity_ids, plan.date_constraints), self.evidence_limit,
+            self.index.hybrid_search, question, vector[0], filters, self.evidence_limit,
         )
-        return await asyncio.to_thread(self._synthesize, question, memories, evidence)
+        return await asyncio.to_thread(self._synthesize, question, memories, evidence, date_limitations)
 
     @staticmethod
-    def _filters(entity_ids: list[str], constraints: list[str]) -> SearchFilters:
+    def _filters(entity_ids: list[str], constraints: list[str]) -> tuple[SearchFilters, list[str]]:
         years = sorted({int(value) for constraint in constraints for value in [constraint] if value.isdigit() and len(value) == 4})
+        unsupported = [constraint for constraint in constraints if not (constraint.isdigit() and len(constraint) == 4)]
+        limitations = [f"Date constraint '{constraint}' was not applied because only year constraints are supported." for constraint in unsupported]
         after = datetime(years[0], 1, 1, tzinfo=UTC) if years else None
         before = datetime(years[-1] + 1, 1, 1, tzinfo=UTC) if years else None
-        return SearchFilters(entity_ids=entity_ids or None, published_after=after, published_before=before)
+        return SearchFilters(entity_ids=entity_ids or None, published_after=after, published_before=before), limitations
 
-    def _synthesize(self, question: str, memories: list[MemoryRecord], evidence: list[Evidence]) -> AnalystAnswer:
+    def _synthesize(self, question: str, memories: list[MemoryRecord], evidence: list[Evidence], date_limitations: list[str]) -> AnalystAnswer:
         if not evidence:
-            return AnalystAnswer(answer="Insufficient evidence.", claims=[], limitations=["No retrieved evidence was available."])
+            return AnalystAnswer(answer="Insufficient evidence.", claims=[], limitations=["No retrieved evidence was available.", *date_limitations])
         context = "\n".join([*(f"Memory: {m.text}" for m in memories), *(f"Evidence: {e.text} ({e.url})" for e in evidence)])
         response = self.model.complete(ModelRequest(
             messages=[{"role": "system", "content": "Answer using only supplied evidence. Return AnalystAnswer JSON."},
@@ -98,9 +101,9 @@ class AnalystAgent:
                 limitations.append(f"Claim {claim.id} was rejected for lacking independent evidence.")
                 continue
             valid_claims.append(claim)
-        if answer.claims and not valid_claims:
-            return AnalystAnswer(answer="Insufficient evidence.", claims=[], limitations=list(dict.fromkeys(limitations)))
-        return AnalystAnswer(answer=answer.answer, claims=valid_claims, limitations=list(dict.fromkeys(limitations)))
+        if not answer.claims or not valid_claims:
+            return AnalystAnswer(answer="Insufficient evidence.", claims=[], limitations=list(dict.fromkeys([*limitations, *date_limitations])))
+        return AnalystAnswer(answer=answer.answer, claims=valid_claims, limitations=list(dict.fromkeys([*limitations, *date_limitations])))
 
     @staticmethod
     def _citation_maps(citation: Citation, keys: set[tuple[str, str, str | None]]) -> bool:
