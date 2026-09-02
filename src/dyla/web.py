@@ -22,6 +22,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from .domain import Document, SearchHit
+from .ports import SearchProvider
 
 Resolver = Callable[..., list[tuple]]
 
@@ -133,33 +134,135 @@ class PageFetcher:
         self.client.close()
 
 
-class WebSearcher:
-    def __init__(self, endpoint: str, api_key: str, *, transport: httpx.BaseTransport | None = None, timeout: float = 20.0, resolver: Resolver = _default_resolver) -> None:
-        self.endpoint = validate_external_url(endpoint, resolver=resolver).rstrip("/")
+class YouResearchProvider:
+    """You.com adapter for search and bounded page-content retrieval."""
+
+    def __init__(
+        self,
+        search_endpoint: str,
+        contents_endpoint: str,
+        api_key: str,
+        *,
+        transport: httpx.BaseTransport | None = None,
+        timeout: float = 20.0,
+        max_content_chars: int = 2_000_000,
+        resolver: Resolver = _default_resolver,
+    ) -> None:
+        if not api_key:
+            raise ValueError("You.com API key is required")
+        if max_content_chars < 1:
+            raise ValueError("max_content_chars must be positive")
+        self.search_endpoint = validate_external_url(search_endpoint, resolver=resolver).rstrip("/")
+        self.contents_endpoint = validate_external_url(contents_endpoint, resolver=resolver).rstrip("/")
         self.api_key = api_key
         self.resolver = resolver
-        self.client = httpx.Client(transport=transport, timeout=timeout, follow_redirects=False)
+        self.max_content_chars = max_content_chars
+        self.client = httpx.Client(
+            transport=transport,
+            timeout=timeout,
+            follow_redirects=False,
+            headers={"X-API-Key": api_key, "Accept": "application/json"},
+        )
 
     def search(self, query: str, limit: int = 5) -> list[SearchHit]:
         if not query.strip():
             return []
         if limit < 1:
             raise ValueError("limit must be positive")
-        response = self.client.get(f"{self.endpoint}/v7.0/search", params={"q": query, "count": limit, "responseFilter": "Webpages"}, headers={"Ocp-Apim-Subscription-Key": self.api_key})
+        response = self.client.get(self.search_endpoint, params={"query": query, "count": limit})
         response.raise_for_status()
-        hits = []
-        for item in response.json().get("webPages", {}).get("value", [])[:limit]:
-            try:
-                result_url = validate_external_url(item["url"], resolver=self.resolver)
-            except (KeyError, ValueError):
+        payload = response.json()
+        items = _search_items(payload)
+        hits: list[SearchHit] = []
+        for item in items[:limit]:
+            if not isinstance(item, dict):
                 continue
-            published = item.get("dateLastCrawled")
             try:
-                published_at = datetime.fromisoformat(published) if published else None
-            except (TypeError, ValueError):
-                published_at = None
-            hits.append(SearchHit(url=result_url, title=item.get("name"), snippet=item.get("snippet", ""), published_at=published_at))
+                result_url = validate_external_url(str(item["url"]), resolver=self.resolver)
+            except (KeyError, TypeError, ValueError):
+                continue
+            hits.append(SearchHit(
+                url=result_url,
+                title=_text(item.get("title") or item.get("name")),
+                snippet=_snippet(item.get("snippets") or item.get("snippet")),
+                published_at=_parse_datetime(item.get("published_date") or item.get("published_at") or item.get("date")),
+            ))
         return hits
+
+    def fetch(self, url: str) -> Document:
+        safe_url = validate_external_url(url, resolver=self.resolver)
+        response = self.client.get(self.contents_endpoint, params={"url": safe_url})
+        response.raise_for_status()
+        payload = response.json()
+        item = _contents_item(payload, safe_url)
+        if item is None:
+            raise ValueError("malformed contents response")
+        text = item.get("content") or item.get("text") or item.get("contents")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("malformed contents response")
+        if len(text) > self.max_content_chars:
+            raise ValueError("contents response exceeds configured size limit")
+        returned_url = item.get("url", safe_url)
+        if not isinstance(returned_url, str) or validate_external_url(returned_url, resolver=self.resolver) != safe_url:
+            raise ValueError("contents response returned an unexpected URL")
+        return Document(
+            source_id=self._source_id(safe_url),
+            url=safe_url,
+            title=_text(item.get("title")),
+            text=text,
+            published_at=_parse_datetime(item.get("published_at") or item.get("published_date")),
+        )
+
+    @staticmethod
+    def _source_id(url: str) -> str:
+        return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
     def close(self) -> None:
         self.client.close()
+
+
+def _search_items(payload: object) -> list[object]:
+    if not isinstance(payload, dict):
+        raise ValueError("malformed search response")
+    results = payload.get("results", payload)
+    if isinstance(results, dict):
+        for key in ("web", "results", "items"):
+            value = results.get(key)
+            if isinstance(value, list):
+                return value
+    if isinstance(results, list):
+        return results
+    raise ValueError("malformed search response")
+
+
+def _contents_item(payload: object, requested_url: str) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    values = payload.get("contents", payload.get("results"))
+    if isinstance(values, dict):
+        values = [values]
+    if not isinstance(values, list):
+        return None
+    for item in values:
+        if isinstance(item, dict) and item.get("url", requested_url) == requested_url:
+            return item
+    return None
+
+
+def _snippet(value: object) -> str:
+    if isinstance(value, list):
+        return " ".join(str(part).strip() for part in value if str(part).strip())
+    return str(value or "")
+
+
+def _text(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None

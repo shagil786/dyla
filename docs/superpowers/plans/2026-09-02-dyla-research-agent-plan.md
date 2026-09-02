@@ -2,19 +2,21 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the `dyla` CLI that researches live-web questions with Azure models and Azure AI Search, then independently audits every claim and records measurable traces.
+**Goal:** Build the `dyla` CLI that researches live-web questions with provider-neutral core ports, You.com web retrieval, Azure model/vector adapters, then independently audits every claim and records measurable traces.
 
-**Architecture:** A CLI invokes a run orchestrator. The orchestrator uses a deterministic reliability layer around an analyst agent and an auditor agent. Web pages are normalized, chunked, embedded, and indexed into Azure AI Search for hybrid retrieval; SQLite stores entities, aliases, claims, audit results, run metadata, and feedback.
+**Architecture:** A CLI invokes a run orchestrator. The orchestrator uses a deterministic reliability layer around an analyst agent and an auditor agent. Core agents depend on neutral model, search, and vector-store protocols; You.com is selected only for web search/page retrieval, while Azure AI Search remains a supported vector-store adapter. SQLite stores entities, aliases, claims, audit results, run metadata, and feedback.
 
-**Tech Stack:** Python 3.11+, Typer, Pydantic, asyncio, httpx, Azure OpenAI/Foundry-compatible APIs, `azure-search-documents`, SQLite/FTS5, pytest, pytest-asyncio, and python-dotenv.
+**Tech Stack:** Python 3.11+, Typer, Pydantic, asyncio, httpx, Azure OpenAI/Foundry-compatible APIs, Azure AI Search REST adapter, SQLite/FTS5, pytest, pytest-asyncio, and python-dotenv.
 
 **Spec:** `docs/superpowers/specs/2026-09-02-dyla-research-agent-design.md`
 
 ## Global Constraints
 
 - `dyla ask` automatically runs analyst, auditor, memory update, trace persistence, and final reporting.
-- Azure model and Azure AI Search credentials are read from environment variables; no secrets are committed or written to logs.
-- Azure AI Search is the required retrieval backend and must support keyword plus vector retrieval.
+- Model, web-provider, and Azure AI Search credentials are read from environment variables; no secrets are committed or written to logs.
+- The core depends on neutral protocols and must not import Bing, You.com, Azure, OpenAI, or NVIDIA SDK details.
+- `DYLA_WEB_PROVIDER=you` selects the You.com search/page retrieval adapter; You.com is not used for models or vector storage.
+- Azure AI Search remains a supported vector-store adapter and must support keyword plus vector retrieval.
 - Every factual claim must have citation metadata and an auditor verdict before an answer is marked complete.
 - Query expansion is one bounded step, deduplicated, traced, and executed concurrently where independent.
 - Entity resolution records aliases, confidence, and unresolved ambiguity instead of silently merging entities.
@@ -216,7 +218,40 @@ def test_load_settings_rejects_missing_secret(monkeypatch):
 - [ ] **Step 6: Store auditor findings and research warnings in memory for later questions.**
 - [ ] **Step 7: Run focused tests and verify they pass.**
 
-### Task 8: Orchestrator and `dyla` CLI
+### Task 8: Provider-neutral web boundary and You.com adapter
+
+**Files:**
+- Create: `src/dyla/ports.py`
+- Modify: `src/dyla/web.py`
+- Modify: `src/dyla/config.py`
+- Modify: `src/dyla/analyst.py`
+- Modify: `src/dyla/auditor.py`
+- Modify: `.env.example`
+- Modify: `README.md`
+- Modify: `docs/superpowers/specs/2026-09-02-dyla-research-agent-design.md`
+- Modify: `docs/superpowers/plans/2026-09-02-dyla-research-agent-plan.md`
+- Create: `tests/unit/test_web.py`
+- Create: `tests/unit/test_config.py`
+
+**Interfaces:**
+- `SearchProvider.search(query: str, limit: int = 5) -> list[SearchHit]`.
+- `SearchProvider.fetch(url: str) -> Document`.
+- `YouResearchProvider.search(query: str, limit: int = 5) -> list[SearchHit]`.
+- `YouResearchProvider.fetch(url: str) -> Document`.
+- `Settings.dyla_web_provider`, `Settings.you_api_key`, `Settings.you_search_endpoint`, and `Settings.you_contents_endpoint`.
+
+- [x] **Step 1: Write mocked tests for You search normalization, contents normalization, malformed payloads, authentication failures, and provider-neutral protocol conformance.**
+- [x] **Step 2: Write regression tests for HTTPS-only URLs, private DNS results, unsafe redirects, response byte limits, and unsupported content types.**
+- [x] **Step 3: Write configuration tests for provider selection and required You.com settings, using fake values only.**
+- [x] **Step 4: Run the focused tests and verify they fail for the missing adapter/configuration behavior.**
+- [x] **Step 5: Implement `SearchProvider` and `YouResearchProvider` with `httpx`, API-key authentication, defensive response normalization, bounded contents handling, and clear non-secret errors.**
+- [x] **Step 6: Preserve and reuse existing URL validation, redirect revalidation, DNS/public-IP checks, streaming byte limits, and text extraction for page fetching.**
+- [x] **Step 7: Refactor core-facing annotations/names to neutral search-provider terminology without changing the Azure `SearchIndex` adapter.**
+- [x] **Step 8: Add provider settings and fake `.env.example` entries; document the provider-neutral decision and offline test contract.**
+- [x] **Step 9: Run the focused tests and then the full offline suite; append results to `.superpowers/sdd/2026-09-02-dyla-research-agent-plan/provider-adapter-report.md`.**
+- [x] **Step 10: Commit the completed provider-adapter slice.**
+
+### Task 9: Orchestrator and `dyla` CLI
 
 **Files:**
 - Create: `src/dyla/orchestrator.py`

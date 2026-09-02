@@ -9,12 +9,13 @@ from typing import Any
 from .domain import AnalystAnswer, Citation, Evidence, MemoryRecord, SearchFilters
 from .ingest import ingest_document
 from .models import ModelRequest
+from .ports import SearchProvider
 from .query_planner import QueryPlanner
 
 
 class AnalystAgent:
     def __init__(
-        self, *, model: Any, resolver: Any, memory: Any, searcher: Any, fetcher: Any,
+        self, *, model: Any, resolver: Any, memory: Any, searcher: SearchProvider, fetcher: SearchProvider,
         index: Any, embedder: Any, planner: QueryPlanner | None = None,
         max_subqueries: int = 4, search_limit: int = 5, evidence_limit: int = 8,
         trace_writer: Any | None = None,

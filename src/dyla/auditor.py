@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from .domain import AnalystAnswer, AuditVerdict, Citation, RunEvent
+from .ports import SearchProvider
 
 AuditStatus = Literal["supported", "unsupported", "contradicted", "uncited"]
 
@@ -18,7 +19,7 @@ class AuditorAgent:
     def __init__(
         self,
         *,
-        fetcher: Any,
+        fetcher: SearchProvider,
         comparator: Any | None = None,
         memory: Any | None = None,
         trace_writer: Any | None = None,

@@ -3,37 +3,40 @@ import pytest
 from dyla.config import load_settings
 
 
-def test_load_settings_reads_required_environment(monkeypatch):
-    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://openai.example")
-    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
-    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "chat")
-    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "embed")
-    monkeypatch.setenv("AZURE_SEARCH_ENDPOINT", "https://search.example")
-    monkeypatch.setenv("AZURE_SEARCH_API_KEY", "search-key")
-    monkeypatch.setenv("AZURE_SEARCH_INDEX", "dyla-evidence")
+def set_required_azure(monkeypatch):
+    values = {
+        "AZURE_OPENAI_ENDPOINT": "https://openai.example.invalid",
+        "AZURE_OPENAI_API_KEY": "fake-openai-key",
+        "AZURE_OPENAI_API_VERSION": "2024-10-21",
+        "AZURE_OPENAI_CHAT_DEPLOYMENT": "fake-chat",
+        "AZURE_OPENAI_EMBEDDING_DEPLOYMENT": "fake-embed",
+        "AZURE_SEARCH_ENDPOINT": "https://search.example.invalid",
+        "AZURE_SEARCH_API_KEY": "fake-search-key",
+        "AZURE_SEARCH_INDEX": "dyla-evidence",
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+
+
+def test_load_settings_reads_you_provider_configuration(monkeypatch):
+    set_required_azure(monkeypatch)
+    monkeypatch.setenv("DYLA_WEB_PROVIDER", "you")
+    monkeypatch.setenv("YOU_API_KEY", "fake-you-key")
+    monkeypatch.setenv("YOU_SEARCH_ENDPOINT", "https://api.example.invalid/search")
+    monkeypatch.setenv("YOU_CONTENTS_ENDPOINT", "https://api.example.invalid/contents")
 
     settings = load_settings()
 
-    assert settings.azure_openai_endpoint == "https://openai.example"
-    assert settings.azure_openai_api_key == "test-key"
-    assert settings.azure_openai_api_version == "2024-10-21"
-    assert settings.azure_openai_chat_deployment == "chat"
-    assert settings.azure_openai_embedding_deployment == "embed"
-    assert settings.azure_search_endpoint == "https://search.example"
-    assert settings.azure_search_api_key == "search-key"
-    assert settings.azure_search_index == "dyla-evidence"
+    assert settings.dyla_web_provider == "you"
+    assert settings.you_api_key == "fake-you-key"
+    assert settings.you_search_endpoint.endswith("/search")
+    assert settings.you_contents_endpoint.endswith("/contents")
 
 
-def test_load_settings_rejects_missing_secret(monkeypatch):
-    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://openai.example")
-    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
-    monkeypatch.setenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "chat")
-    monkeypatch.setenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "embed")
-    monkeypatch.setenv("AZURE_SEARCH_ENDPOINT", "https://search.example")
-    monkeypatch.setenv("AZURE_SEARCH_API_KEY", "search-key")
-    monkeypatch.setenv("AZURE_SEARCH_INDEX", "dyla-evidence")
-    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+def test_load_settings_requires_you_api_key_when_you_is_selected(monkeypatch):
+    set_required_azure(monkeypatch)
+    monkeypatch.setenv("DYLA_WEB_PROVIDER", "you")
+    monkeypatch.delenv("YOU_API_KEY", raising=False)
 
-    with pytest.raises(ValueError, match="AZURE_OPENAI_API_KEY"):
+    with pytest.raises(ValueError, match="YOU_API_KEY"):
         load_settings()

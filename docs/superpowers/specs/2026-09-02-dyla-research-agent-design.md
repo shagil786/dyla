@@ -84,7 +84,7 @@ Coordinates one complete question lifecycle:
 
 ### Agent runtime
 
-The analyst and auditor share a small agent runtime that owns system instructions, input/output schemas, tool registration, memory access, budgets, retries, and trace events. Agent-specific behavior remains separate from Azure SDK and CLI details.
+The analyst and auditor share a small agent runtime that owns system instructions, input/output schemas, tool registration, memory access, budgets, retries, and trace events. Agent-specific behavior remains separate from vendor SDK and CLI details.
 
 ```python
 class Agent(Protocol):
@@ -126,7 +126,7 @@ Entity resolution combines normalized names, stored aliases, exact matches, fuzz
 
 Fetched pages are normalized and split into citation-preserving chunks. Every chunk stores its source URL, title, section, position, entity identifiers, publication date, and content hash.
 
-An embedding provider batches and caches embeddings by content hash. The embeddings and chunk metadata are indexed in Azure AI Search. Retrieval uses hybrid keyword plus vector search, with metadata filters for entities, sources, and dates. Results retain citation metadata so both the analyst and auditor can trace evidence back to the original page.
+An embedding provider batches and caches embeddings by content hash. A provider-neutral vector-store port handles indexing and retrieval; the initial local implementation can use Qdrant/FAISS, while Azure AI Search remains a supported adapter. Retrieval uses hybrid keyword plus vector search, with metadata filters for entities, sources, and dates. Results retain citation metadata so both the analyst and auditor can trace evidence back to the original page.
 
 The search interface is provider-independent:
 
@@ -136,9 +136,29 @@ class Retriever(Protocol):
         ...
 ```
 
-Azure AI Search is the required production retrieval implementation. SQLite remains the application-memory store for entities, aliases, claims, audit findings, and run metadata.
+The agent engine does not import provider SDKs. Model, embedding, web, and vector-store ports are implemented by adapters selected through configuration. You.com is the selected web search/page retrieval adapter. Azure AI Search, Qdrant, and FAISS are interchangeable vector-store adapters. SQLite remains the application-memory store for entities, aliases, claims, audit findings, and run metadata.
 
-### Azure model adapter
+### Model and provider adapters
+
+Agents depend on provider interfaces rather than vendor SDK details:
+
+```python
+class SearchProvider(Protocol):
+    def search(self, query: str, limit: int = 5) -> list[SearchHit]:
+        ...
+
+    def fetch(self, url: str) -> Document:
+        ...
+
+class VectorStore(Protocol):
+    async def index(self, chunks: list[EvidenceChunk]) -> None:
+        ...
+
+    async def search(self, query: str, vector: list[float], filters: SearchFilters, limit: int) -> list[Evidence]:
+        ...
+```
+
+You.com provides the initial `SearchProvider` implementation for search and page retrieval. Model and embedding implementations may target OpenRouter, NVIDIA, Azure, OpenAI, or local models. Vector-store implementations may target Qdrant, FAISS, or Azure AI Search. The agent engine remains unchanged when adapters are switched.
 
 Agents depend on a provider interface rather than Azure SDK details:
 
@@ -264,7 +284,8 @@ The project is ready for submission when:
 7. The auditor classifies claims and flags missing, unsupported, and contradicted evidence.
 8. The eight-question evaluation reports correctness, cost, latency, and memory metrics.
 9. Failures and limitations are explicit in the README and `DECISIONS.md`.
-10. Azure credentials are supplied through environment variables and no secrets are committed.
-11. Azure AI Search stores citation-preserving chunks with embeddings and supports hybrid retrieval.
-12. Query expansion is bounded, traced, deduplicated, and measured.
+10. Model, web-provider, and Azure credentials are supplied through environment variables and no secrets are committed.
+11. The core depends on neutral provider protocols; You.com is used only for search/page retrieval, and Azure AI Search remains an interchangeable vector-store adapter.
+12. Azure AI Search stores citation-preserving chunks with embeddings and supports hybrid retrieval.
+13. Query expansion is bounded, traced, deduplicated, and measured.
 13. Entity resolution records aliases, confidence, and unresolved ambiguities rather than silently merging entities.
