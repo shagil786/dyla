@@ -102,3 +102,59 @@ File doesn't have errors or warnings!
 - Failed calls expose zero token counts because Azure does not return usage on an HTTP failure; the attached telemetry still records latency, pricing inputs, retry count, status, and redacted error metadata.
 - The cache namespace includes the configured endpoint/API version, deployment, and model. Existing databases created by the original content-only schema should be migrated or discarded before reuse; the revised adapter will not intentionally reuse those incompatible rows.
 - The adapters remain synchronous to preserve the existing provider contracts.
+
+## Second review-fix report
+
+### Findings addressed
+
+- Normalized outer JSON decoding, malformed chat payloads, and Pydantic response validation into `ModelCallError`. Each carries latency, retry count, HTTP status, deployment/model, pricing inputs, zero/known token counts, estimated cost, and redacted error metadata.
+- Added `EmbeddingCacheCompatibilityError` and schema inspection during cache initialization. Databases with the old `content_hash` primary-key schema now fail clearly before any cache query; namespaced `cache_key` databases continue normally.
+- Added fake-transport regression coverage for all three malformed chat response classes and a legacy SQLite schema.
+
+### TDD red evidence
+
+Before the implementation changes, the new regression tests failed with **4 failed, 9 passed**, including raw `JSONDecodeError`, `IndexError`, and Pydantic `ValidationError` failures, plus:
+
+```text
+Failed: DID NOT RAISE <class 'RuntimeError'>
+```
+
+### Exact validation commands and output
+
+Focused re-review tests:
+
+```text
+$ .venv/bin/pytest -q tests/unit/test_azure_models.py
+.............                                                                                [100%]
+13 passed in 0.13s
+```
+
+Full test suite:
+
+```text
+$ .venv/bin/pytest -q
+........................................                                                     [100%]
+40 passed in 0.13s
+```
+
+Diagnostics:
+
+```text
+$ diagnostics src/dyla/azure_models.py
+File doesn't have errors or warnings!
+
+$ diagnostics src/dyla/models.py
+File doesn't have errors or warnings!
+```
+
+Whitespace validation:
+
+```text
+$ git --no-pager diff --check
+```
+
+### Decisions and concerns
+
+- Legacy content-only cache rows are not migrated because their embedding deployment/model namespace cannot be identified safely; initialization fails with an actionable compatibility error rather than risking incompatible vector reuse.
+- Malformed successful HTTP responses use status `200`, preserve retry count, and report zero token/cost values because no trustworthy usage data exists.
+- The adapter remains synchronous and retains the explicit `close()`/context-manager boundary from the prior fix.

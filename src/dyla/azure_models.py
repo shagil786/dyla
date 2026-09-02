@@ -12,9 +12,14 @@ from types import TracebackType
 from typing import Any, NoReturn, Self
 
 import httpx
+from pydantic import ValidationError
 
 from .config import Settings
 from .models import ModelCallError, ModelRequest, ModelResponse, ModelTelemetry
+
+
+class EmbeddingCacheCompatibilityError(RuntimeError):
+    """The on-disk embedding cache uses a schema this adapter cannot identify safely."""
 
 
 class _AzureClient:
@@ -80,7 +85,14 @@ class _AzureClient:
                     f"HTTP {response.status_code}: {detail}",
                     started,
                 )
-            return response.json(), retry_count, response.status_code
+            try:
+                data = response.json()
+            except json.JSONDecodeError:
+                self._raise_failure(
+                    deployment, retry_count, response.status_code,
+                    "invalid JSON response", started
+                )
+            return data, retry_count, response.status_code
         raise AssertionError("unreachable")
 
     def _raise_failure(
@@ -101,7 +113,21 @@ class _AzureClient:
             error=error,
             latency_ms=int((time.monotonic() - started) * 1000),
         )
-        raise ModelCallError("Azure model call failed: " + error, telemetry)
+        redacted_error = error.replace(self.api_key, "[REDACTED]")
+        telemetry = ModelTelemetry(
+            input_tokens=telemetry.input_tokens,
+            output_tokens=telemetry.output_tokens,
+            latency_ms=telemetry.latency_ms,
+            deployment=telemetry.deployment,
+            model=telemetry.model,
+            input_cost_per_1k=telemetry.input_cost_per_1k,
+            output_cost_per_1k=telemetry.output_cost_per_1k,
+            estimated_cost=telemetry.estimated_cost,
+            retry_count=telemetry.retry_count,
+            status_code=telemetry.status_code,
+            error=redacted_error,
+        )
+        raise ModelCallError("Azure model call failed: " + redacted_error, telemetry)
 
     def _wait(self, retry_count: int) -> None:
         self.sleeper(self.backoff_base * (2**retry_count))
@@ -154,14 +180,25 @@ class AzureChatModel:
             }
         started = time.monotonic()
         data, retry_count, status_code = self._client.post(self.deployment, payload)
-        message = data["choices"][0]["message"]
-        text = message.get("content") or ""
-        if isinstance(text, list):
-            text = "".join(part.get("text", "") for part in text)
-        parsed = request.response_schema.model_validate_json(text) if request.response_schema else None
-        usage = data.get("usage") or {}
-        input_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)))
-        output_tokens = int(usage.get("completion_tokens", usage.get("output_tokens", 0)))
+        try:
+            message = data["choices"][0]["message"]
+            text = message.get("content") or ""
+            if isinstance(text, list):
+                text = "".join(part.get("text", "") for part in text)
+            parsed = request.response_schema.model_validate_json(text) if request.response_schema else None
+            usage = data.get("usage") or {}
+            input_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)))
+            output_tokens = int(usage.get("completion_tokens", usage.get("output_tokens", 0)))
+        except ValidationError as exc:
+            self._client._raise_failure(
+                self.deployment, retry_count, status_code,
+                f"response validation failed: {exc}", started
+            )
+        except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
+            self._client._raise_failure(
+                self.deployment, retry_count, status_code,
+                f"malformed chat response: {exc}", started
+            )
         estimated_cost = (
             input_tokens * self._client.input_cost_per_1k
             + output_tokens * self._client.output_cost_per_1k
@@ -240,10 +277,34 @@ class AzureEmbeddingModel:
         ).hexdigest()
         if cache_path is not None:
             self._cache = sqlite3.connect(str(cache_path))
-            self._cache.execute(
-                "CREATE TABLE IF NOT EXISTS embedding_cache "
-                "(cache_key TEXT PRIMARY KEY, embedding_json TEXT NOT NULL)"
-            )
+            table = self._cache.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'embedding_cache'"
+            ).fetchone()
+            if table:
+                columns = {
+                    row[1]
+                    for row in self._cache.execute("PRAGMA table_info(embedding_cache)")
+                }
+                if "content_hash" in columns and "cache_key" not in columns:
+                    self._cache.close()
+                    self._cache = None
+                    self._client.close()
+                    raise EmbeddingCacheCompatibilityError(
+                        "embedding_cache uses legacy content_hash schema; "
+                        "clear or migrate it before using namespaced embeddings"
+                    )
+                if not {"cache_key", "embedding_json"} <= columns:
+                    self._cache.close()
+                    self._cache = None
+                    self._client.close()
+                    raise EmbeddingCacheCompatibilityError(
+                        "embedding_cache schema is incompatible with namespaced embeddings"
+                    )
+            else:
+                self._cache.execute(
+                    "CREATE TABLE embedding_cache "
+                    "(cache_key TEXT PRIMARY KEY, embedding_json TEXT NOT NULL)"
+                )
             self._cache.commit()
 
     def embed(self, texts: list[str]) -> list[list[float]]:

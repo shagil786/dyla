@@ -1,11 +1,13 @@
 import json
+import sqlite3
 
 import httpx
+import pytest
 from pydantic import BaseModel
 
 from dyla.azure_models import AzureChatModel, AzureEmbeddingModel
 from dyla.config import Settings
-from dyla.models import ModelRequest
+from dyla.models import ModelCallError, ModelRequest
 
 
 class Answer(BaseModel):
@@ -211,6 +213,53 @@ def test_adapters_close_http_and_sqlite_resources_and_support_context_manager(tm
     chat = AzureChatModel(settings(), transport=transport)
     chat.close()
     assert chat._client.client.is_closed
+
+
+@pytest.mark.parametrize(
+    "body, expected_error",
+    [
+        ("not-json", "invalid JSON response"),
+        ('{"choices": []}', "malformed chat response"),
+        ('{"choices": [{"message": {"content": "{\\"wrong\\": true}"}}]}', "response validation failed"),
+    ],
+)
+def test_malformed_chat_responses_raise_consistent_telemetry_error(body, expected_error):
+    def handler(request: httpx.Request):
+        return httpx.Response(200, content=body)
+
+    model = AzureChatModel(
+        settings(), transport=httpx.MockTransport(handler), model_name="gpt-test",
+        input_cost_per_1k=0.01, output_cost_per_1k=0.02,
+    )
+
+    with pytest.raises(ModelCallError, match=expected_error) as caught:
+        model.complete(ModelRequest([], Answer, 10, 0.0))
+
+    telemetry = caught.value.telemetry
+    assert telemetry.deployment == "chat-deployment"
+    assert telemetry.model == "gpt-test"
+    assert telemetry.status_code == 200
+    assert telemetry.retry_count == 0
+    assert telemetry.input_tokens == telemetry.output_tokens == 0
+    assert telemetry.estimated_cost == 0
+    assert telemetry.input_cost_per_1k == 0.01
+    assert telemetry.output_cost_per_1k == 0.02
+    assert telemetry.latency_ms >= 0
+    assert "super-secret-key" not in str(caught.value)
+    assert "super-secret-key" not in telemetry.error
+
+
+def test_legacy_embedding_cache_schema_fails_with_clear_compatibility_error(tmp_path):
+    database = tmp_path / "legacy.db"
+    connection = sqlite3.connect(database)
+    connection.execute(
+        "CREATE TABLE embedding_cache (content_hash TEXT PRIMARY KEY, embedding_json TEXT NOT NULL)"
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(RuntimeError, match="legacy content_hash schema"):
+        AzureEmbeddingModel(settings(), cache_path=database)
 
 
 def test_secret_is_redacted_from_adapter_errors():
