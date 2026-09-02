@@ -52,8 +52,8 @@ def validate_external_url(url: str, *, resolver: Resolver = _default_resolver) -
             ip = ipaddress.ip_address(raw_ip.split("%", 1)[0])
         except ValueError as exc:
             raise ValueError("external hostname resolved to an invalid address") from exc
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified:
-            raise ValueError("private or local external URLs are not allowed")
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified or ip.is_multicast or not ip.is_global:
+            raise ValueError("private, local, or non-public external URLs are not allowed")
     return url
 
 

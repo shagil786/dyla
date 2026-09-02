@@ -18,6 +18,22 @@ def test_validate_external_url_requires_https_and_rejects_local_targets():
         validate_external_url("https://localhost/private")
 
 
+@pytest.mark.parametrize("address", [
+    "::1", "fe80::1", "fc00::1", "2001:db8::1", "::", "ff02::1",
+    "100.64.0.1", "224.0.0.1",
+])
+def test_hostname_resolution_rejects_non_public_ipv4_and_ipv6_destinations(address):
+    resolver = lambda host, port, **kwargs: [(None, None, None, None, (address, 0, 0, 0))]
+    with pytest.raises(ValueError, match="private|local|public"):
+        validate_external_url("https://resolved.example", resolver=resolver)
+
+
+def test_hostname_resolution_accepts_public_ipv4_and_ipv6_destinations():
+    for address in ("93.184.216.34", "2606:4700:4700::1111"):
+        resolver = lambda host, port, address=address, **kwargs: [(None, None, None, None, (address, 0, 0, 0))]
+        assert validate_external_url("https://resolved.example", resolver=resolver)
+
+
 def test_page_fetcher_normalizes_html_and_removes_boilerplate():
     def handler(request: httpx.Request):
         return httpx.Response(

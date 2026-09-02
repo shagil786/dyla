@@ -135,3 +135,72 @@ s.............................................................                  
 - The live test is real and cleanup-safe, but it was not run here because no Azure credentials were available; default CI remains credential-free and skips it.
 - DNS preflight substantially reduces SSRF/rebinding risk but cannot fully pin the address with the current standard httpx transport abstraction. The limitation is documented in code and this report.
 - Search result URLs that fail safety validation are skipped rather than fetched; callers should monitor skipped-result counts if provider data quality matters.
+
+## Re-review fix report — 2026-09-02
+
+### Findings addressed
+
+1. Added explicit hostname-resolution regression coverage for IPv6 loopback (`::1`), link-local (`fe80::1`), private (`fc00::1`), documentation/reserved (`2001:db8::1`), unspecified (`::`), and multicast (`ff02::1`) destinations.
+2. Added coverage for IPv4 CGNAT (`100.64.0.1`) and multicast (`224.0.0.1`), plus legitimate public IPv4 (`93.184.216.34`) and IPv6 (`2606:4700:4700::1111`) acceptance.
+3. Updated the external destination predicate to reject multicast and all addresses for which `ipaddress` reports `is_global == False`; this covers non-public CGNAT and other non-routable ranges without rejecting the tested public addresses.
+4. Kept the DNS rebinding/TOCTOU limitation explicit in `src/dyla/web.py` and the prior report. Standard httpx preflight validation does not fully pin the address used by the later connection.
+
+### Exact verification
+
+RED command:
+
+```text
+.venv/bin/pytest -q tests/unit/test_web.py -k 'hostname_resolution'
+```
+
+RED output:
+
+```text
+.....FFF.                                                                                    [100%]
+6 passed, 3 failed, 9 deselected in 0.11s
+```
+
+GREEN focused command:
+
+```text
+.venv/bin/pytest -q tests/unit/test_web.py -k 'hostname_resolution'
+```
+
+GREEN output:
+
+```text
+.........                                                                                    [100%]
+9 passed, 9 deselected in 0.09s
+```
+
+Task 5 focused command:
+
+```text
+.venv/bin/pytest -q tests/unit/test_web.py tests/unit/test_chunking.py tests/unit/test_search.py tests/unit/test_ingest.py tests/integration/test_azure_search.py
+```
+
+Output:
+
+```text
+...........................s                                                                 [100%]
+27 passed, 1 skipped in 0.26s
+```
+
+Full command:
+
+```text
+.venv/bin/pytest -q
+```
+
+Output:
+
+```text
+s......................................................................                      [100%]
+70 passed, 1 skipped in 0.46s
+```
+
+`src/dyla/web.py` diagnostics: no errors or warnings.
+
+### Remaining concern
+
+The DNS resolution check rejects all non-global and multicast destinations before requests, but the default httpx transport may perform a second DNS lookup during connection establishment. Fully eliminating the remaining rebinding/TOCTOU window would require a custom transport that pins the validated address while retaining correct HTTPS SNI and certificate verification; this fix does not claim to provide that.
