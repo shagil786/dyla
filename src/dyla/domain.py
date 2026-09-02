@@ -61,6 +61,7 @@ class EvidenceChunk(BaseModel):
     position: int
     entity_ids: list[str]
     content_hash: str
+    published_at: datetime | None = None
 
 
 class Evidence(BaseModel):

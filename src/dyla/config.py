@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     azure_search_endpoint: str
     azure_search_api_key: str
     azure_search_index: str
+    azure_search_vector_dimensions: int = 1536
 
     model_config = SettingsConfigDict(
         env_file=".env",
