@@ -50,3 +50,55 @@ File doesn't have errors or warnings!
 - The cache key is the text content hash only. A cache database should not be shared between incompatible embedding deployments or models; deployment-specific cache namespaces can be added if that becomes a requirement.
 - The adapter currently exposes a synchronous interface, matching the requested provider contracts.
 - No live Azure credential or endpoint validation was performed by design.
+
+## Review-fix report
+
+### Findings addressed
+
+- Extended `ModelResponse` with deployment/model pricing inputs, estimated cost, retry count, HTTP status, and error metadata. Added `ModelTelemetry` and `ModelCallError`; failed calls raise the latter with latency, retry count, status, pricing inputs, and a redacted error description attached as `exc.telemetry`.
+- Namespaced embedding cache keys with endpoint, API version, deployment, model, and content hash, preventing vectors from different embedding deployments/models from being reused.
+- Added fake-transport coverage for 429 retry success, retry exhaustion, exact bounded attempts, and configurable bounded delays.
+- Added explicit idempotent `close()` methods and `with` support for both adapters. Closing the embedding adapter closes SQLite and HTTP resources.
+
+### TDD red evidence
+
+Before the implementation changes, the new review-fix tests failed with **5 failed, 4 passed**, including:
+
+```text
+TypeError: AzureChatModel.__init__() got an unexpected keyword argument 'input_cost_per_1k'
+AttributeError: 'ModelResponse' object has no attribute 'retry_count'
+AttributeError: 'RuntimeError' object has no attribute 'telemetry'
+AttributeError: 'AzureEmbeddingModel' object has no attribute 'close'
+TypeError: 'AzureEmbeddingModel' object does not support the context manager protocol
+```
+
+### Exact validation commands and output
+
+Focused review-fix tests:
+
+```text
+$ .venv/bin/pytest -q tests/unit/test_azure_models.py
+.........                                                                                    [100%]
+9 passed in 0.11s
+```
+
+Full test suite:
+
+```text
+$ .venv/bin/pytest -q
+....................................                                                         [100%]
+36 passed in 0.17s
+```
+
+Diagnostics:
+
+```text
+$ diagnostics src/dyla/azure_models.py
+File doesn't have errors or warnings!
+```
+
+## Review-fix concerns
+
+- Failed calls expose zero token counts because Azure does not return usage on an HTTP failure; the attached telemetry still records latency, pricing inputs, retry count, status, and redacted error metadata.
+- The cache namespace includes the configured endpoint/API version, deployment, and model. Existing databases created by the original content-only schema should be migrated or discarded before reuse; the revised adapter will not intentionally reuse those incompatible rows.
+- The adapters remain synchronous to preserve the existing provider contracts.

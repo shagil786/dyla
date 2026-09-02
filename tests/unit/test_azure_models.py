@@ -104,6 +104,115 @@ def test_transient_status_is_retried_with_bounded_backoff():
     assert delays == [0.1, 0.2]
 
 
+def test_chat_telemetry_includes_pricing_retry_status_and_cost():
+    def handler(request: httpx.Request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 500},
+            },
+        )
+
+    model = AzureChatModel(
+        settings(),
+        transport=httpx.MockTransport(handler),
+        input_cost_per_1k=0.01,
+        output_cost_per_1k=0.02,
+        model_name="gpt-test",
+    )
+
+    response = model.complete(ModelRequest([], None, 10, 0.0))
+
+    assert response.deployment == "chat-deployment"
+    assert response.model == "gpt-test"
+    assert response.retry_count == 0
+    assert response.status_code == 200
+    assert response.estimated_cost == 0.02
+    assert response.latency_ms >= 0
+
+
+def test_retry_after_429_is_counted_and_attempts_are_bounded():
+    attempts = 0
+    delays = []
+
+    def handler(request: httpx.Request):
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(200 if attempts == 2 else 429, json={"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+    model = AzureChatModel(
+        settings(), transport=httpx.MockTransport(handler), max_retries=1,
+        sleeper=delays.append, backoff_base=0.1,
+    )
+
+    response = model.complete(ModelRequest([], None, 10, 0.0))
+
+    assert response.text == "ok"
+    assert response.retry_count == 1
+    assert attempts == 2
+    assert delays == [0.1]
+
+
+def test_retry_exhaustion_raises_error_with_telemetry_and_bounded_attempts():
+    attempts = 0
+    delays = []
+
+    def handler(request: httpx.Request):
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(429, text="rate limited")
+
+    model = AzureChatModel(
+        settings(), transport=httpx.MockTransport(handler), max_retries=2,
+        sleeper=delays.append, backoff_base=0.1,
+    )
+
+    try:
+        model.complete(ModelRequest([], None, 10, 0.0))
+    except RuntimeError as exc:
+        assert attempts == 3
+        assert delays == [0.1, 0.2]
+        assert exc.telemetry.retry_count == 2
+        assert exc.telemetry.status_code == 429
+        assert exc.telemetry.error == "retry exhaustion"
+        assert exc.telemetry.latency_ms >= 0
+    else:
+        raise AssertionError("expected retry exhaustion")
+
+
+def test_embedding_cache_is_namespaced_by_deployment(tmp_path):
+    calls = []
+
+    def handler(request: httpx.Request):
+        payload = json.loads(request.content)
+        calls.append(request.url.path)
+        vector_value = 1.0 if "embedding-deployment" in request.url.path else 2.0
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [vector_value]}]})
+
+    first = AzureEmbeddingModel(settings(), transport=httpx.MockTransport(handler), cache_path=tmp_path / "cache.db")
+    assert first.embed(["same content"]) == [[1.0]]
+    first.close()
+
+    second_settings = settings()
+    second_settings.azure_openai_embedding_deployment = "other-deployment"
+    second = AzureEmbeddingModel(second_settings, transport=httpx.MockTransport(handler), cache_path=tmp_path / "cache.db")
+    assert second.embed(["same content"]) == [[2.0]]
+    assert len(calls) == 2
+    second.close()
+
+
+def test_adapters_close_http_and_sqlite_resources_and_support_context_manager(tmp_path):
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"data": []}))
+    with AzureEmbeddingModel(settings(), transport=transport, cache_path=tmp_path / "cache.db") as model:
+        assert model._cache is not None
+    assert model._cache is None
+
+    chat = AzureChatModel(settings(), transport=transport)
+    chat.close()
+    assert chat._client.client.is_closed
+
+
 def test_secret_is_redacted_from_adapter_errors():
     def handler(request: httpx.Request):
         return httpx.Response(401, text="invalid super-secret-key")

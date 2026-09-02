@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from types import TracebackType
+from typing import Any, NoReturn, Self
 
 import httpx
 
 from .config import Settings
-from .models import ModelRequest, ModelResponse
+from .models import ModelCallError, ModelRequest, ModelResponse, ModelTelemetry
 
 
 class _AzureClient:
@@ -25,6 +27,9 @@ class _AzureClient:
         max_retries: int,
         sleeper: Callable[[float], None],
         backoff_base: float,
+        model: str,
+        input_cost_per_1k: float,
+        output_cost_per_1k: float,
     ) -> None:
         self.endpoint = settings.azure_openai_endpoint.rstrip("/")
         self.api_key = settings.azure_openai_api_key
@@ -33,44 +38,76 @@ class _AzureClient:
         self.max_retries = max(0, max_retries)
         self.sleeper = sleeper
         self.backoff_base = max(0.0, backoff_base)
+        self.model = model
+        self.input_cost_per_1k = input_cost_per_1k
+        self.output_cost_per_1k = output_cost_per_1k
 
-    def post(self, deployment: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def post(self, deployment: str, payload: dict[str, Any]) -> tuple[dict[str, Any], int, int]:
         url = (
             f"{self.endpoint}/openai/deployments/{deployment}/chat/completions"
             if payload.get("messages") is not None
             else f"{self.endpoint}/openai/deployments/{deployment}/embeddings"
         )
-        params = {"api-version": self.api_version}
-        for attempt in range(self.max_retries + 1):
+        started = time.monotonic()
+        for retry_count in range(self.max_retries + 1):
             try:
                 response = self.client.post(
                     url,
-                    params=params,
+                    params={"api-version": self.api_version},
                     headers={"api-key": self.api_key, "content-type": "application/json"},
                     json=payload,
                 )
             except httpx.TimeoutException:
-                if attempt >= self.max_retries:
-                    raise RuntimeError("Azure request timed out") from None
-                self._wait(attempt)
-                continue
-            if response.status_code not in {429, *range(500, 600)}:
-                if response.is_error:
-                    detail = response.text.replace(self.api_key, "[REDACTED]")
-                    raise RuntimeError(
-                        f"Azure request failed with HTTP {response.status_code}: {detail}"
-                    )
-                return response.json()
-            if attempt >= self.max_retries:
-                raise RuntimeError(
-                    f"Azure request failed after {self.max_retries + 1} attempts "
-                    f"with HTTP {response.status_code}"
+                if retry_count < self.max_retries:
+                    self._wait(retry_count)
+                    continue
+                self._raise_failure(
+                    deployment, retry_count, None, "request timed out", started
                 )
-            self._wait(attempt)
-        raise RuntimeError("Azure request failed")
+            if response.status_code in {429, *range(500, 600)}:
+                if retry_count < self.max_retries:
+                    self._wait(retry_count)
+                    continue
+                self._raise_failure(
+                    deployment, retry_count, response.status_code, "retry exhaustion", started
+                )
+            if response.is_error:
+                detail = response.text.replace(self.api_key, "[REDACTED]")
+                self._raise_failure(
+                    deployment,
+                    retry_count,
+                    response.status_code,
+                    f"HTTP {response.status_code}: {detail}",
+                    started,
+                )
+            return response.json(), retry_count, response.status_code
+        raise AssertionError("unreachable")
 
-    def _wait(self, attempt: int) -> None:
-        self.sleeper(self.backoff_base * (2**attempt))
+    def _raise_failure(
+        self,
+        deployment: str,
+        retry_count: int,
+        status_code: int | None,
+        error: str,
+        started: float,
+    ) -> NoReturn:
+        telemetry = ModelTelemetry(
+            deployment=deployment,
+            model=self.model,
+            input_cost_per_1k=self.input_cost_per_1k,
+            output_cost_per_1k=self.output_cost_per_1k,
+            retry_count=retry_count,
+            status_code=status_code,
+            error=error,
+            latency_ms=int((time.monotonic() - started) * 1000),
+        )
+        raise ModelCallError("Azure model call failed: " + error, telemetry)
+
+    def _wait(self, retry_count: int) -> None:
+        self.sleeper(self.backoff_base * (2**retry_count))
+
+    def close(self) -> None:
+        self.client.close()
 
 
 class AzureChatModel:
@@ -83,7 +120,11 @@ class AzureChatModel:
         max_retries: int = 3,
         sleeper: Callable[[float], None] = time.sleep,
         backoff_base: float = 0.25,
+        model_name: str | None = None,
+        input_cost_per_1k: float = 0.0,
+        output_cost_per_1k: float = 0.0,
     ) -> None:
+        self.deployment = settings.azure_openai_chat_deployment
         self._client = _AzureClient(
             settings,
             transport=transport,
@@ -91,8 +132,10 @@ class AzureChatModel:
             max_retries=max_retries,
             sleeper=sleeper,
             backoff_base=backoff_base,
+            model=model_name or self.deployment,
+            input_cost_per_1k=input_cost_per_1k,
+            output_cost_per_1k=output_cost_per_1k,
         )
-        self.deployment = settings.azure_openai_chat_deployment
 
     def complete(self, request: ModelRequest) -> ModelResponse:
         payload: dict[str, Any] = {
@@ -110,20 +153,47 @@ class AzureChatModel:
                 },
             }
         started = time.monotonic()
-        data = self._client.post(self.deployment, payload)
+        data, retry_count, status_code = self._client.post(self.deployment, payload)
         message = data["choices"][0]["message"]
         text = message.get("content") or ""
         if isinstance(text, list):
             text = "".join(part.get("text", "") for part in text)
         parsed = request.response_schema.model_validate_json(text) if request.response_schema else None
         usage = data.get("usage") or {}
+        input_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)))
+        output_tokens = int(usage.get("completion_tokens", usage.get("output_tokens", 0)))
+        estimated_cost = (
+            input_tokens * self._client.input_cost_per_1k
+            + output_tokens * self._client.output_cost_per_1k
+        ) / 1000
         return ModelResponse(
             text=text,
             parsed=parsed,
-            input_tokens=int(usage.get("prompt_tokens", usage.get("input_tokens", 0))),
-            output_tokens=int(usage.get("completion_tokens", usage.get("output_tokens", 0))),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             latency_ms=int((time.monotonic() - started) * 1000),
+            deployment=self.deployment,
+            model=self._client.model,
+            input_cost_per_1k=self._client.input_cost_per_1k,
+            output_cost_per_1k=self._client.output_cost_per_1k,
+            estimated_cost=estimated_cost,
+            retry_count=retry_count,
+            status_code=status_code,
         )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
 
 
 class AzureEmbeddingModel:
@@ -138,9 +208,12 @@ class AzureEmbeddingModel:
         max_retries: int = 3,
         sleeper: Callable[[float], None] = time.sleep,
         backoff_base: float = 0.25,
+        model_name: str | None = None,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
+        self.deployment = settings.azure_openai_embedding_deployment
+        self.model = model_name or self.deployment
         self._client = _AzureClient(
             settings,
             transport=transport,
@@ -148,17 +221,28 @@ class AzureEmbeddingModel:
             max_retries=max_retries,
             sleeper=sleeper,
             backoff_base=backoff_base,
+            model=self.model,
+            input_cost_per_1k=0.0,
+            output_cost_per_1k=0.0,
         )
-        self.deployment = settings.azure_openai_embedding_deployment
         self.batch_size = batch_size
-        self._cache = None
+        self._cache: sqlite3.Connection | None = None
+        self._cache_namespace = hashlib.sha256(
+            json.dumps(
+                {
+                    "deployment": self.deployment,
+                    "model": self.model,
+                    "endpoint": self._client.endpoint,
+                    "api_version": self._client.api_version,
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
         if cache_path is not None:
-            import sqlite3
-
             self._cache = sqlite3.connect(str(cache_path))
             self._cache.execute(
                 "CREATE TABLE IF NOT EXISTS embedding_cache "
-                "(content_hash TEXT PRIMARY KEY, embedding_json TEXT NOT NULL)"
+                "(cache_key TEXT PRIMARY KEY, embedding_json TEXT NOT NULL)"
             )
             self._cache.commit()
 
@@ -168,7 +252,7 @@ class AzureEmbeddingModel:
         result: list[list[float] | None] = [None] * len(texts)
         missing: list[tuple[int, str, str]] = []
         for index, text in enumerate(texts):
-            key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            key = self._cache_key(text)
             cached = self._read_cache(key)
             if cached is None:
                 missing.append((index, text, key))
@@ -176,7 +260,7 @@ class AzureEmbeddingModel:
                 result[index] = cached
         for start in range(0, len(missing), self.batch_size):
             batch = missing[start : start + self.batch_size]
-            data = self._client.post(self.deployment, {"input": [text for _, text, _ in batch]})
+            data, _, _ = self._client.post(self.deployment, {"input": [text for _, text, _ in batch]})
             vectors = sorted(data.get("data", []), key=lambda item: item["index"])
             if len(vectors) != len(batch):
                 raise RuntimeError("Azure embedding response did not match the requested batch")
@@ -186,11 +270,15 @@ class AzureEmbeddingModel:
                 self._write_cache(key, vector)
         return [vector for vector in result if vector is not None]
 
+    def _cache_key(self, text: str) -> str:
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return f"{self._cache_namespace}:{content_hash}"
+
     def _read_cache(self, key: str) -> list[float] | None:
         if self._cache is None:
             return None
         row = self._cache.execute(
-            "SELECT embedding_json FROM embedding_cache WHERE content_hash = ?", (key,)
+            "SELECT embedding_json FROM embedding_cache WHERE cache_key = ?", (key,)
         ).fetchone()
         return json.loads(row[0]) if row else None
 
@@ -201,3 +289,20 @@ class AzureEmbeddingModel:
             "INSERT OR REPLACE INTO embedding_cache VALUES (?, ?)", (key, json.dumps(vector))
         )
         self._cache.commit()
+
+    def close(self) -> None:
+        if self._cache is not None:
+            self._cache.close()
+            self._cache = None
+        self._client.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
