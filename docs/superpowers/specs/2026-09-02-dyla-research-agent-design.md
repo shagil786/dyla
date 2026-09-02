@@ -136,7 +136,7 @@ class Retriever(Protocol):
         ...
 ```
 
-The agent engine does not import provider SDKs. Model, embedding, web, and vector-store ports are implemented by adapters selected through configuration. You.com is the selected web search/page retrieval adapter. Azure AI Search, Qdrant, and FAISS are interchangeable vector-store adapters. SQLite remains the application-memory store for entities, aliases, claims, audit findings, and run metadata.
+The agent engine does not import provider SDKs. Model, embedding, web, and vector-store ports are implemented by adapters selected through `DYLA_MODEL_PROVIDER`, `DYLA_AUDITOR_PROVIDER`, `DYLA_EMBEDDING_PROVIDER`, `DYLA_VECTOR_STORE`, and `DYLA_WEB_PROVIDER`. The `compatible` model and embedding adapters use configurable endpoint/API-key/model values and normalize standard OpenAI-compatible URLs. `local` provides dependency-free offline choices; Azure Search is retained as an adapter, while Qdrant and FAISS are optional when installed. Any role can use a `module:function` plugin callable receiving `Settings`. You.com is the `SearchProvider` only. Provider failures redact credentials, and secrets are never configured in core agents or written to traces.
 
 ### Model and provider adapters
 
@@ -168,7 +168,7 @@ class ModelProvider(Protocol):
         ...
 ```
 
-The Azure implementation reads endpoint, deployment, and authentication from environment configuration. It records token usage, estimated cost, latency, retries, and model errors. The provider boundary allows the Azure deployment/model to change without changing agent logic.
+The compatible implementation reads endpoint, model, and authentication from environment configuration, records usage/latency/retries, and redacts API keys in errors. The legacy Azure implementation remains available behind the same factory boundary. Switching adapters or loading a custom plugin does not change analyst, auditor, or guardrail code.
 
 ### Web tools
 

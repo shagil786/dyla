@@ -10,14 +10,19 @@ import typer
 
 from .analyst import AnalystAgent
 from .auditor import AuditorAgent
-from .azure_models import AzureChatModel, AzureEmbeddingModel
+
 from .config import Settings, load_settings
 from .entities import EntityResolver
 from .evaluation import run_evaluation
 from .memory import MemoryStore
 from .orchestrator import RunOrchestrator, RunResult
-from .provider_factory import build_search_provider
-from .search import SearchIndex
+from .provider_factory import (
+    build_auditor_provider,
+    build_embedding_provider,
+    build_model_provider,
+    build_search_provider,
+    build_vector_store,
+)
 from .tracing import TraceWriter
 
 app = typer.Typer(help="Research questions with cited, independently audited evidence.")
@@ -35,9 +40,9 @@ def _build_memory(settings: Settings) -> MemoryStore:
 def _build_analyst(settings: Settings) -> AnalystAgent:
     memory = _build_memory(settings)
     provider = build_search_provider(settings)
-    model = AzureChatModel(settings)
-    embedder = AzureEmbeddingModel(settings, cache_path="dyla.db")
-    index = SearchIndex(settings, embedder=embedder)
+    model = build_model_provider(settings)
+    embedder = build_embedding_provider(settings, cache_path="dyla.db")
+    index = build_vector_store(settings, embedder=embedder)
     return AnalystAgent(
         model=model, resolver=EntityResolver(memory), memory=memory,
         searcher=provider, fetcher=provider, index=index, embedder=embedder,
@@ -49,7 +54,7 @@ def _build_orchestrator(settings: Settings) -> RunOrchestrator:
     analyst = _build_analyst(settings)
     return RunOrchestrator(
         analyst=analyst,
-        auditor=AuditorAgent(fetcher=analyst.fetcher, trace_writer=TraceWriter()),
+        auditor=AuditorAgent(fetcher=analyst.fetcher, comparator=build_auditor_provider(settings), trace_writer=TraceWriter()),
         memory=analyst.memory,
         trace_writer=TraceWriter(),
     )

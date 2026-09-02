@@ -11,7 +11,7 @@ Dyla is a research agent that will collect and ground answers in evidence.
    .venv/bin/pip install -e '.[dev]'
    ```
 
-2. Copy `.env.example` to `.env` and replace its fake values with credentials from your local Azure and You.com resources. Keep `.env` local; it is ignored by Git and must never be committed.
+2. Copy `.env.example` to `.env` and replace its fake values with local credentials. Keep `.env` local; it is ignored by Git and must never be committed.
 
 3. Run the test suite:
 
@@ -19,7 +19,7 @@ Dyla is a research agent that will collect and ground answers in evidence.
    .venv/bin/pytest -q
    ```
 
-Configuration is loaded from environment variables or the optional local `.env` file. `DYLA_WEB_PROVIDER=you` selects You.com for search and page retrieval only; Azure AI Search remains the vector-store adapter. Required model, web-provider, and Azure AI Search settings are validated when `load_settings()` is called. Tests use mocked providers and do not make live requests.
+Configuration is loaded from environment variables or the optional local `.env` file. Provider roles are selected independently with `DYLA_MODEL_PROVIDER`, `DYLA_AUDITOR_PROVIDER`, `DYLA_EMBEDDING_PROVIDER`, `DYLA_VECTOR_STORE`, and `DYLA_WEB_PROVIDER`. The built-in `compatible` adapters speak the standard `/v1/chat/completions` and `/v1/embeddings` APIs and are configured only with endpoint, API key, and model variables. `local` is dependency-free; Azure Search remains available as `azure`, and optional Qdrant/FAISS adapters can be installed or supplied as plugins. You.com is the `SearchProvider` only. Any role can be a custom `module:function` callable receiving `Settings`; secrets stay in the environment and are redacted from adapter errors. Tests use mocked providers and do not make live requests.
 
 ## CLI artifacts and evaluation
 

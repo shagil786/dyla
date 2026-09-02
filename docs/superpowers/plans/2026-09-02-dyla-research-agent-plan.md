@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the `dyla` CLI that researches live-web questions with provider-neutral core ports, You.com web retrieval, Azure model/vector adapters, then independently audits every claim and records measurable traces.
+**Goal:** Build the `dyla` CLI that researches live-web questions with provider-neutral core ports, You.com web retrieval, configurable model/embedding/vector adapters, then independently audits every claim and records measurable traces.
 
 **Architecture:** A CLI invokes a run orchestrator. The orchestrator uses a deterministic reliability layer around an analyst agent and an auditor agent. Core agents depend on neutral model, search, and vector-store protocols; You.com is selected only for web search/page retrieval, while Azure AI Search remains a supported vector-store adapter. SQLite stores entities, aliases, claims, audit results, run metadata, and feedback.
 
@@ -13,10 +13,10 @@
 ## Global Constraints
 
 - `dyla ask` automatically runs analyst, auditor, memory update, trace persistence, and final reporting.
-- Model, web-provider, and Azure AI Search credentials are read from environment variables; no secrets are committed or written to logs.
+- Model, auditor, embedding, vector-store, and web-provider selections are read from `DYLA_*_PROVIDER` environment variables; endpoint/API-key/model credentials remain in the environment, no secrets are committed or written to logs, and adapter errors redact them.
 - The core depends on neutral protocols and must not import Bing, You.com, Azure, OpenAI, or NVIDIA SDK details.
-- `DYLA_WEB_PROVIDER=you` selects the You.com search/page retrieval adapter; You.com is not used for models or vector storage.
-- Azure AI Search remains a supported vector-store adapter and must support keyword plus vector retrieval.
+- `DYLA_WEB_PROVIDER=you` selects the You.com `SearchProvider`; You.com is not used for models, embeddings, or vector storage. Every role also accepts a `module:function` custom plugin.
+- Azure AI Search remains a supported vector-store adapter and must support keyword plus vector retrieval; dependency-free local storage is available, with Qdrant/FAISS selected when their optional adapters are installed.
 - Every factual claim must have citation metadata and an auditor verdict before an answer is marked complete.
 - Query expansion is one bounded step, deduplicated, traced, and executed concurrently where independent.
 - Entity resolution records aliases, confidence, and unresolved ambiguity instead of silently merging entities.
@@ -252,7 +252,7 @@ def test_load_settings_rejects_missing_secret(monkeypatch):
 - [x] **Step 9: Run the focused tests and then the full offline suite; append results to `.superpowers/sdd/2026-09-02-dyla-research-agent-plan/provider-adapter-report.md`.**
 - [x] **Step 10: Commit the completed provider-adapter slice.**
 
-Review follow-up: the provider factory is the composition boundary; all You API responses use the shared bounded request path, and the vector-store non-goal explicitly permits the neutral port plus Azure adapter.
+Review follow-up: the provider registry/factory is the only composition boundary. Compatible model and embedding adapters normalize OpenAI-style endpoints, custom providers load through `module:function`, and all You API responses use the shared bounded request path. The vector-store boundary supports local/Azure and optional Qdrant/FAISS choices without exposing vendor details to the core.
 
 ### Task 9: Orchestrator and `dyla` CLI
 
