@@ -34,6 +34,8 @@ class AuditorAgent:
         self.trace_writer = trace_writer
         self.retries = retries
         self.timeout_seconds = timeout_seconds
+        self.metrics = {"input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0, "duration_ms": 0,
+                        "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0}
 
     def run(self, answer: AnalystAnswer, run_id: str) -> list[AuditVerdict]:
         verdicts: list[AuditVerdict] = []
@@ -54,6 +56,7 @@ class AuditorAgent:
                 checked: list[Citation] = []
                 failed = False
                 for citation in _unique_citations(claim.citations):
+                    self.metrics["fetches"] += 1
                     try:
                         document = self._fetch(citation.url)
                     except Exception as exc:

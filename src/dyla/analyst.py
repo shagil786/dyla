@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,13 +25,17 @@ class AnalystAgent:
         self.searcher, self.fetcher, self.index, self.embedder = searcher, fetcher, index, embedder
         self.planner = planner or QueryPlanner(max_subqueries=max_subqueries)
         self.trace_writer, self.search_limit, self.evidence_limit = trace_writer, search_limit, evidence_limit
+        self.metrics = {"input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0, "duration_ms": 0,
+                        "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0}
 
     async def run(self, question: str, run_id: str) -> AnalystAnswer:
+        started = time.monotonic()
         if isinstance(self.planner, QueryPlanner):
             self.planner.run_id = run_id
             if self.trace_writer is not None:
                 self.planner.trace_writer = self.trace_writer
         memories = await asyncio.to_thread(self.memory.search_memory, question, 10)
+        self.metrics["memory_hits"] += len(memories)
         plan = await asyncio.to_thread(self.planner.expand, question, memories)
         resolved: dict[str, str] = {}
         for entity in plan.entities:
@@ -44,7 +49,10 @@ class AnalystAgent:
                 entity_memory.extend(await asyncio.to_thread(self.memory.search_memory, entity, 10))
             by_id = {record.id: record for record in (*memories, *entity_memory)}
             memories = [record for record in by_id.values() if not record.entity_ids or set(record.entity_ids) & set(entity_ids)]
+            self.metrics["memory_hits"] += len(entity_memory)
 
+        self.metrics["searches"] += len(plan.subqueries)
+        self.metrics["parallel_calls"] += 1
         search_results = await asyncio.gather(*[
             asyncio.to_thread(self.searcher.search, item["query"], self.search_limit)
             for item in plan.subqueries
@@ -59,6 +67,8 @@ class AnalystAgent:
                 old = hits_by_url.get(hit.url)
                 ids = list(dict.fromkeys((old[1] if old else []) + query_ids))
                 hits_by_url[hit.url] = (hit, ids)
+        self.metrics["fetches"] += len(hits_by_url)
+        self.metrics["parallel_calls"] += 1
         documents = await asyncio.gather(*[
             asyncio.to_thread(self.fetcher.fetch, hit.url) for hit, _ in hits_by_url.values()
         ])
@@ -69,7 +79,9 @@ class AnalystAgent:
         evidence = await asyncio.to_thread(
             self.index.hybrid_search, question, vector[0], filters, self.evidence_limit,
         )
-        return await asyncio.to_thread(self._synthesize, question, memories, evidence, date_limitations)
+        answer = await asyncio.to_thread(self._synthesize, question, memories, evidence, date_limitations)
+        self.metrics["duration_ms"] = int((time.monotonic() - started) * 1000)
+        return answer
 
     @staticmethod
     def _filters(entity_ids: list[str], constraints: list[str]) -> tuple[SearchFilters, list[str]]:
@@ -89,6 +101,9 @@ class AnalystAgent:
                       {"role": "user", "content": f"Question: {question}\n{context}"}],
             response_schema=AnalystAnswer, max_tokens=1200, temperature=0,
         ))
+        self.metrics["input_tokens"] += int(getattr(response, "input_tokens", 0))
+        self.metrics["output_tokens"] += int(getattr(response, "output_tokens", 0))
+        self.metrics["estimated_cost"] += float(getattr(response, "estimated_cost", 0.0))
         answer = response.parsed if isinstance(response.parsed, AnalystAnswer) else AnalystAnswer.model_validate(response.parsed)
         evidence_keys: set[tuple[str, str, str | None]] = {(item.url, item.source_id, item.chunk_id) for item in evidence}
         valid_claims = []

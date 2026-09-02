@@ -50,3 +50,29 @@ The named brief describes the provider-adapter slice, which was already present 
 - CLI commands that construct live adapters intentionally require the configured environment and credentials; all tests use fakes and do not make live requests.
 - Metrics are returned with the stable schema, but detailed model/search/fetch aggregation remains a follow-on enhancement once the evaluation harness consumes per-stage telemetry.
 - The project virtualenv required installing the newly declared Typer dependency before CLI tests could run.
+
+## Task 8 review-fix report
+
+### Fixes
+
+- `dyla analyst` now builds and invokes `AnalystAgent` directly, without invoking the auditor, orchestrator `ask`, persistence, or quality flow.
+- `dyla audit` and `dyla replay` now accept an existing JSONL trace/artifact path or a run ID resolved as `logs/<run-id>.jsonl`; malformed artifacts fail with a clear CLI parameter error.
+- `dyla evaluate` now runs the default eight-question suite and writes `reports/evaluation.json` and `reports/evaluation.md`. The evaluation runner remains injectable for offline tests and records complete/failed quality outcomes.
+- Orchestrator metrics now aggregate numeric stage metrics and wall-clock duration into the shared `Metrics` contract. Analyst and auditor expose nonzero model/tool counters where work occurs.
+- Provider factory composition and independent runtime context isolation were preserved.
+
+### TDD evidence
+
+- Red: new CLI and orchestrator regressions failed because the analyst builder/evaluation flow/path resolution were absent and metrics were hard-coded to zero.
+- Green: focused CLI/orchestrator/integration tests passed after the minimal fixes.
+
+### Verification
+
+- `.venv/bin/pytest tests/unit/test_cli.py tests/unit/test_orchestrator.py tests/integration/test_cli.py -q` — 9 passed.
+- `.venv/bin/pytest -q` — 108 passed, 1 skipped.
+- Project diagnostics are clean for the modified CLI, evaluation, analyst, and orchestrator paths; pre-existing auditor broad-exception warnings remain outside this fix.
+
+### Concerns
+
+- Running the default evaluation suite against live adapters still requires the configured Azure/You credentials and search service; tests use fakes and make no live requests.
+- Evaluation questions are the planned default suite in this repository because no separate Task 9 implementation or question-set file was present.

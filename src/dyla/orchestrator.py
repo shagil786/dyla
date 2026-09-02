@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,6 +41,7 @@ class RunOrchestrator:
     async def ask(self, question: str) -> RunResult:
         if not question.strip():
             raise ValueError("question must not be empty")
+        started = time.monotonic()
         run_id = str(self.run_id_factory())
         self.memory.initialize()
         answer = await self.analyst.run(question, run_id)
@@ -51,11 +53,28 @@ class RunOrchestrator:
         trace_path = self._trace_path(run_id)
         quality = self.quality_gate.validate(answer, verdicts, trace_path)
         self._trace(run_id, "quality_completed", {"status": quality.status, "issues": quality.issues})
-        metrics = Metrics(
-            input_tokens=0, output_tokens=0, estimated_cost=0.0,
-            duration_ms=0, searches=0, fetches=0, memory_hits=0, parallel_calls=0,
-        )
+        metrics = self._aggregate_metrics(started)
         return RunResult(run_id, answer, verdicts, quality, metrics, trace_path)
+
+    def _aggregate_metrics(self, started: float) -> Metrics:
+        totals: dict[str, int | float] = {field: 0 for field in Metrics.model_fields}
+        for component in (self.analyst, self.auditor, self.memory):
+            values = getattr(component, "metrics", {})
+            if not isinstance(values, dict):
+                continue
+            for field in totals:
+                value = values.get(field, 0)
+                if isinstance(value, (int, float)):
+                    totals[field] += value
+        totals["duration_ms"] = max(
+            int((time.monotonic() - started) * 1000), int(totals["duration_ms"])
+        )
+        return Metrics(
+            input_tokens=int(totals["input_tokens"]), output_tokens=int(totals["output_tokens"]),
+            estimated_cost=float(totals["estimated_cost"]), duration_ms=int(totals["duration_ms"]),
+            searches=int(totals["searches"]), fetches=int(totals["fetches"]),
+            memory_hits=int(totals["memory_hits"]), parallel_calls=int(totals["parallel_calls"]),
+        )
 
     def _trace(self, run_id: str, event: str, payload: dict[str, Any]) -> None:
         self.trace_writer.append(RunEvent(

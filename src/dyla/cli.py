@@ -13,6 +13,7 @@ from .auditor import AuditorAgent
 from .azure_models import AzureChatModel, AzureEmbeddingModel
 from .config import Settings, load_settings
 from .entities import EntityResolver
+from .evaluation import run_evaluation
 from .memory import MemoryStore
 from .orchestrator import RunOrchestrator, RunResult
 from .provider_factory import build_search_provider
@@ -31,19 +32,46 @@ def _build_memory(settings: Settings) -> MemoryStore:
     return store
 
 
-def _build_orchestrator(settings: Settings) -> RunOrchestrator:
+def _build_analyst(settings: Settings) -> AnalystAgent:
     memory = _build_memory(settings)
     provider = build_search_provider(settings)
     model = AzureChatModel(settings)
     embedder = AzureEmbeddingModel(settings, cache_path="dyla.db")
     index = SearchIndex(settings, embedder=embedder)
-    analyst = AnalystAgent(
+    return AnalystAgent(
         model=model, resolver=EntityResolver(memory), memory=memory,
         searcher=provider, fetcher=provider, index=index, embedder=embedder,
         trace_writer=TraceWriter(),
     )
-    auditor = AuditorAgent(fetcher=provider, trace_writer=TraceWriter())
-    return RunOrchestrator(analyst=analyst, auditor=auditor, memory=memory, trace_writer=TraceWriter())
+
+
+def _build_orchestrator(settings: Settings) -> RunOrchestrator:
+    analyst = _build_analyst(settings)
+    return RunOrchestrator(
+        analyst=analyst,
+        auditor=AuditorAgent(fetcher=analyst.fetcher, trace_writer=TraceWriter()),
+        memory=analyst.memory,
+        trace_writer=TraceWriter(),
+    )
+
+
+def _resolve_trace(value: str) -> Path:
+    candidate = Path(value).expanduser()
+    if candidate.is_file():
+        return candidate
+    run_path = Path("logs") / f"{value}.jsonl"
+    if run_path.is_file():
+        return run_path
+    raise typer.BadParameter(f"run trace not found: {value}")
+
+
+def _read_trace(value: str) -> tuple[Path, list[dict[str, Any]]]:
+    path = _resolve_trace(value)
+    try:
+        events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except (OSError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter(f"invalid trace artifact: {path}") from exc
+    return path, events
 
 
 def _print_result(result: RunResult, json_output: bool) -> None:
@@ -75,27 +103,26 @@ def ask(question: str, json_output: bool = typer.Option(False, "--json")) -> Non
 @app.command()
 def analyst(question: str, json_output: bool = typer.Option(False, "--json")) -> None:
     """Run the analyst stage and print its structured answer."""
-    result = __import__("asyncio").run(_build_orchestrator(load_settings()).ask(question))
-    data: Any = result.answer.model_dump(mode="json") if json_output else result.answer.answer
+    analyst = _build_analyst(load_settings())
+    run_id = __import__("uuid").uuid4().hex
+    answer = __import__("asyncio").run(analyst.run(question, run_id))
+    data: Any = answer.model_dump(mode="json") if json_output else answer.answer
     typer.echo(json.dumps(data, indent=2) if json_output else data)
 
 
 @app.command()
-def audit(run_id: str, json_output: bool = typer.Option(False, "--json")) -> None:
-    """Show audit verdicts saved in a run trace."""
-    path = Path("logs") / f"{run_id}.jsonl"
-    if not path.is_file():
-        raise typer.BadParameter(f"run trace not found: {path}")
-    events = [json.loads(line) for line in path.read_text().splitlines()]
+def audit(artifact: str, json_output: bool = typer.Option(False, "--json")) -> None:
+    """Show audit verdicts from a trace artifact or run ID."""
+    _path, events = _read_trace(artifact)
     verdicts = [event for event in events if event.get("event") == "claim_audited"]
     typer.echo(json.dumps(verdicts, indent=2) if json_output else f"Verdicts: {len(verdicts)}")
 
 
 @app.command()
 def evaluate(json_output: bool = typer.Option(False, "--json")) -> None:
-    """Report that evaluation is available through the configured question set."""
-    payload = {"status": "not_configured", "message": "No evaluation question set was supplied."}
-    typer.echo(json.dumps(payload) if json_output else payload["message"])
+    """Run the default question suite and write reports/evaluation.{json,md}."""
+    payload = run_evaluation()
+    typer.echo(json.dumps(payload, indent=2) if json_output else f"Evaluated {payload['total']} questions; {payload['passed']} passed")
 
 
 @memory_app.command("list")
@@ -111,10 +138,7 @@ def memory_list(query: str = typer.Option("", "--query"), limit: int = typer.Opt
 
 
 @app.command()
-def replay(run_id: str, json_output: bool = typer.Option(False, "--json")) -> None:
-    """Replay a saved trace without making model or web calls."""
-    path = Path("logs") / f"{run_id}.jsonl"
-    if not path.is_file():
-        raise typer.BadParameter(f"run trace not found: {path}")
-    events = [json.loads(line) for line in path.read_text().splitlines()]
+def replay(artifact: str, json_output: bool = typer.Option(False, "--json")) -> None:
+    """Replay a trace artifact or run ID without making model or web calls."""
+    path, events = _read_trace(artifact)
     typer.echo(json.dumps(events, indent=2) if json_output else f"Replayed {len(events)} events from {path}")
