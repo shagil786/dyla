@@ -80,7 +80,7 @@ class SearchIndex:
             raise ValueError("vector dimension does not match index configuration")
         if limit < 1:
             raise ValueError("limit must be positive")
-        payload: dict[str, Any] = {"search_text": query, "top": limit, "vectorQueries": [{"kind": "vector", "vector": vector, "fields": "content_vector", "k": limit}]}
+        payload: dict[str, Any] = {"search": query, "top": limit, "vectorQueries": [{"kind": "vector", "vector": vector, "fields": "content_vector", "k": limit}]}
         clauses = []
         if filters.entity_ids:
             clauses.append(" or ".join(f"entity_ids/any(x: x eq '{_odata(value)}')" for value in filters.entity_ids))
@@ -98,6 +98,11 @@ class SearchIndex:
         for item in response.json().get("value", []):
             result.append(Evidence(chunk_id=item["chunk_id"], source_id=item["source_id"], url=item["url"], title=item.get("title"), text=item["text"], score=float(item.get("@search.score", item.get("score", 0.0))), entity_ids=item.get("entity_ids", [])))
         return result
+
+    def delete_index(self) -> None:
+        response = self.client.delete(self._url(f"/indexes/{self.index_name}"))
+        if response.status_code not in {200, 204, 404}:
+            response.raise_for_status()
 
     def close(self) -> None:
         self.client.close()

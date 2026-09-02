@@ -35,9 +35,17 @@ def test_search_index_creates_schema_upserts_in_batches_and_hybrid_searches():
     upsert_payload = json.loads(requests[1][2])
     assert upsert_payload["value"][0]["@search.action"] == "mergeOrUpload"
     search_payload = json.loads(requests[2][2])
-    assert search_payload["search_text"] == "evidence"
+    assert search_payload["search"] == "evidence"
     assert "vectorQueries" in search_payload
     assert "entity_ids/any" in search_payload["filter"]
+
+
+def test_search_index_rejects_malformed_search_date():
+    def handler(request):
+        return httpx.Response(200, json={"value": [{"chunk_id": "c", "source_id": "s", "url": "https://example.com", "text": "t", "score": 1, "entity_ids": [], "published_at": "not-a-date"}]})
+
+    index = SearchIndex("https://search.example", "key", "evidence", vector_dimensions=3, transport=httpx.MockTransport(handler))
+    assert index.hybrid_search("q", [0.1, 0.2, 0.3], SearchFilters(), 1)[0].chunk_id == "c"
 
 
 def test_search_index_can_embed_chunks_when_vectors_are_not_supplied():

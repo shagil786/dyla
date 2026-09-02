@@ -1,11 +1,17 @@
 import httpx
 import pytest
 
+
+PUBLIC_RESOLVER = lambda host, port, **kwargs: [(None, None, None, None, ("93.184.216.34", 0))]
+PRIVATE_RESOLVER = lambda host, port, **kwargs: [(None, None, None, None, ("127.0.0.1", 0))]
+
 from dyla.web import PageFetcher, WebSearcher, validate_external_url
 
 
 def test_validate_external_url_requires_https_and_rejects_local_targets():
-    assert validate_external_url("https://example.com/article") == "https://example.com/article"
+    assert validate_external_url("https://example.com/article", resolver=PUBLIC_RESOLVER) == "https://example.com/article"
+    with pytest.raises(ValueError, match="private"):
+        validate_external_url("https://public.example", resolver=PRIVATE_RESOLVER)
     with pytest.raises(ValueError, match="HTTPS"):
         validate_external_url("http://example.com")
     with pytest.raises(ValueError):
@@ -23,7 +29,7 @@ def test_page_fetcher_normalizes_html_and_removes_boilerplate():
             </body></html>""",
         )
 
-    document = PageFetcher(transport=httpx.MockTransport(handler)).fetch("https://example.com/a")
+    document = PageFetcher(transport=httpx.MockTransport(handler), resolver=PUBLIC_RESOLVER).fetch("https://example.com/a")
     assert document.title == "Research title"
     assert document.text == "Research title\nFirst paragraph.\nMethods\nImportant result."
     assert "Navigation" not in document.text
@@ -35,7 +41,64 @@ def test_page_fetcher_enforces_response_size_limit():
         return httpx.Response(200, headers={"content-type": "text/plain"}, text="12345")
 
     with pytest.raises(ValueError, match="size"):
-        PageFetcher(transport=httpx.MockTransport(handler), max_bytes=4).fetch("https://example.com")
+        PageFetcher(transport=httpx.MockTransport(handler), max_bytes=4, resolver=PUBLIC_RESOLVER).fetch("https://example.com")
+
+
+def test_page_fetcher_validates_redirects_and_bounds_redirect_count():
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if len(calls) == 1:
+            return httpx.Response(302, headers={"location": "https://private.example/secret"})
+        return httpx.Response(200, headers={"content-type": "text/plain"}, text="safe")
+
+    def resolver(host, port, **kwargs):
+        return PRIVATE_RESOLVER(host, port, **kwargs) if host == "private.example" else PUBLIC_RESOLVER(host, port, **kwargs)
+
+    with pytest.raises(ValueError, match="private"):
+        PageFetcher(transport=httpx.MockTransport(handler), resolver=resolver).fetch("https://example.com/start")
+    assert len(calls) == 1
+
+
+def test_page_fetcher_bounds_redirect_count():
+    def handler(request):
+        return httpx.Response(302, headers={"location": str(request.url)})
+
+    with pytest.raises(ValueError, match="maximum redirect"):
+        PageFetcher(transport=httpx.MockTransport(handler), max_redirects=1, resolver=PUBLIC_RESOLVER).fetch("https://example.com")
+
+
+def test_page_fetcher_enforces_content_length_before_reading_body():
+    class Body(httpx.SyncByteStream):
+        def __iter__(self):
+            raise AssertionError("body should not be read")
+
+    def handler(request):
+        return httpx.Response(200, headers={"content-length": "5", "content-type": "text/plain"}, stream=Body())
+
+    with pytest.raises(ValueError, match="size"):
+        PageFetcher(transport=httpx.MockTransport(handler), max_bytes=4, resolver=PUBLIC_RESOLVER).fetch("https://example.com")
+
+
+def test_page_fetcher_enforces_streaming_limit_before_buffering():
+    def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/plain"}, stream=httpx.ByteStream(b"12345"))
+
+    with pytest.raises(ValueError, match="size"):
+        PageFetcher(transport=httpx.MockTransport(handler), max_bytes=4, resolver=PUBLIC_RESOLVER).fetch("https://example.com")
+
+
+def test_web_searcher_validates_endpoint_and_result_urls_and_tolerates_bad_dates():
+    def handler(request):
+        return httpx.Response(200, json={"webPages": {"value": [
+            {"url": "http://unsafe.example", "name": "A", "snippet": "Snippet", "dateLastCrawled": "bad"},
+            {"url": "https://example.com/a", "name": "B", "snippet": "Good", "dateLastCrawled": "bad"},
+        ]}})
+
+    hits = WebSearcher("https://bing.example", "key", transport=httpx.MockTransport(handler), resolver=PUBLIC_RESOLVER).search("query", 2)
+    assert [hit.url for hit in hits] == ["https://example.com/a"]
+    assert hits[0].published_at is None
 
 
 def test_web_searcher_maps_results():
@@ -46,7 +109,7 @@ def test_web_searcher_maps_results():
             {"url": "https://example.com/a", "name": "A", "snippet": "Snippet", "dateLastCrawled": "2025-01-02T00:00:00Z"}
         ]}})
 
-    hits = WebSearcher("https://bing.example", "key", transport=httpx.MockTransport(handler)).search("query", 1)
+    hits = WebSearcher("https://bing.example", "key", transport=httpx.MockTransport(handler), resolver=PUBLIC_RESOLVER).search("query", 1)
     assert hits[0].url == "https://example.com/a"
     assert hits[0].title == "A"
     assert hits[0].snippet == "Snippet"

@@ -77,3 +77,61 @@ Diagnostics were also run on each changed production module. `search.py`, `chunk
 - `PageFetcher` enforces the configured limit after the HTTP response has been received. This bounds retained/parsed content but is not a streaming network-level download cap; a future hardening pass could use streaming reads.
 - Web search is implemented against the Bing Web Search v7-compatible response shape. If the deployment uses a different provider, its endpoint/field mapping should be configured or adapted.
 - The analyzer still reports the existing `AuditVerdict.status` diagnostic; it is unrelated to Task 5 and does not affect the pytest suite.
+
+## Review-fix report — 2026-09-02
+
+### Findings fixed
+
+1. Disabled automatic redirects in `PageFetcher`; each `Location` target is resolved and validated before following, with a configurable redirect limit.
+2. Added DNS resolution checks for every URL host, rejecting IPv4/IPv6 private, loopback, link-local, reserved, unspecified, and unresolved destinations. The practical limitation is documented in `web.py`: a standard httpx transport can resolve again after preflight, leaving a theoretical DNS rebinding/TOCTOU window; eliminating it requires a custom pinned-address transport with correct TLS SNI/certificate handling.
+3. Corrected Azure AI Search hybrid payload from `search_text` to `search`, with an exact decoded JSON assertion.
+4. Added early `Content-Length` rejection and incremental streaming byte accounting, avoiding response buffering beyond the configured limit.
+5. Replaced the fake live assertion with an opt-in smoke test that creates a UUID-suffixed index, upserts a vector document, performs hybrid retrieval with entity/source filters, verifies the document, and deletes the index in `finally`.
+6. Reworked oversized paragraph splitting into lossless overlapping windows and added a regression test that checks every source token survives.
+7. Validated the configured web search endpoint at construction and validated/skipped insecure or unsafe result URLs before they enter the fetch pipeline.
+8. Added focused redirect, redirect-limit, DNS/private-resolution, streaming-size, early Content-Length, and malformed-date tests.
+
+### Fix TDD and verification output
+
+RED reproduction:
+
+```text
+...F............s                                                                            [100%]
+1 failed, 15 passed, 1 skipped in 0.13s
+```
+
+The failure was the expected pre-fix redirect test: the old implementation followed the private redirect through automatic httpx redirects.
+
+Focused final command:
+
+```text
+.venv/bin/pytest -q tests/unit/test_web.py tests/unit/test_chunking.py tests/unit/test_search.py tests/unit/test_ingest.py tests/integration/test_azure_search.py
+```
+
+Output:
+
+```text
+..................s                                                                          [100%]
+18 passed, 1 skipped in 0.10s
+```
+
+Full final command:
+
+```text
+.venv/bin/pytest -q
+```
+
+Output:
+
+```text
+s.............................................................                               [100%]
+61 passed, 1 skipped in 0.15s
+```
+
+`git diff --check` completed without output. Changed production modules have no diagnostics after the import cleanup; the existing unrelated `AuditVerdict.status` analyzer diagnostic remains documented above.
+
+### Fix concerns
+
+- The live test is real and cleanup-safe, but it was not run here because no Azure credentials were available; default CI remains credential-free and skips it.
+- DNS preflight substantially reduces SSRF/rebinding risk but cannot fully pin the address with the current standard httpx transport abstraction. The limitation is documented in code and this report.
+- Search result URLs that fail safety validation are skipped rather than fetched; callers should monitor skipped-result counts if provider data quality matters.
