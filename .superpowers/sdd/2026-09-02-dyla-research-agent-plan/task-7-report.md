@@ -34,3 +34,27 @@ No `ToolRegistry` or scoped-context code was changed. The parked load-bearing co
 
 - The comparator contract is intentionally small (`compare(claim, documents)`) and supports a deterministic local fallback; production deployments should inject a separately configured judge/model implementation if semantic comparison beyond exact normalized text is required.
 - A timed-out fetch/comparison worker may continue running in the background because cleanup is non-blocking; the caller is not blocked past the configured stage timeout, but injected adapters should be cancellation-safe.
+
+## Review-fix report (2026-09-03)
+
+### Changes
+
+- `QualityGate` now rejects duplicate analyst claim IDs, duplicate verdict IDs, missing verdict coverage, and orphan verdicts without allowing map replacement to hide the duplicate.
+- Trace validation now parses every JSONL line as `RunEvent`, checks the requested `run_id` when supplied, and rejects malformed or unknown events. Legitimate runtime, planner, auditor, orchestrator, and quality events are accepted.
+- `AuditorAgent` now exposes `audit_state` with explicit `complete`, `partial`, or `failed` status and failure messages for persistence, warning persistence, tracing, and auditor-stage failures.
+- Auditor failures preserve verdicts already produced before a later claim fails. The orchestrator forwards audit and persistence/tracing failures into the returned `QualityResult` while preserving the original analyst answer.
+
+### Regression coverage
+
+Added tests for duplicate/incomplete verdict coverage, duplicate claim IDs, run-bound and schema/event-aware trace validation, persistence/tracing failure state, and partial verdict preservation after a later auditor failure.
+
+### Verification
+
+- Focused: `.venv/bin/pytest -q tests/unit/test_auditor.py tests/unit/test_reliability.py tests/unit/test_orchestrator.py` — 19 passed.
+- Full: `.venv/bin/pytest -q` — 117 passed, 1 skipped.
+- Compilation: `.venv/bin/python -m compileall -q src` — passed.
+
+### Concerns
+
+- Trace event validation uses the repository’s current event vocabulary; adding a new producer event requires adding it to the quality-gate allowlist.
+- Adapter exceptions remain intentionally broad at external boundaries, but they are now surfaced in audit/quality state rather than silently discarded.

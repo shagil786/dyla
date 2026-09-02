@@ -37,6 +37,7 @@ class RunOrchestrator:
         self.trace_writer = trace_writer
         self.quality_gate = quality_gate or QualityGate()
         self.run_id_factory = run_id_factory or (lambda: uuid.uuid4().hex)
+        self._run_issues: list[str] = []
 
     async def ask(self, question: str) -> RunResult:
         if not question.strip():
@@ -44,16 +45,25 @@ class RunOrchestrator:
         started = time.monotonic()
         baseline = self._snapshot_metrics()
         run_id = str(self.run_id_factory())
+        self._run_issues = []
         self.memory.initialize()
         answer = await self.analyst.run(question, run_id)
         verdicts = await asyncio.to_thread(self.auditor.run, answer, run_id)
         for claim in answer.claims:
             verdict = next((item for item in verdicts if item.claim_id == claim.id), None)
-            self.memory.save_claim(claim, verdict)
+            try:
+                self.memory.save_claim(claim, verdict)
+            except Exception as exc:
+                self._run_issues.append(f"{run_id}: {claim.id}: memory persistence failed: {exc}")
         self._trace(run_id, "memory_saved", {"claims": len(answer.claims)})
         trace_path = self._trace_path(run_id)
-        quality = self.quality_gate.validate(answer, verdicts, trace_path)
-        self._trace(run_id, "quality_completed", {"status": quality.status, "issues": quality.issues})
+        audit_state = getattr(self.auditor, "audit_state", None)
+        audit_issues = list(getattr(audit_state, "issues", [])) + self._run_issues
+        quality = self.quality_gate.validate(
+            answer, verdicts, trace_path, run_id=run_id, audit_issues=audit_issues,
+        )
+        if not self._trace(run_id, "quality_completed", {"status": quality.status, "issues": quality.issues}):
+            quality = QualityResult("incomplete", sorted({*quality.issues, *self._run_issues}))
         metrics = self._aggregate_metrics(started, baseline)
         return RunResult(run_id, answer, verdicts, quality, metrics, trace_path)
 
@@ -90,12 +100,17 @@ class RunOrchestrator:
             memory_hits=int(totals["memory_hits"]), parallel_calls=int(totals["parallel_calls"]),
         )
 
-    def _trace(self, run_id: str, event: str, payload: dict[str, Any]) -> None:
-        self.trace_writer.append(RunEvent(
-            run_id=run_id, component="orchestrator", event=event,
-            payload=payload, timestamp=datetime.now(UTC),
-            duration_ms=None, error=None,
-        ))
+    def _trace(self, run_id: str, event: str, payload: dict[str, Any]) -> bool:
+        try:
+            self.trace_writer.append(RunEvent(
+                run_id=run_id, component="orchestrator", event=event,
+                payload=payload, timestamp=datetime.now(UTC),
+                duration_ms=None, error=None,
+            ))
+        except Exception as exc:
+            self._run_issues.append(f"{run_id}: {event} tracing failed: {exc}")
+            return False
+        return True
 
     def _trace_path(self, run_id: str) -> Path:
         root = Path(getattr(self.trace_writer, "root", "."))

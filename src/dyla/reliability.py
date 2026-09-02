@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .domain import AnalystAnswer, AuditVerdict
+from .domain import AnalystAnswer, AuditVerdict, RunEvent
 
 
 @dataclass(frozen=True)
@@ -20,11 +21,17 @@ class QualityGate:
 
     def validate(
         self, answer: AnalystAnswer, verdicts: list[AuditVerdict], trace_path: Path,
+        *, run_id: str | None = None, audit_issues: list[str] | None = None,
     ) -> QualityResult:
+        issues: set[str] = set(audit_issues or [])
+        claim_ids = [claim.id for claim in answer.claims]
+        for claim_id in sorted({item for item in claim_ids if claim_ids.count(item) > 1}):
+            issues.add(f"answer contains duplicate claim id: {claim_id}")
         if not verdicts:
-            return QualityResult("unaudited", ["no audit verdicts were produced"])
+            issues.add("no audit verdicts were produced")
+            self._validate_trace(trace_path, run_id, issues)
+            return QualityResult("unaudited", sorted(issues))
 
-        issues: set[str] = set()
         by_id: dict[str, AuditVerdict] = {}
         for item in verdicts:
             if item.claim_id in by_id:
@@ -48,13 +55,37 @@ class QualityGate:
             if claim.citations and not _all_citations_retrieved(claim, verdict):
                 issues.add(f"claim {claim.id} has citations that were not retrieved")
 
+        claim_ids = {claim.id for claim in answer.claims}
         for verdict in verdicts:
-            if verdict.claim_id not in {claim.id for claim in answer.claims}:
+            if verdict.claim_id not in claim_ids:
                 issues.add(f"audit verdict has no matching claim: {verdict.claim_id}")
 
+        self._validate_trace(trace_path, run_id, issues)
+        return QualityResult("incomplete" if issues else "complete", sorted(issues))
+
+    @staticmethod
+    def _validate_trace(trace_path: Path, run_id: str | None, issues: set[str]) -> None:
         if not trace_path.is_file() or trace_path.stat().st_size == 0:
             issues.add("research trace was not saved")
-        return QualityResult("incomplete" if issues else "complete", sorted(issues))
+            return
+        valid_events = {
+            "started", "completed", "failed", "query_expanded", "source_fetched",
+            "source_fetch_failed", "claim_audited", "auditor_failed", "memory_saved",
+            "quality_completed",
+        }
+        try:
+            for line_number, line in enumerate(trace_path.read_text(encoding="utf-8").splitlines(), 1):
+                try:
+                    event = RunEvent.model_validate(json.loads(line))
+                except (ValueError, TypeError) as exc:
+                    issues.add(f"research trace has invalid event at line {line_number}: {exc}")
+                    continue
+                if run_id is not None and event.run_id != run_id:
+                    issues.add(f"research trace contains event for another run: {event.run_id}")
+                if event.event not in valid_events:
+                    issues.add(f"research trace has unknown event: {event.event}")
+        except OSError as exc:
+            issues.add(f"research trace could not be read: {exc}")
 
 
 def _all_citations_retrieved(claim: object, verdict: AuditVerdict) -> bool:

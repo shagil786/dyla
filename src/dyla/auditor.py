@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 from concurrent.futures import TimeoutError as FutureTimeout, ThreadPoolExecutor
-import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
+import re
 from typing import Any, Literal
 
 from .domain import AnalystAnswer, AuditVerdict, Citation, RunEvent
 from .ports import SearchProvider
 
 AuditStatus = Literal["supported", "unsupported", "contradicted", "uncited"]
+AuditRunStatus = Literal["complete", "partial", "failed"]
+
+
+@dataclass(frozen=True)
+class AuditState:
+    status: AuditRunStatus
+    issues: list[str]
 
 
 class AuditorAgent:
@@ -36,9 +44,11 @@ class AuditorAgent:
         self.timeout_seconds = timeout_seconds
         self.metrics = {"input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0, "duration_ms": 0,
                         "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0}
+        self.audit_state = AuditState("complete", [])
 
     def run(self, answer: AnalystAnswer, run_id: str) -> list[AuditVerdict]:
         verdicts: list[AuditVerdict] = []
+        issues: list[str] = []
         try:
             for claim in answer.claims:
                 if not claim.citations:
@@ -90,9 +100,12 @@ class AuditorAgent:
                 self._persist(claim, verdict, run_id)
                 self._trace(run_id, "claim_audited", {"claim_id": claim.id, "status": verdict.status})
         except Exception as exc:
+            message = f"{run_id}: auditor failed: {exc}"
+            issues.append(message)
             self._warning(run_id, None, f"auditor failed: {exc}")
             self._trace(run_id, "auditor_failed", {"error": str(exc)})
-            return []
+        issues = list(dict.fromkeys([*issues, *self.audit_state.issues]))
+        self.audit_state = AuditState("partial" if verdicts else ("failed" if issues else "complete"), issues)
         return verdicts
 
     def _fetch(self, url: str) -> Any:
@@ -126,12 +139,17 @@ class AuditorAgent:
             raise ValueError(f"invalid audit status: {status}")
         return status, str(explanation)
 
+    def _record_issue(self, issue: str) -> None:
+        self.audit_state = AuditState("partial", [*self.audit_state.issues, issue])
+
     def _persist(self, claim: Any, verdict: AuditVerdict, run_id: str) -> None:
         if self.memory is None:
             return
         try:
             self.memory.save_claim(claim, verdict)
         except Exception as exc:
+            message = f"{run_id}: {claim.id}: memory persistence failed: {exc}"
+            self._record_issue(message)
             self._warning(run_id, claim.id, f"memory persistence failed: {exc}")
 
     def _warning(self, run_id: str, claim_id: str | None, message: str) -> None:
@@ -139,8 +157,8 @@ class AuditorAgent:
             warning = f"{run_id}: {claim_id + ': ' if claim_id else ''}{message}"
             try:
                 self.memory.save_research_warning(warning)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._record_issue(f"{run_id}: warning persistence failed: {exc}")
 
     def _trace(self, run_id: str, event: str, payload: dict[str, Any]) -> None:
         if self.trace_writer is None:
@@ -150,8 +168,8 @@ class AuditorAgent:
                 run_id=run_id, timestamp=datetime.now(UTC), component="auditor",
                 event=event, payload=payload, duration_ms=None, error=None,
             ))
-        except Exception:
-            pass
+        except Exception as exc:
+            self._record_issue(f"{run_id}: {event} tracing failed: {exc}")
 
 
 def _unique_citations(citations: list[Citation]) -> list[Citation]:

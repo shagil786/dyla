@@ -101,6 +101,50 @@ def test_auditor_fetch_failure_is_a_deterministic_unsupported_verdict_and_warnin
     assert memory.warnings == ["run-3: failed: source fetch failed"]
 
 
+def test_auditor_preserves_partial_verdicts_and_reports_late_failure():
+    class BrokenComparator:
+        def compare(self, claim, documents):
+            if claim.id == "second":
+                raise RuntimeError("comparator down")
+            return "supported", "checked"
+
+    first = Claim(id="first", text="claim", citations=[citation()], confidence="high")
+    second = Claim(id="second", text="claim", citations=[citation("https://example.com/second")], confidence="high")
+    fetcher = FakeFetcher({
+        citation().url: Document(source_id="s1", url=citation().url, title="Source", text="source", published_at=None),
+        second.citations[0].url: Document(source_id="s2", url=second.citations[0].url, title="Source", text="source", published_at=None),
+    })
+
+    agent = AuditorAgent(fetcher=fetcher, comparator=BrokenComparator())
+    verdicts = agent.run(answer_with(first, second), "run-partial")
+
+    assert [item.claim_id for item in verdicts] == ["first"]
+    assert agent.audit_state.status == "partial"
+    assert agent.audit_state.issues == ["run-partial: auditor failed: comparator down"]
+
+
+def test_auditor_reports_persistence_and_trace_failures_in_audit_state():
+    class BrokenMemory(FakeMemory):
+        def save_claim(self, claim, verdict):
+            raise OSError("database down")
+
+    class BrokenTrace:
+        def append(self, event):
+            raise OSError("trace down")
+
+    claim = Claim(id="c1", text="claim", citations=[], confidence="high")
+    agent = AuditorAgent(fetcher=FakeFetcher(), memory=BrokenMemory(), trace_writer=BrokenTrace())
+
+    verdicts = agent.run(answer_with(claim), "run-failures")
+
+    assert len(verdicts) == 1
+    assert agent.audit_state.status == "partial"
+    assert agent.audit_state.issues == [
+        "run-failures: c1: memory persistence failed: database down",
+        "run-failures: claim_audited tracing failed: trace down",
+    ]
+
+
 def test_auditor_failure_persists_warning_and_returns_no_verdicts():
     class BrokenComparator:
         def compare(self, claim, documents):
