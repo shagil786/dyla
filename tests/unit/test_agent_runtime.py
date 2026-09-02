@@ -1,10 +1,12 @@
 import asyncio
+import time
 
 import pytest
 from pydantic import BaseModel
 
 from dyla.domain import AgentInput, AgentResult, Budget
 from dyla.agent_runtime import AgentRuntime, ToolRegistry
+from dyla.models import ModelResponse
 
 
 class Output(BaseModel):
@@ -35,6 +37,58 @@ def test_runtime_rejects_budget_before_running_agent():
         ))
 
 
+def test_async_callable_object_is_a_valid_tool():
+    class Tool:
+        async def __call__(self, value):
+            return value + 1
+
+    registry = ToolRegistry()
+    registry.register("callable", Tool())
+    assert asyncio.run(registry.invoke("callable", 2)) == 3
+
+
+def test_runtime_enforces_model_and_web_budgets_during_calls_not_final_metrics():
+    class Model:
+        def complete(self, request):
+            return ModelResponse(text="ok", parsed=Output(value="ok"), input_tokens=4, output_tokens=4, estimated_cost=0.6, latency_ms=0)
+
+    async def fetch():
+        return "page"
+
+    registry = ToolRegistry()
+    registry.register("web_fetch", fetch)
+
+    class Agent:
+        async def run(self, input, tools):
+            tools.model.complete(type("Request", (), {"max_tokens": 4})())
+            await tools.invoke("web_fetch")
+            await tools.invoke("web_fetch")
+            return AgentResult(data=Output(value="ok"), metrics={})
+
+    with pytest.raises(ValueError, match="budget"):
+        asyncio.run(AgentRuntime(model=Model(), tools=registry).run(
+            Agent(), AgentInput(question="Q", context={}),
+            Budget(deadline_seconds=1, max_model_tokens=5, max_cost=1, max_web_requests=1),
+        ))
+
+
+def test_runtime_traces_query_expansion_with_run_id():
+    events = []
+    class Writer:
+        def append(self, event):
+            events.append(event)
+
+    class Agent:
+        async def run(self, input, tools):
+            return AgentResult(data=Output(value="ok"), metrics={})
+
+    asyncio.run(AgentRuntime(trace_writer=Writer()).run(
+        Agent(), AgentInput(question="Q", context={"run_id": "trace-7"}),
+        Budget(deadline_seconds=1, max_model_tokens=5, max_cost=1, max_web_requests=1),
+    ))
+    assert {event.run_id for event in events} == {"trace-7"}
+
+
 def test_runtime_validates_agent_result_and_tracks_metrics():
     class Agent:
         async def run(self, input, tools):
@@ -45,4 +99,4 @@ def test_runtime_validates_agent_result_and_tracks_metrics():
         Budget(deadline_seconds=1, max_model_tokens=10, max_cost=1, max_web_requests=1),
     ))
     assert result.data.value == "Q"
-    assert result.metrics["model_tokens"] == 2
+    assert result.metrics["model_tokens"] == 0

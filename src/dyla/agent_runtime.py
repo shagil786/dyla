@@ -11,16 +11,60 @@ from typing import Any, Protocol
 
 from .domain import AgentInput, AgentResult, Budget, RunEvent
 
-
 Handler = Callable[..., Awaitable[Any]]
+
+
+class BudgetLedger:
+    """Runtime-owned counters; agents cannot increase or replace these values."""
+
+    def __init__(self, budget: Budget) -> None:
+        self.budget = budget
+        self.model_tokens = 0
+        self.cost = 0.0
+        self.web_requests = 0
+
+    def before_model(self, max_tokens: int) -> None:
+        if max_tokens < 0 or self.model_tokens + max_tokens > self.budget.max_model_tokens:
+            raise ValueError("model token budget exceeded")
+
+    def after_model(self, input_tokens: int, output_tokens: int, cost: float) -> None:
+        self.model_tokens += input_tokens + output_tokens
+        self.cost += cost
+        if self.model_tokens > self.budget.max_model_tokens:
+            raise ValueError("model token budget exceeded")
+        if self.cost > self.budget.max_cost:
+            raise ValueError("cost budget exceeded")
+
+    def before_web_request(self) -> None:
+        if self.web_requests >= self.budget.max_web_requests:
+            raise ValueError("web request budget exceeded")
+        self.web_requests += 1
+
+
+class BudgetedModel:
+    def __init__(self, model: Any, ledger: BudgetLedger) -> None:
+        self._model, self._ledger = model, ledger
+
+    def complete(self, request: Any) -> Any:
+        self._ledger.before_model(int(getattr(request, "max_tokens", 0)))
+        response = self._model.complete(request)
+        self._ledger.after_model(
+            int(getattr(response, "input_tokens", 0)),
+            int(getattr(response, "output_tokens", 0)),
+            float(getattr(response, "estimated_cost", 0.0)),
+        )
+        return response
 
 
 class ToolRegistry:
     def __init__(self) -> None:
         self._handlers: dict[str, Handler] = {}
+        self.model: BudgetedModel | None = None
+        self.ledger: BudgetLedger | None = None
 
     def register(self, name: str, handler: Handler) -> None:
-        if not name.strip() or not callable(handler) or not inspect.iscoroutinefunction(handler):
+        callable_async = inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(getattr(handler, "__call__", None))
+        if not name.strip() or not callable(handler) or not callable_async:
             raise ValueError("tool name and async handler are required")
         if name in self._handlers:
             raise ValueError(f"tool already registered: {name}")
@@ -33,7 +77,10 @@ class ToolRegistry:
             raise KeyError(f"unknown tool: {name}") from exc
 
     async def invoke(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        return await self.get(name)(*args, **kwargs)
+        if self.ledger is not None and any(token in name.casefold() for token in ("web", "search", "fetch", "http")):
+            self.ledger.before_web_request()
+        result = self.get(name)(*args, **kwargs)
+        return await result
 
     def names(self) -> tuple[str, ...]:
         return tuple(self._handlers)
@@ -44,12 +91,17 @@ class Agent(Protocol):
 
 
 class AgentRuntime:
-    def __init__(self, *, tools: ToolRegistry | None = None, trace_writer: Any | None = None) -> None:
+    def __init__(self, *, model: Any | None = None, tools: ToolRegistry | None = None, trace_writer: Any | None = None) -> None:
         self.tools = tools or ToolRegistry()
+        self.model = model
         self.trace_writer = trace_writer
 
     async def run(self, agent: Agent, input: AgentInput, budget: Budget) -> AgentResult:
         self._validate_budget(budget)
+        ledger = BudgetLedger(budget)
+        self.tools.ledger = ledger
+        if self.model is not None:
+            self.tools.model = BudgetedModel(self.model, ledger)
         started = time.monotonic()
         self._trace(input, "started", {"tools": self.tools.names()})
         try:
@@ -57,15 +109,7 @@ class AgentRuntime:
             if not isinstance(result, AgentResult):
                 raise TypeError("agent must return AgentResult")
             metrics = dict(result.metrics)
-            tokens = int(metrics.get("model_tokens", metrics.get("output_tokens", 0)))
-            cost = float(metrics.get("cost", metrics.get("estimated_cost", 0.0)))
-            web_requests = int(metrics.get("web_requests", metrics.get("fetches", 0)))
-            if tokens > budget.max_model_tokens:
-                raise ValueError("model token budget exceeded")
-            if cost > budget.max_cost:
-                raise ValueError("cost budget exceeded")
-            if web_requests > budget.max_web_requests:
-                raise ValueError("web request budget exceeded")
+            metrics.update({"model_tokens": ledger.model_tokens, "cost": ledger.cost, "web_requests": ledger.web_requests})
             metrics.setdefault("duration_ms", int((time.monotonic() - started) * 1000))
             self._trace(input, "completed", metrics)
             return AgentResult(data=result.data, metrics=metrics)
@@ -75,6 +119,8 @@ class AgentRuntime:
         except Exception as exc:
             self._trace(input, "failed", {"error": str(exc)})
             raise
+        finally:
+            self.tools.ledger = None
 
     @staticmethod
     def _validate_budget(budget: Budget) -> None:
