@@ -7,12 +7,13 @@ import inspect
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from .domain import AgentInput, AgentResult, Budget, RunEvent
 
 Handler = Callable[..., Awaitable[Any]]
 ToolCategory = Literal["generic", "web"]
+_MISSING_CATEGORY = object()
 
 
 class BudgetLedger:
@@ -63,13 +64,21 @@ class ToolRegistry:
         self.model: BudgetedModel | None = None
         self.ledger: BudgetLedger | None = None
 
-    def register(self, name: str, handler: Handler, *, category: ToolCategory = "generic") -> None:
+    def register(
+        self,
+        name: str,
+        handler: Handler,
+        *,
+        category: ToolCategory | object = _MISSING_CATEGORY,
+    ) -> None:
         callable_async = callable(handler) and (inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(handler.__call__))
         if not name.strip() or not callable_async:
             raise ValueError("tool name and async handler are required")
+        if category is _MISSING_CATEGORY or category not in ("generic", "web"):
+            raise ValueError("tool category must be explicitly generic or web")
         if name in self._handlers:
             raise ValueError(f"tool already registered: {name}")
-        self._handlers[name] = (handler, category)
+        self._handlers[name] = (handler, cast(ToolCategory, category))
 
     def has_unclassified(self) -> bool:
         return any(category == "generic" for _, category in self._handlers.values())

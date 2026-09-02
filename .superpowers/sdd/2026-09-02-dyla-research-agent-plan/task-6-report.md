@@ -173,3 +173,50 @@ Diagnostics after fixes:
 
 - Existing callers that use `ToolRegistry.register()` without a category can continue using the registry outside a budgeted run, but must specify `category="generic"` or `category="web"` appropriately before invoking `AgentRuntime`.
 - The runtime intentionally fails closed for any generic tool in a budgeted run because the existing registration contract cannot infer whether an unclassified handler performs web I/O.
+
+# Fourth review-fix report
+
+## Finding fixed
+
+`ToolRegistry.register()` now fails closed at registration: `category` must be explicitly set to the supported `"generic"` or `"web"` value. Omitted categories and unsupported values such as `"internal"` raise `ValueError`, so omission cannot be confused with explicit generic classification. Existing callers/tests were updated to use explicit categories.
+
+## Tests and exact output
+
+TDD red run before the runtime change:
+
+```text
+.venv/bin/pytest -q tests/unit/test_agent_runtime.py
+...FF......                                                                                  [100%]
+2 failed, 9 passed in 0.09s
+
+Failures:
+- test_tool_registry_rejects_invalid_category_at_registration: DID NOT RAISE
+- test_tool_registry_requires_explicit_category_at_registration: DID NOT RAISE
+```
+
+Focused suite after the fix:
+
+```text
+.venv/bin/pytest -q tests/unit/test_agent_runtime.py tests/unit/test_query_planner.py tests/unit/test_analyst.py
+......................                                                                       [100%]
+22 passed in 0.45s
+```
+
+Full suite after the fix:
+
+```text
+.venv/bin/pytest -q
+s........................................................................................... [ 98%]
+.                                                                                            [100%]
+92 passed, 1 skipped in 0.55s
+```
+
+Diagnostics:
+
+- `src/dyla/agent_runtime.py`: no errors or warnings.
+- The focused test file retains unrelated pre-existing diagnostics: import formatting, unused `time`, and a broad `BaseModel.value` type warning.
+
+## Files changed
+
+- `src/dyla/agent_runtime.py`
+- `tests/unit/test_agent_runtime.py`

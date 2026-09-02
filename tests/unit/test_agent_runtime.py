@@ -19,7 +19,7 @@ def test_tool_registry_registers_and_invokes_async_handlers():
     async def add(value):
         return value + 1
 
-    registry.register("add", add)
+    registry.register("add", add, category="generic")
     assert asyncio.run(registry.invoke("add", 2)) == 3
     with pytest.raises(ValueError):
         registry.register("add", add)
@@ -43,8 +43,47 @@ def test_async_callable_object_is_a_valid_tool():
             return value + 1
 
     registry = ToolRegistry()
-    registry.register("callable", Tool())
+    registry.register("callable", Tool(), category="generic")
     assert asyncio.run(registry.invoke("callable", 2)) == 3
+
+
+def test_tool_registry_rejects_invalid_category_at_registration():
+    registry = ToolRegistry()
+
+    async def tool():
+        return None
+
+    with pytest.raises(ValueError, match="category"):
+        registry.register("invalid", tool, category="internal")
+
+
+def test_tool_registry_requires_explicit_category_at_registration():
+    registry = ToolRegistry()
+
+    async def tool():
+        return None
+
+    with pytest.raises(ValueError, match="category"):
+        registry.register("omitted", tool)
+
+
+def test_runtime_rejects_explicit_generic_tools_before_agent_execution():
+    registry = ToolRegistry()
+
+    async def generic_tool():
+        return None
+
+    registry.register("generic", generic_tool, category="generic")
+
+    class Agent:
+        async def run(self, input, tools):
+            raise AssertionError("generic tools must not enter a budgeted run")
+
+    with pytest.raises(ValueError, match="category"):
+        asyncio.run(AgentRuntime(tools=registry).run(
+            Agent(), AgentInput(question="Q", context={}),
+            Budget(deadline_seconds=1, max_model_tokens=1, max_cost=0, max_web_requests=1),
+        ))
 
 
 def test_runtime_enforces_model_and_web_budgets_during_calls_not_final_metrics():
@@ -101,23 +140,24 @@ def test_concurrent_runs_have_independent_ledgers_and_direct_handler_calls_are_c
     assert registry.ledger is None
 
 
-def test_budgeted_run_rejects_unclassified_tools_before_agent_execution():
+def test_budgeted_run_allows_explicit_web_tools_and_accounts_for_them():
     registry = ToolRegistry()
 
     async def hidden_web_path():
         return "page"
 
-    registry.register("hidden", hidden_web_path)
+    registry.register("hidden", hidden_web_path, category="web")
 
     class Agent:
         async def run(self, input, tools):
-            raise AssertionError("unclassified tools must not enter a budgeted run")
+            await tools.invoke("hidden")
+            return AgentResult(data=Output(value="ok"), metrics={})
 
-    with pytest.raises(ValueError, match="category"):
-        asyncio.run(AgentRuntime(tools=registry).run(
-            Agent(), AgentInput(question="Q", context={}),
-            Budget(deadline_seconds=1, max_model_tokens=1, max_cost=0, max_web_requests=1),
-        ))
+    result = asyncio.run(AgentRuntime(tools=registry).run(
+        Agent(), AgentInput(question="Q", context={}),
+        Budget(deadline_seconds=1, max_model_tokens=1, max_cost=0, max_web_requests=1),
+    ))
+    assert result.metrics["web_requests"] == 1
 
 
 def test_runtime_traces_query_expansion_with_run_id():
