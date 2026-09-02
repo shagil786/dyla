@@ -216,6 +216,67 @@ Diagnostics:
 - `src/dyla/agent_runtime.py`: no errors or warnings.
 - The focused test file retains unrelated pre-existing diagnostics: import formatting, unused `time`, and a broad `BaseModel.value` type warning.
 
+# Fifth review-fix report
+
+## Finding fixed
+
+`ToolRegistry.scoped()` previously copied only handlers, so a scope created during a budgeted run lost the active ledger and its web-request guard. Scoped web-tool invocations could therefore bypass the per-run request budget. The public contract now preserves the active run ledger/model wrapper through further scopes, while each `AgentRuntime.run()` still owns a private ledger and clears its run-scoped wrappers during cleanup.
+
+The regression test invokes a scoped web tool under a zero-request budget and verifies rejection plus zero recorded requests; concurrent-run coverage continues to verify ledger isolation and template cleanup. Explicit tool-category validation remains unchanged.
+
+## Pre-fix reproduction
+
+```text
+.venv/bin/python - <<'PY' ...
+root_ledger=True scoped_ledger=False result=allowed
+```
+
+## Tests and exact output
+
+TDD red run before the runtime change:
+
+```text
+.venv/bin/pytest -q tests/unit/test_agent_runtime.py -k scoped_web_tool_preserves_active_budget_ledger
+F                                                                                            [100%]
+============================================= FAILURES =============================================
+_______________________ test_scoped_web_tool_preserves_active_budget_ledger ________________________
+
+E       Failed: DID NOT RAISE <class 'ValueError'>
+
+1 failed, 11 deselected in 0.06s
+```
+
+Focused suite after the fix:
+
+```text
+.venv/bin/pytest -q tests/unit/test_agent_runtime.py tests/unit/test_query_planner.py tests/unit/test_analyst.py
+.......................                                                                      [100%]
+23 passed in 0.37s
+```
+
+Full suite after the fix:
+
+```text
+.venv/bin/pytest -q
+s........................................................................................... [ 97%]
+..                                                                                           [100%]
+93 passed, 1 skipped in 0.54s
+```
+
+Diagnostics after the fix:
+
+- `src/dyla/agent_runtime.py`: no errors or warnings.
+
+## Files changed
+
+- `src/dyla/agent_runtime.py`
+- `tests/unit/test_agent_runtime.py`
+
+## Fifth review-fix concerns
+
+- A manually created scope outside a budgeted runtime has no ledger and remains unbudgeted by design; budget enforcement applies when the runtime injects its run-owned ledger.
+- Nested scopes share the active run wrappers intentionally, while concurrent runs receive distinct scoped registries and ledgers.
+
 ## Files changed
 
 - `src/dyla/agent_runtime.py`

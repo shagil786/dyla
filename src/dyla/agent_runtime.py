@@ -58,11 +58,32 @@ class BudgetedModel:
         return response
 
 
+class _RuntimeContext:
+    def __init__(self) -> None:
+        self.model: BudgetedModel | None = None
+        self.ledger: BudgetLedger | None = None
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self._handlers: dict[str, tuple[Handler, ToolCategory]] = {}
-        self.model: BudgetedModel | None = None
-        self.ledger: BudgetLedger | None = None
+        self._runtime_context = _RuntimeContext()
+
+    @property
+    def model(self) -> BudgetedModel | None:
+        return self._runtime_context.model
+
+    @model.setter
+    def model(self, value: BudgetedModel | None) -> None:
+        self._runtime_context.model = value
+
+    @property
+    def ledger(self) -> BudgetLedger | None:
+        return self._runtime_context.ledger
+
+    @ledger.setter
+    def ledger(self, value: BudgetLedger | None) -> None:
+        self._runtime_context.ledger = value
 
     def register(
         self,
@@ -86,6 +107,7 @@ class ToolRegistry:
     def scoped(self) -> ToolRegistry:
         scoped = ToolRegistry()
         scoped._handlers = self._handlers.copy()
+        scoped._runtime_context = self._runtime_context
         return scoped
 
     def get(self, name: str) -> Handler:

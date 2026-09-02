@@ -140,6 +140,40 @@ def test_concurrent_runs_have_independent_ledgers_and_direct_handler_calls_are_c
     assert registry.ledger is None
 
 
+def test_scoped_web_tool_preserves_active_budget_ledger():
+    registry = ToolRegistry()
+    calls = 0
+
+    async def fetch():
+        nonlocal calls
+        calls += 1
+        return "page"
+
+    registry.register("web_fetch", fetch, category="web")
+    nested_scope = None
+
+    class Agent:
+        async def run(self, input, tools):
+            nonlocal nested_scope
+            nested_scope = tools.scoped()
+            try:
+                await nested_scope.invoke("web_fetch")
+            except ValueError as exc:
+                return AgentResult(data=Output(value=str(exc)), metrics={})
+            raise AssertionError("zero-request budget must reject scoped web tool")
+
+    result = asyncio.run(AgentRuntime(tools=registry).run(
+        Agent(), AgentInput(question="Q", context={}),
+        Budget(deadline_seconds=1, max_model_tokens=1, max_cost=0, max_web_requests=0),
+    ))
+    assert result.data.value == "web request budget exceeded"
+    assert result.metrics["web_requests"] == 0
+    assert calls == 0
+    assert nested_scope is not None
+    assert nested_scope.ledger is None
+    assert nested_scope.model is None
+
+
 def test_budgeted_run_allows_explicit_web_tools_and_accounts_for_them():
     registry = ToolRegistry()
 
