@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     dyla_web_provider: str = "unconfigured"
     model_base_url: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_MODEL_BASE_URL", "MODEL_BASE_URL"))
     model_api_key: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_MODEL_API_KEY", "MODEL_API_KEY"))
-    model_name: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_MODEL", "MODEL_NAME"))
+    model_name: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_MODEL_NAME", "DYLA_MODEL", "MODEL_NAME"))
     auditor_base_url: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_AUDITOR_BASE_URL", "AUDITOR_BASE_URL"))
     auditor_api_key: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_AUDITOR_API_KEY", "AUDITOR_API_KEY"))
     auditor_model: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_AUDITOR_MODEL", "AUDITOR_MODEL"))
