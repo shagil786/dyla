@@ -36,6 +36,35 @@ def test_resolve_uses_deterministic_fuzzy_match(tmp_path):
     assert result.confidence > 0.5
 
 
+def test_resolve_considers_canonical_name_after_alias_is_added(tmp_path):
+    store, resolver = make_resolver(tmp_path)
+    entity_id = store.upsert_entity("International Business Machines", "organization")
+    store.add_alias(entity_id, "IBM", 0.9)
+
+    result = resolver.resolve("International Business Machin", "company context")
+
+    assert result.entity_id == entity_id
+    assert result.canonical_name == "International Business Machines"
+    assert result.status == "resolved"
+
+
+def test_resolver_rejects_invalid_fuzzy_configuration(tmp_path):
+    store, _ = make_resolver(tmp_path)
+
+    for kwargs in (
+        {"fuzzy_threshold": -0.1},
+        {"fuzzy_threshold": 1.1},
+        {"ambiguity_margin": -0.1},
+        {"ambiguity_margin": 1.1},
+    ):
+        try:
+            EntityResolver(store, **kwargs)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid configuration: {kwargs}")
+
+
 def test_resolve_reports_ambiguous_close_candidates(tmp_path):
     store, resolver = make_resolver(tmp_path)
     first_id = store.upsert_entity("Acme Labs", "organization")

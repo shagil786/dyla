@@ -101,6 +101,30 @@ def test_save_claim_persists_claim_verdict_sources_and_memory_record(tmp_path):
     assert store.connection.execute("SELECT COUNT(*) FROM audit_verdicts").fetchone()[0] == 1
 
 
+def test_research_warnings_can_be_saved_and_read_in_newest_first_order(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    store.initialize()
+
+    first_id = store.save_research_warning("First warning")
+    second_id = store.save_research_warning("Second warning")
+
+    assert second_id > first_id
+    assert store.read_research_warnings() == ["Second warning", "First warning"]
+    assert store.read_research_warnings(limit=1) == ["Second warning"]
+
+
+def test_research_warning_rejects_empty_text(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    store.initialize()
+
+    try:
+        store.save_research_warning("  ")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("empty research warning was accepted")
+
+
 def test_initialize_is_safe_to_call_more_than_once(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
 

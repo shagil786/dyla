@@ -132,11 +132,15 @@ class MemoryStore:
     def entity_candidates(self) -> list[sqlite3.Row]:
         return self.connection.execute(
             """
-            SELECT e.id, e.canonical_name, e.normalized_name,
-                   a.normalized_alias, COALESCE(a.confidence, 1.0) AS alias_confidence
+            SELECT e.id, e.canonical_name, e.normalized_name AS candidate,
+                   1.0 AS candidate_confidence
             FROM entities e
-            LEFT JOIN aliases a ON a.entity_id = e.id
-            ORDER BY e.id, a.normalized_alias
+            UNION ALL
+            SELECT e.id, e.canonical_name, a.normalized_alias AS candidate,
+                   a.confidence AS candidate_confidence
+            FROM entities e
+            JOIN aliases a ON a.entity_id = e.id
+            ORDER BY canonical_name COLLATE NOCASE, id, candidate
             """
         ).fetchall()
 
@@ -174,6 +178,26 @@ class MemoryStore:
             ),
         )
         self.connection.commit()
+
+    def save_research_warning(self, warning: str) -> int:
+        warning = warning.strip()
+        if not warning:
+            raise ValueError("warning must not be empty")
+        cursor = self.connection.execute(
+            "INSERT INTO research_warnings (warning) VALUES (?)", (warning,)
+        )
+        self.connection.commit()
+        if cursor.lastrowid is None:
+            raise RuntimeError("SQLite did not return a warning ID")
+        return int(cursor.lastrowid)
+
+    def read_research_warnings(self, limit: int = 50) -> list[str]:
+        if limit < 1:
+            return []
+        rows = self.connection.execute(
+            "SELECT warning FROM research_warnings ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [row["warning"] for row in rows]
 
     def search_memory(self, query: str, limit: int = 10) -> list[MemoryRecord]:
         if limit < 1:

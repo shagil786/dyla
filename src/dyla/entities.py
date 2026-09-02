@@ -26,6 +26,10 @@ class EntityResolver:
         fuzzy_threshold: float = 0.55,
         ambiguity_margin: float = 0.08,
     ) -> None:
+        if not 0.0 <= fuzzy_threshold <= 1.0:
+            raise ValueError("fuzzy_threshold must be between 0 and 1")
+        if not 0.0 <= ambiguity_margin <= 1.0:
+            raise ValueError("ambiguity_margin must be between 0 and 1")
         self.store = store
         self.fuzzy_threshold = fuzzy_threshold
         self.ambiguity_margin = ambiguity_margin
@@ -55,8 +59,8 @@ class EntityResolver:
 
         scores: dict[str, tuple[float, str, str]] = {}
         for row in self.store.entity_candidates():
-            candidate = row["normalized_alias"] or row["normalized_name"]
-            score = SequenceMatcher(None, normalized, candidate).ratio() * row["alias_confidence"]
+            candidate = row["candidate"]
+            score = SequenceMatcher(None, normalized, candidate).ratio() * row["candidate_confidence"]
             current = scores.get(row["id"])
             value = (score, row["canonical_name"], row["id"])
             if current is None or value[0] > current[0]:

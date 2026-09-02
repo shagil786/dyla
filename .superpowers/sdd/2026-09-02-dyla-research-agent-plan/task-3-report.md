@@ -114,3 +114,74 @@ Implemented Task 3 from `task-3-brief.md` using the existing domain models from 
 - The memory schema includes `research_warnings` as required, but Task 3 does not specify a public warning-write API; no extra API was invented.
 - The requested environment does not expose `pytest` or `python` on `PATH`; validation used `.venv/bin/pytest` successfully.
 - No real Azure credentials, network calls, or Azure Search dependencies were introduced.
+
+## Review-fix report — 2026-09-02
+
+### Findings addressed
+
+1. **Canonical fuzzy candidate loss:** `MemoryStore.entity_candidates()` now emits the canonical normalized name as its own candidate row for every entity, then emits aliases separately. `EntityResolver` scores every candidate and retains the highest score per entity, so adding an alias cannot hide a stronger canonical match.
+2. **Regression coverage:** Added `test_resolve_considers_canonical_name_after_alias_is_added`, which adds an `IBM` alias and verifies a near-canonical mention resolves to `International Business Machines`.
+3. **Research-warning API:** Added `MemoryStore.save_research_warning(warning: str) -> int` and `MemoryStore.read_research_warnings(limit: int = 50) -> list[str]`. Warnings are trimmed, empty values are rejected, IDs are returned for feedback-loop correlation, and reads return newest-first with a bounded limit. Added round-trip/order/limit and empty-warning tests.
+4. **Configuration validation:** `EntityResolver` now rejects `fuzzy_threshold` and `ambiguity_margin` values outside the inclusive `[0, 1]` range, with regression coverage for both lower and upper bounds.
+5. **Diagnostics correction:** Added an explicit `lastrowid is None` guard for the warning insert so static typing does not treat the returned warning ID as nullable.
+
+### Review-fix TDD history and exact verification
+
+- RED command:
+
+  ```text
+  .venv/bin/pytest tests/unit/test_memory.py tests/unit/test_entities.py -q
+  ```
+
+  Output:
+
+  ```text
+  4 failed, 9 passed in 0.13s
+  ```
+
+  The failures were the missing warning API, canonical candidate suppression, and missing resolver configuration validation.
+
+- Focused verification after fixes:
+
+  ```text
+  .venv/bin/pytest tests/unit/test_memory.py tests/unit/test_entities.py -q
+  ```
+
+  Output:
+
+  ```text
+  13 passed in 0.11s
+  ```
+
+- Full verification after fixes:
+
+  ```text
+  .venv/bin/pytest -q
+  ```
+
+  Output:
+
+  ```text
+  27 passed in 0.12s
+  ```
+
+- Diagnostics after fixes:
+
+  ```text
+  src/dyla/memory.py: File doesn't have errors or warnings!
+  src/dyla/entities.py: File doesn't have errors or warnings!
+  ```
+
+### Review-fix files changed
+
+- `src/dyla/memory.py`
+- `src/dyla/entities.py`
+- `tests/unit/test_memory.py`
+- `tests/unit/test_entities.py`
+- This report was appended to `.superpowers/sdd/2026-09-02-dyla-research-agent-plan/task-3-report.md`.
+
+### Remaining concerns
+
+- Warning reads return warning text only; the current brief does not require exposing warning IDs or timestamps on read. The save return ID is available for future feedback-loop correlation.
+- `context` remains accepted but unused to preserve deterministic resolution semantics.
+- No Azure Search integration or credentials were introduced.
