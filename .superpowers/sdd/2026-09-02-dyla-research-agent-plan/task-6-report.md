@@ -138,3 +138,38 @@ Diagnostics after fixes:
 - A tool must be registered with `category="web"` to consume the web-request budget; unclassified tools are intentionally treated as generic rather than guessed from names.
 - Direct access to the original model object captured by arbitrary user code cannot be intercepted; the runtime-owned model boundary is `tools.model`, and agents must use that injected wrapper.
 - The shared `ResearchPlan.date_constraints` contract is still string-based; common non-year formats are surfaced as limitations rather than applied as potentially incorrect filters.
+
+# Third review-fix report
+
+## Findings fixed
+
+1. Budgeted runs now reject registries containing any unclassified (`generic`) tool before the agent starts. Web tools must use the explicit `category="web"` registration contract; no name heuristics are used.
+2. Analyst claims with zero citations are rejected before mapping/confidence checks. If all claims are empty or rejected, the answer is deterministically `Insufficient evidence.` and the model narrative is not preserved.
+
+## Tests and exact output
+
+Focused review-fix tests:
+
+```text
+.venv/bin/pytest -q tests/unit/test_agent_runtime.py tests/unit/test_query_planner.py tests/unit/test_analyst.py
+...................                                                                          [100%]
+19 passed in 0.40s
+```
+
+Full suite:
+
+```text
+.venv/bin/pytest -q
+s.........................................................................................   [100%]
+89 passed, 1 skipped in 0.55s
+```
+
+Diagnostics after fixes:
+
+- `src/dyla/agent_runtime.py`: no errors or warnings.
+- `src/dyla/analyst.py`: no errors or warnings.
+
+## Third review-fix concerns
+
+- Existing callers that use `ToolRegistry.register()` without a category can continue using the registry outside a budgeted run, but must specify `category="generic"` or `category="web"` appropriately before invoking `AgentRuntime`.
+- The runtime intentionally fails closed for any generic tool in a budgeted run because the existing registration contract cannot infer whether an unclassified handler performs web I/O.

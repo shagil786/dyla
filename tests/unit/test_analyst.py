@@ -128,6 +128,14 @@ def test_analyst_rejects_narrative_when_model_returns_no_supported_claims():
     assert answer.claims == []
 
 
+def test_analyst_rejects_high_confidence_uncited_claim():
+    model = type("Model", (), {"complete": lambda self, request: type("R", (), {"parsed": AnalystAnswer(answer="uncited narrative", claims=[Claim(id="c", text="unsupported", citations=[], confidence="high")], limitations=[])})()})()
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}], entities=[], date_constraints=[])
+    answer = asyncio.run(make_agent(model, plan).run("Q", "run-uncited"))
+    assert answer.answer == "Insufficient evidence."
+    assert answer.claims == []
+
+
 def test_analyst_reports_unsupported_non_year_date_constraint():
     plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}], entities=[], date_constraints=["March 2025"])
     answer = asyncio.run(make_agent(FakeModel(), plan, FakeIndex(evidence=[])).run("Q", "run-date"))

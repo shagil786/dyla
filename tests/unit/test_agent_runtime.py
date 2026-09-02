@@ -101,6 +101,25 @@ def test_concurrent_runs_have_independent_ledgers_and_direct_handler_calls_are_c
     assert registry.ledger is None
 
 
+def test_budgeted_run_rejects_unclassified_tools_before_agent_execution():
+    registry = ToolRegistry()
+
+    async def hidden_web_path():
+        return "page"
+
+    registry.register("hidden", hidden_web_path)
+
+    class Agent:
+        async def run(self, input, tools):
+            raise AssertionError("unclassified tools must not enter a budgeted run")
+
+    with pytest.raises(ValueError, match="category"):
+        asyncio.run(AgentRuntime(tools=registry).run(
+            Agent(), AgentInput(question="Q", context={}),
+            Budget(deadline_seconds=1, max_model_tokens=1, max_cost=0, max_web_requests=1),
+        ))
+
+
 def test_runtime_traces_query_expansion_with_run_id():
     events = []
     class Writer:

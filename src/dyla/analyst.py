@@ -93,6 +93,9 @@ class AnalystAgent:
         valid_claims = []
         limitations = list(answer.limitations)
         for claim in answer.claims:
+            if not claim.citations:
+                limitations.append(f"Claim {claim.id} was rejected because it had no citations.")
+                continue
             mapped = [citation for citation in claim.citations if self._citation_maps(citation, evidence_keys)]
             if len(mapped) != len(claim.citations):
                 limitations.append(f"Claim {claim.id} was rejected because a citation did not map to retrieved evidence.")

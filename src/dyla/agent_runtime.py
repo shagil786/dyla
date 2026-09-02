@@ -71,6 +71,9 @@ class ToolRegistry:
             raise ValueError(f"tool already registered: {name}")
         self._handlers[name] = (handler, category)
 
+    def has_unclassified(self) -> bool:
+        return any(category == "generic" for _, category in self._handlers.values())
+
     def scoped(self) -> ToolRegistry:
         scoped = ToolRegistry()
         scoped._handlers = self._handlers.copy()
@@ -108,6 +111,8 @@ class AgentRuntime:
 
     async def run(self, agent: Agent, input: AgentInput, budget: Budget) -> AgentResult:
         self._validate_budget(budget)
+        if self.tools.has_unclassified():
+            raise ValueError("tool category is required for a budgeted run")
         ledger = BudgetLedger(budget)
         tools = self.tools.scoped()
         tools.ledger = ledger
