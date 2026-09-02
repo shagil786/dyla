@@ -222,6 +222,7 @@ def test_load_settings_rejects_missing_secret(monkeypatch):
 
 **Files:**
 - Create: `src/dyla/ports.py`
+- Create: `src/dyla/provider_factory.py`
 - Modify: `src/dyla/web.py`
 - Modify: `src/dyla/config.py`
 - Modify: `src/dyla/analyst.py`
@@ -250,6 +251,8 @@ def test_load_settings_rejects_missing_secret(monkeypatch):
 - [x] **Step 8: Add provider settings and fake `.env.example` entries; document the provider-neutral decision and offline test contract.**
 - [x] **Step 9: Run the focused tests and then the full offline suite; append results to `.superpowers/sdd/2026-09-02-dyla-research-agent-plan/provider-adapter-report.md`.**
 - [x] **Step 10: Commit the completed provider-adapter slice.**
+
+Review follow-up: the provider factory is the composition boundary; all You API responses use the shared bounded request path, and the vector-store non-goal explicitly permits the neutral port plus Azure adapter.
 
 ### Task 9: Orchestrator and `dyla` CLI
 

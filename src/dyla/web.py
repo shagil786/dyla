@@ -99,36 +99,64 @@ class PageFetcher:
         self.resolver = resolver
         self.client = httpx.Client(transport=transport, timeout=timeout, follow_redirects=False)
 
-    def fetch(self, url: str) -> Document:
+    def _request_bytes(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        accepted_types: tuple[str, ...] = ("text/", "html", "xml"),
+    ) -> tuple[str, bytes, str | None, str]:
         current = validate_external_url(url, resolver=self.resolver)
+        request_params = params
         for redirect_count in range(self.max_redirects + 1):
-            with self.client.stream("GET", current) as response:
+            with self.client.stream(method, current, params=request_params, headers=headers) as response:
                 if response.is_redirect:
                     location = response.headers.get("location")
                     if not location:
                         raise ValueError("redirect response has no Location")
                     if redirect_count == self.max_redirects:
                         raise ValueError("maximum redirect count exceeded")
-                    current = validate_external_url(urljoin(current, location), resolver=self.resolver)
+                    current = validate_external_url(urljoin(str(response.url), location), resolver=self.resolver)
+                    request_params = None
                     continue
                 response.raise_for_status()
                 content_length = response.headers.get("content-length")
-                if content_length and int(content_length) > self.max_bytes:
-                    raise ValueError("response exceeds configured size limit")
+                if content_length:
+                    try:
+                        declared_length = int(content_length)
+                    except ValueError as exc:
+                        raise ValueError("invalid response size") from exc
+                    if declared_length > self.max_bytes:
+                        raise ValueError("response exceeds configured size limit")
                 content = bytearray()
                 for part in response.iter_bytes():
                     content.extend(part)
                     if len(content) > self.max_bytes:
                         raise ValueError("response exceeds configured size limit")
                 content_type = response.headers.get("content-type", "")
-                if content_type and not any(kind in content_type.lower() for kind in ("text/", "html", "xml")):
+                if content_type and not any(kind in content_type.lower() for kind in accepted_types):
                     raise ValueError("unsupported page content type")
-                parser = _TextParser()
-                parser.feed(bytes(content).decode(response.encoding or "utf-8", errors="replace"))
-                text = "\n".join(part for part in parser.parts if part)
-                title = parser.title or None
-                return Document(source_id=hashlib.sha256(current.encode("utf-8")).hexdigest(), url=current, title=title, text=text, published_at=None)
+                return str(response.url), bytes(content), response.encoding, content_type
         raise ValueError("maximum redirect count exceeded")
+
+    def request_json(self, url: str, *, params: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> object:
+        _, content, _, _ = self._request_bytes(
+            "GET", url, params=params, headers=headers, accepted_types=("application/json", "text/json", "text/"),
+        )
+        try:
+            return httpx.Response(200, content=content, headers={"content-type": "application/json; charset=utf-8"}).json()
+        except ValueError as exc:
+            raise ValueError("malformed JSON response") from exc
+
+    def fetch(self, url: str) -> Document:
+        final_url, content, encoding, _ = self._request_bytes("GET", url)
+        parser = _TextParser()
+        parser.feed(content.decode(encoding or "utf-8", errors="replace"))
+        text = "\n".join(part for part in parser.parts if part)
+        title = parser.title or None
+        return Document(source_id=hashlib.sha256(final_url.encode("utf-8")).hexdigest(), url=final_url, title=title, text=text, published_at=None)
 
     def close(self) -> None:
         self.client.close()
@@ -145,23 +173,19 @@ class YouResearchProvider:
         *,
         transport: httpx.BaseTransport | None = None,
         timeout: float = 20.0,
-        max_content_chars: int = 2_000_000,
+        max_bytes: int = 2_000_000,
+        max_redirects: int = 3,
         resolver: Resolver = _default_resolver,
     ) -> None:
         if not api_key:
             raise ValueError("You.com API key is required")
-        if max_content_chars < 1:
-            raise ValueError("max_content_chars must be positive")
         self.search_endpoint = validate_external_url(search_endpoint, resolver=resolver).rstrip("/")
         self.contents_endpoint = validate_external_url(contents_endpoint, resolver=resolver).rstrip("/")
         self.api_key = api_key
         self.resolver = resolver
-        self.max_content_chars = max_content_chars
-        self.client = httpx.Client(
-            transport=transport,
-            timeout=timeout,
-            follow_redirects=False,
-            headers={"X-API-Key": api_key, "Accept": "application/json"},
+        self.fetcher = PageFetcher(
+            transport=transport, timeout=timeout, max_bytes=max_bytes,
+            max_redirects=max_redirects, resolver=resolver,
         )
 
     def search(self, query: str, limit: int = 5) -> list[SearchHit]:
@@ -169,9 +193,10 @@ class YouResearchProvider:
             return []
         if limit < 1:
             raise ValueError("limit must be positive")
-        response = self.client.get(self.search_endpoint, params={"query": query, "count": limit})
-        response.raise_for_status()
-        payload = response.json()
+        payload = self.fetcher.request_json(
+            self.search_endpoint, params={"query": query, "count": str(limit)},
+            headers={"X-API-Key": self.api_key, "Accept": "application/json"},
+        )
         items = _search_items(payload)
         hits: list[SearchHit] = []
         for item in items[:limit]:
@@ -191,25 +216,27 @@ class YouResearchProvider:
 
     def fetch(self, url: str) -> Document:
         safe_url = validate_external_url(url, resolver=self.resolver)
-        response = self.client.get(self.contents_endpoint, params={"url": safe_url})
-        response.raise_for_status()
-        payload = response.json()
+        payload = self.fetcher.request_json(
+            self.contents_endpoint, params={"url": safe_url},
+            headers={"X-API-Key": self.api_key, "Accept": "application/json"},
+        )
         item = _contents_item(payload, safe_url)
         if item is None:
             raise ValueError("malformed contents response")
         text = item.get("content") or item.get("text") or item.get("contents")
         if not isinstance(text, str) or not text.strip():
             raise ValueError("malformed contents response")
-        if len(text) > self.max_content_chars:
-            raise ValueError("contents response exceeds configured size limit")
         returned_url = item.get("url", safe_url)
         if not isinstance(returned_url, str) or validate_external_url(returned_url, resolver=self.resolver) != safe_url:
             raise ValueError("contents response returned an unexpected URL")
+        parser = _TextParser()
+        parser.feed(text)
+        normalized_text = "\n".join(part for part in parser.parts if part) or text.strip()
         return Document(
             source_id=self._source_id(safe_url),
             url=safe_url,
-            title=_text(item.get("title")),
-            text=text,
+            title=_text(item.get("title")) or parser.title,
+            text=normalized_text,
             published_at=_parse_datetime(item.get("published_at") or item.get("published_date")),
         )
 
@@ -218,7 +245,7 @@ class YouResearchProvider:
         return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
     def close(self) -> None:
-        self.client.close()
+        self.fetcher.close()
 
 
 def _search_items(payload: object) -> list[object]:
@@ -250,9 +277,11 @@ def _contents_item(payload: object, requested_url: str) -> dict | None:
 
 
 def _snippet(value: object) -> str:
-    if isinstance(value, list):
-        return " ".join(str(part).strip() for part in value if str(part).strip())
-    return str(value or "")
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list) and all(isinstance(part, str) for part in value):
+        return " ".join(part.strip() for part in value if part.strip())
+    return ""
 
 
 def _text(value: object) -> str | None:

@@ -117,3 +117,56 @@ def test_url_validation_rejects_private_dns_and_non_https():
         validate_external_url("http://example.com", resolver=lambda host, port: PUBLIC_ADDRESSES)
     with pytest.raises(ValueError, match="non-public"):
         validate_external_url("https://example.com", resolver=lambda host, port: [(None, None, None, None, ("10.0.0.1", 443))])
+
+
+@pytest.mark.parametrize("address", ["10.0.0.1", "::1", "ff02::1"])
+def test_url_validation_rejects_private_ipv4_ipv6_and_multicast(address):
+    with pytest.raises(ValueError, match="non-public"):
+        validate_external_url("https://example.com", resolver=lambda host, port: [(None, None, None, None, (address, 443))])
+
+
+def provider_for(handler, **kwargs):
+    return YouResearchProvider(
+        "https://api.example.com/search", "https://api.example.com/contents", "fake-you-key",
+        transport=httpx.MockTransport(handler), resolver=lambda host, port: PUBLIC_ADDRESSES, **kwargs,
+    )
+
+
+def test_you_contents_reuses_content_length_and_streaming_byte_limits():
+    provider = provider_for(
+        lambda request: httpx.Response(200, headers={"content-type": "application/json", "content-length": "1000"}, json={}),
+        max_bytes=10,
+    )
+    with pytest.raises(ValueError, match="size limit"):
+        provider.fetch("https://example.com/article")
+
+    provider = provider_for(
+        lambda request: httpx.Response(200, headers={"content-type": "application/json"}, content=b"{" + b"x" * 100 + b"}"),
+        max_bytes=10,
+    )
+    with pytest.raises(ValueError, match="size limit"):
+        provider.fetch("https://example.com/article")
+
+
+def test_you_contents_rejects_unsupported_content_type():
+    provider = provider_for(lambda request: httpx.Response(200, headers={"content-type": "application/pdf"}, content=b"pdf"))
+    with pytest.raises(ValueError, match="unsupported"):
+        provider.fetch("https://example.com/article")
+
+
+def test_you_contents_enforces_redirect_limit_and_normalizes_html_content():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url)
+        return httpx.Response(302, headers={"location": "https://api.example.com/contents?again=1"})
+
+    provider = provider_for(handler, max_redirects=1)
+    with pytest.raises(ValueError, match="maximum redirect"):
+        provider.fetch("https://example.com/article")
+    assert len(calls) == 2
+
+
+def test_you_provider_rejects_structured_snippets_instead_of_stringifying_them():
+    provider = provider_for(lambda request: httpx.Response(200, json={"results": {"web": [{"url": "https://example.com/article", "snippets": [{"text": "not a string"}]}]}}))
+    assert provider.search("query")[0].snippet == ""

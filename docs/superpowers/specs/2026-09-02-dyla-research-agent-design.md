@@ -269,7 +269,7 @@ To stay within the assignment time limit, the first version will not include:
 - Fine-tuning or model training
 - A general-purpose autonomous planning framework
 - Silent answer correction by the auditor
-- Multiple search indexes or a generic vector-database abstraction beyond Azure AI Search
+- Operating multiple vector-store backends in the first release; the core vector-store port and Azure AI Search adapter remain in scope so additional adapters can be added without core changes.
 
 ## Acceptance criteria
 
@@ -288,4 +288,4 @@ The project is ready for submission when:
 11. The core depends on neutral provider protocols; You.com is used only for search/page retrieval, and Azure AI Search remains an interchangeable vector-store adapter.
 12. Azure AI Search stores citation-preserving chunks with embeddings and supports hybrid retrieval.
 13. Query expansion is bounded, traced, deduplicated, and measured.
-13. Entity resolution records aliases, confidence, and unresolved ambiguities rather than silently merging entities.
+14. Entity resolution records aliases, confidence, and unresolved ambiguities rather than silently merging entities.
