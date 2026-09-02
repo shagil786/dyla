@@ -249,6 +249,35 @@ def test_malformed_chat_responses_raise_consistent_telemetry_error(body, expecte
     assert "super-secret-key" not in telemetry.error
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"data": []},
+        {"data": [{"index": 0}]},
+        {"data": [{"index": 0, "embedding": ["not-a-number"]}]},
+    ],
+)
+def test_malformed_embedding_responses_raise_consistent_telemetry_error(body):
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json=body)
+
+    model = AzureEmbeddingModel(settings(), transport=httpx.MockTransport(handler), model_name="embed-test")
+
+    with pytest.raises(ModelCallError, match="malformed embedding response") as caught:
+        model.embed(["chunk"])
+
+    telemetry = caught.value.telemetry
+    assert telemetry.deployment == "embedding-deployment"
+    assert telemetry.model == "embed-test"
+    assert telemetry.status_code == 200
+    assert telemetry.retry_count == 0
+    assert telemetry.input_tokens == telemetry.output_tokens == 0
+    assert telemetry.estimated_cost == 0
+    assert telemetry.latency_ms >= 0
+    assert "super-secret-key" not in str(caught.value)
+    assert "super-secret-key" not in telemetry.error
+
+
 def test_legacy_embedding_cache_schema_fails_with_clear_compatibility_error(tmp_path):
     database = tmp_path / "legacy.db"
     connection = sqlite3.connect(database)

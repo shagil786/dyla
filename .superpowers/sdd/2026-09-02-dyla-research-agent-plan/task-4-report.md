@@ -158,3 +158,57 @@ $ git --no-pager diff --check
 - Legacy content-only cache rows are not migrated because their embedding deployment/model namespace cannot be identified safely; initialization fails with an actionable compatibility error rather than risking incompatible vector reuse.
 - Malformed successful HTTP responses use status `200`, preserve retry count, and report zero token/cost values because no trustworthy usage data exists.
 - The adapter remains synchronous and retains the explicit `close()`/context-manager boundary from the prior fix.
+
+## Third review-fix report
+
+### Finding addressed
+
+- Wrapped embedding response ordering, vector-count validation, field access, and numeric conversion in the existing `ModelCallError` telemetry path. Empty data and malformed vector fields now report status, retry count, latency, deployment/model, pricing inputs, zero token/cost values, and redacted error text consistently with malformed chat responses.
+- Added fake-transport regression coverage for empty embedding data, missing vector fields, and wrong vector value types.
+- Preserved retry handling, namespaced cache keys, legacy schema compatibility errors, and explicit resource lifecycle methods.
+
+### TDD red evidence
+
+Before the production change, the new embedding tests failed with **3 failed, 13 passed** and exposed raw failures:
+
+```text
+RuntimeError: Azure embedding response did not match the requested batch
+KeyError: 'embedding'
+ValueError: could not convert string to float: 'not-a-number'
+```
+
+### Exact validation commands and output
+
+Focused embedding/review tests:
+
+```text
+$ .venv/bin/pytest -q tests/unit/test_azure_models.py
+................                                                                             [100%]
+16 passed in 0.08s
+```
+
+Full test suite:
+
+```text
+$ .venv/bin/pytest -q
+...........................................                                                  [100%]
+43 passed in 0.14s
+```
+
+Diagnostics:
+
+```text
+$ diagnostics src/dyla/azure_models.py
+File doesn't have errors or warnings!
+```
+
+Whitespace validation:
+
+```text
+$ git --no-pager diff --check
+```
+
+### Decisions and concerns
+
+- Embedding response-shape failures use HTTP status `200`, preserve the transport retry count, and report zero token/cost values because the response contains no trustworthy usage data.
+- The existing synchronous provider and explicit close/context-manager boundaries are unchanged.

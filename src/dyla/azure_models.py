@@ -321,14 +321,23 @@ class AzureEmbeddingModel:
                 result[index] = cached
         for start in range(0, len(missing), self.batch_size):
             batch = missing[start : start + self.batch_size]
-            data, _, _ = self._client.post(self.deployment, {"input": [text for _, text, _ in batch]})
-            vectors = sorted(data.get("data", []), key=lambda item: item["index"])
-            if len(vectors) != len(batch):
-                raise RuntimeError("Azure embedding response did not match the requested batch")
-            for (index, _, key), item in zip(batch, vectors):
-                vector = [float(value) for value in item["embedding"]]
-                result[index] = vector
-                self._write_cache(key, vector)
+            started = time.monotonic()
+            data, retry_count, status_code = self._client.post(
+                self.deployment, {"input": [text for _, text, _ in batch]}
+            )
+            try:
+                vectors = sorted(data.get("data", []), key=lambda item: item["index"])
+                if len(vectors) != len(batch):
+                    raise ValueError("response vector count did not match requested batch")
+                for (index, _, key), item in zip(batch, vectors):
+                    vector = [float(value) for value in item["embedding"]]
+                    result[index] = vector
+                    self._write_cache(key, vector)
+            except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
+                self._client._raise_failure(
+                    self.deployment, retry_count, status_code,
+                    f"malformed embedding response: {exc}", started
+                )
         return [vector for vector in result if vector is not None]
 
     def _cache_key(self, text: str) -> str:
