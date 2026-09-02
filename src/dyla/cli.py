@@ -87,6 +87,7 @@ def _print_result(result: RunResult, json_output: bool) -> None:
         "answer": result.answer.model_dump(mode="json"),
         "verdicts": [item.model_dump(mode="json") for item in result.verdicts],
         "quality": {"status": result.quality.status, "issues": result.quality.issues},
+        "metrics": result.metrics.model_dump(mode="json"),
         "trace_path": str(result.trace_path),
     }
     if json_output:

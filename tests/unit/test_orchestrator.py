@@ -158,6 +158,37 @@ def test_reused_orchestrator_reports_metrics_per_run(tmp_path):
     assert first.metrics.fetches == 2
 
 
+def test_reset_style_component_metrics_never_become_negative(tmp_path):
+    events = []
+
+    class ResetAnalyst(FakeAnalyst):
+        def __init__(self, events):
+            super().__init__(events)
+            self.metrics["input_tokens"] = 10
+
+        async def run(self, question, run_id):
+            self.metrics["input_tokens"] = 2
+            return await super().run(question, run_id)
+
+    class ResetAuditor(FakeAuditor):
+        def __init__(self, events):
+            super().__init__(events)
+            self.metrics = {"fetches": 5}
+
+        def run(self, answer, run_id):
+            self.metrics["fetches"] = 1
+            return super().run(answer, run_id)
+
+    result = asyncio.run(RunOrchestrator(
+        analyst=ResetAnalyst(events), auditor=ResetAuditor(events), memory=FakeMemory(events),
+        trace_writer=FakeTrace(tmp_path, events), quality_gate=None,
+    ).ask("question"))
+
+    assert result.metrics.input_tokens == 2
+    assert result.metrics.fetches == 1
+    assert all(value >= 0 for value in result.metrics.model_dump().values())
+
+
 def test_orchestrator_preserves_analyst_claims_when_audit_is_incomplete(tmp_path):
     events = []
     answer = AnalystAnswer(answer="original", claims=[], limitations=[])

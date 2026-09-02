@@ -97,4 +97,26 @@ The named brief describes the provider-adapter slice, which was already present 
 
 ### Concerns
 
-- Metric isolation relies on stage metrics being monotonic within a run; the concrete analyst/auditor counters follow that contract.
+- Metric isolation relies on stage metrics being monotonic within an individual run; the concrete analyst/auditor counters follow that contract.
+
+## Task 8 review-fix report (metric reset handling and ask JSON)
+
+### Fixes
+
+- Metric aggregation now handles counters that decrease because a component reset or supplied already-per-run values: it uses the current value in that case and clamps every contribution to zero, preventing negative `Metrics` fields.
+- `dyla ask --json` now includes the computed `RunResult.metrics` object alongside the answer, verdicts, quality, and trace path.
+
+### TDD evidence
+
+- Red: reset-style counters produced negative metrics, and the CLI JSON regression found the missing `metrics` field.
+- Green: both regressions and the existing CLI/orchestrator tests pass after the focused changes.
+
+### Verification
+
+- `.venv/bin/pytest tests/unit/test_orchestrator.py::test_reset_style_component_metrics_never_become_negative tests/unit/test_cli.py::test_ask_json_includes_computed_metrics tests/unit/test_cli.py tests/unit/test_orchestrator.py -q` — 13 passed.
+- `.venv/bin/pytest -q` — 112 passed, 1 skipped.
+- Final diagnostics are clean for changed production and test files; `git diff --check` passed.
+
+### Concerns
+
+- A decreasing counter is interpreted as a reset/per-run value rather than a negative delta; this intentionally favors nonnegative, useful telemetry over attributing a reset as work subtraction.

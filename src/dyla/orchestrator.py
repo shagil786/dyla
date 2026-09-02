@@ -78,7 +78,8 @@ class RunOrchestrator:
                 value = values.get(field, 0)
                 before = previous.get(field, 0)
                 if isinstance(value, (int, float)) and isinstance(before, (int, float)):
-                    totals[field] += value - before
+                    delta = value - before if value >= before else value
+                    totals[field] += max(0, delta)
         totals["duration_ms"] = max(
             int((time.monotonic() - started) * 1000), int(totals["duration_ms"])
         )

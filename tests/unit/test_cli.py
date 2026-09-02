@@ -5,11 +5,32 @@ from typer import BadParameter
 from typer.testing import CliRunner
 
 from dyla.cli import app
-from dyla.domain import AnalystAnswer
+from dyla.domain import AnalystAnswer, Metrics
+from dyla.orchestrator import RunResult
+from dyla.reliability import QualityResult
 
 
 def test_console_entry_point_is_importable():
     assert callable(app)
+
+
+def test_ask_json_includes_computed_metrics(monkeypatch, tmp_path):
+    answer = AnalystAnswer(answer="answer", claims=[], limitations=[])
+    metrics = Metrics(input_tokens=3, output_tokens=4, estimated_cost=0.5,
+                      duration_ms=8, searches=2, fetches=1, memory_hits=6, parallel_calls=1)
+
+    class Orchestrator:
+        async def ask(self, question):
+            return RunResult("run-1", answer, [], QualityResult("unaudited", []), metrics,
+                             tmp_path / "run-1.jsonl")
+
+    monkeypatch.setattr("dyla.cli.load_settings", lambda: object())
+    monkeypatch.setattr("dyla.cli._build_orchestrator", lambda settings: Orchestrator())
+
+    result = CliRunner().invoke(app, ["ask", "question", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["metrics"] == metrics.model_dump()
 
 
 def test_analyst_command_runs_only_the_analyst_stage(monkeypatch):
