@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables."""
 
+from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,4 +26,16 @@ class Settings(BaseSettings):
 def load_settings() -> Settings:
     """Load and validate settings from the environment and optional .env file."""
 
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as exc:
+        missing = [
+            str(error["loc"][0]).upper()
+            for error in exc.errors()
+            if error["type"] == "missing"
+        ]
+        if missing:
+            raise ValueError(
+                f"Missing required settings: {', '.join(missing)}"
+            ) from exc
+        raise

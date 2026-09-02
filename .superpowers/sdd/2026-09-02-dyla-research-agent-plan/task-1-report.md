@@ -73,3 +73,92 @@ A repository search for credential-like values found only fake/example labels an
 
 1. `pytest`, `pydantic`, and `pydantic-settings` are not installed in the current environment, and network access was not used to install them. The focused tests therefore remain unexecuted, and runtime validation of `Settings` requires installing the declared dependencies.
 2. The brief requires the console target `dyla.cli:app` but does not list `src/dyla/cli.py` among Task 1 files. The entry point declaration is present exactly as specified, but the target module will need to be supplied by this task or a subsequent CLI task before invoking the installed `dyla` command.
+
+---
+
+# Task 1 Review Fix Report — 2026-09-02
+
+## Findings addressed
+
+1. Added `src/dyla/cli.py` with the smallest functional `app()` stub. The declared `dyla = dyla.cli:app` target is now importable and executable; full commands remain deferred to Task 8.
+2. Installed the declared development dependencies in a project-local ignored `.venv`. The first system install attempt was blocked by PEP 668 (`externally-managed-environment`), so the local virtual environment was used instead.
+3. Strengthened `test_load_settings_rejects_missing_secret()` by setting the other seven required environment variables before deleting only `AZURE_OPENAI_API_KEY`.
+4. Expanded the happy-path test to assert all eight settings.
+5. Updated `load_settings()` to expose missing required environment names in uppercase, matching the required test contract while preserving non-missing validation errors.
+
+## Files changed in this fix
+
+- `src/dyla/cli.py`
+- `src/dyla/config.py`
+- `tests/unit/test_config.py`
+- `tests/unit/test_cli.py`
+- `.superpowers/sdd/2026-09-02-dyla-research-agent-plan/task-1-report.md`
+
+## Exact commands and outputs
+
+Dependency installation attempt:
+
+```text
+python3 -m pip install -e '.[dev]'
+```
+
+Output:
+
+```text
+error: externally-managed-environment
+```
+
+Successful project-local installation:
+
+```text
+python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'
+```
+
+Output (final result):
+
+```text
+Successfully built dyla
+Successfully installed annotated-types-0.8.0 dyla-0.1.0 iniconfig-2.3.0 packaging-26.3 pluggy-1.6.0 pydantic-2.13.5 pydantic-core-2.46.5 pydantic-settings-2.15.0 pygments-2.21.0 pytest-8.4.2 python-dotenv-1.2.3 typing-extensions-4.16.0 typing-inspection-0.4.4
+```
+
+Required focused tests:
+
+```text
+.venv/bin/pytest tests/unit/test_config.py -q
+```
+
+Output:
+
+```text
+..                                                                                           [100%]
+2 passed in 0.06s
+```
+
+Combined covering tests:
+
+```text
+.venv/bin/pytest tests/unit/test_config.py tests/unit/test_cli.py -q
+```
+
+Output:
+
+```text
+...                                                                                          [100%]
+3 passed in 0.04s
+```
+
+Installed entry-point import and execution:
+
+```text
+.venv/bin/python -c 'from dyla.cli import app; print(callable(app))' && .venv/bin/dyla
+```
+
+Output:
+
+```text
+True
+```
+
+## Current concerns
+
+None blocking Task 1 review findings. Full CLI commands remain intentionally deferred to Task 8.
