@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     azure_search_api_key: str | None = None
     azure_search_index: str | None = None
     azure_search_vector_dimensions: int = 1536
+    qdrant_url: str | None = None
+    qdrant_api_key: str | None = None
+    qdrant_collection: str = "dyla-evidence"
+    qdrant_vector_dimensions: int = 1536
     you_api_key: str | None = None
     you_search_endpoint: str = "https://ydc-index.io/v1/search"
     you_contents_endpoint: str = "https://ydc-index.io/v1/contents"

@@ -10,6 +10,7 @@ from .compatible import CompatibleEmbeddingProvider, CompatibleModelProvider, Lo
 from .config import Settings
 from .local_vector import LocalVectorStore
 from .ports import SearchProvider
+from .qdrant_vector import QdrantVectorStore
 from .search import SearchIndex
 from .web import Resolver, YouResearchProvider
 
@@ -79,7 +80,7 @@ def build_embedding_provider(settings: Settings, *, transport: httpx.BaseTranspo
     raise ValueError(f"unsupported embedding provider: {settings.dyla_embedding_provider}")
 
 
-def build_vector_store(settings: Settings, *, embedder=None, transport: httpx.BaseTransport | None = None):
+def build_vector_store(settings: Settings, *, embedder=None, transport: httpx.BaseTransport | None = None, qdrant_client=None):
     provider = settings.dyla_vector_store.casefold()
     if _is_plugin(provider):
         return load_plugin(settings.dyla_vector_store, settings, embedder=embedder, transport=transport)
@@ -89,8 +90,10 @@ def build_vector_store(settings: Settings, *, embedder=None, transport: httpx.Ba
         if not settings.azure_search_endpoint or not settings.azure_search_api_key or not settings.azure_search_index:
             raise ValueError("Azure vector store requires Azure Search endpoint, API key, and index")
         return SearchIndex(settings, embedder=embedder, transport=transport)
-    if provider in {"qdrant", "faiss"}:
-        raise ValueError(f"unsupported vector store: {provider} (optional adapter is not installed)")
+    if provider == "qdrant":
+        return QdrantVectorStore(settings, embedder=embedder, client=qdrant_client)
+    if provider == "faiss":
+        raise ValueError("unsupported vector store: faiss (use DYLA_VECTOR_STORE=local or a plugin)")
     raise ValueError(f"unsupported vector store: {settings.dyla_vector_store}")
 
 
