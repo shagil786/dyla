@@ -1,10 +1,11 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from typer import BadParameter
 from typer.testing import CliRunner
 
-from dyla.cli import app
+from dyla.cli import _build_orchestrator, app
 from dyla.domain import AnalystAnswer, Metrics
 from dyla.orchestrator import RunResult
 from dyla.reliability import QualityResult
@@ -49,6 +50,21 @@ def test_analyst_command_runs_only_the_analyst_stage(monkeypatch):
     assert result.exit_code == 0
     assert result.stdout.strip() == "analyst answer"
     assert [call[0] for call in calls] == ["analyst"]
+
+
+def test_build_orchestrator_wires_configured_auditor_timeout_and_retries(monkeypatch):
+    class Analyst:
+        fetcher = object()
+        memory = object()
+
+    monkeypatch.setattr("dyla.cli._build_analyst", lambda settings: Analyst())
+    monkeypatch.setattr("dyla.cli.build_auditor_provider", lambda settings: object())
+    settings = SimpleNamespace(auditor_timeout_seconds=123.5, auditor_retries=4)
+
+    orchestrator = _build_orchestrator(settings)
+
+    assert orchestrator.auditor.timeout_seconds == 123.5
+    assert orchestrator.auditor.retries == 4
 
 
 def test_audit_and_replay_accept_trace_artifacts_and_run_ids(tmp_path, monkeypatch):

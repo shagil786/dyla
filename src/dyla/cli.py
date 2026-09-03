@@ -54,7 +54,13 @@ def _build_orchestrator(settings: Settings) -> RunOrchestrator:
     analyst = _build_analyst(settings)
     return RunOrchestrator(
         analyst=analyst,
-        auditor=AuditorAgent(fetcher=analyst.fetcher, comparator=build_auditor_provider(settings), trace_writer=TraceWriter()),
+        auditor=AuditorAgent(
+            fetcher=analyst.fetcher,
+            comparator=build_auditor_provider(settings),
+            trace_writer=TraceWriter(),
+            retries=settings.auditor_retries,
+            timeout_seconds=settings.auditor_timeout_seconds,
+        ),
         memory=analyst.memory,
         trace_writer=TraceWriter(),
     )

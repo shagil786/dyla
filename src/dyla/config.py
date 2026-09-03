@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     auditor_api_key: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_AUDITOR_API_KEY", "AUDITOR_API_KEY"))
     auditor_model: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_AUDITOR_MODEL", "AUDITOR_MODEL"))
     auditor_extra_payload: dict[str, Any] | None = Field(default=None, validation_alias=AliasChoices("DYLA_AUDITOR_EXTRA_PAYLOAD", "AUDITOR_EXTRA_PAYLOAD"))
+    auditor_timeout_seconds: float = Field(default=10.0, validation_alias=AliasChoices("DYLA_AUDITOR_TIMEOUT_SECONDS", "AUDITOR_TIMEOUT_SECONDS"))
+    auditor_retries: int = Field(default=2, validation_alias=AliasChoices("DYLA_AUDITOR_RETRIES", "AUDITOR_RETRIES"))
     embedding_base_url: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_BASE_URL", "EMBEDDING_BASE_URL"))
     embedding_api_key: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_API_KEY", "EMBEDDING_API_KEY"))
     embedding_model: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_MODEL", "EMBEDDING_MODEL"))
@@ -72,6 +74,10 @@ class Settings(BaseSettings):
             raise ValueError("QDRANT_UPSERT_BATCH_SIZE must be positive")
         if self.qdrant_upsert_batch_bytes < 1:
             raise ValueError("QDRANT_UPSERT_BATCH_BYTES must be positive")
+        if self.auditor_timeout_seconds <= 0:
+            raise ValueError("DYLA_AUDITOR_TIMEOUT_SECONDS must be positive")
+        if self.auditor_retries < 0:
+            raise ValueError("DYLA_AUDITOR_RETRIES must be non-negative")
         return self
 
     model_config = SettingsConfigDict(
