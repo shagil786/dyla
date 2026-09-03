@@ -71,7 +71,14 @@ def build_embedding_provider(settings: Settings, *, transport: httpx.BaseTranspo
     if _is_plugin(provider):
         return load_plugin(settings.dyla_embedding_provider, settings, transport=transport)
     if provider == "compatible":
-        return CompatibleEmbeddingProvider(settings.embedding_base_url or "", settings.embedding_api_key or "", settings.embedding_model or "", transport=transport)
+        return CompatibleEmbeddingProvider(
+            settings.embedding_base_url or "",
+            settings.embedding_api_key or "",
+            settings.embedding_model or "",
+            transport=transport,
+            batch_size=settings.embedding_batch_size,
+            cache_path=cache_path,
+        )
     if provider == "azure":
         return AzureEmbeddingModel(settings, transport=transport, cache_path=cache_path)
     if provider == "local":

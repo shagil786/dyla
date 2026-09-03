@@ -1,8 +1,11 @@
 """OpenAI-compatible HTTP model and embedding adapters."""
 from __future__ import annotations
+import hashlib
 import json
+import sqlite3
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 import httpx
 from pydantic import ValidationError
@@ -88,24 +91,102 @@ class CompatibleModelProvider:
 
 
 class CompatibleEmbeddingProvider:
-    def __init__(self, base_url, api_key, model, *, transport=None, timeout=30.0, max_retries=3, sleeper=time.sleep):
+    def __init__(
+        self,
+        base_url,
+        api_key,
+        model,
+        *,
+        transport=None,
+        cache_path: str | Path | None = None,
+        batch_size: int = 256,
+        timeout=30.0,
+        max_retries=3,
+        sleeper=time.sleep,
+    ):
+        if not 1 <= batch_size <= 256:
+            raise ValueError("batch_size must be between 1 and 256")
         self.model = model
         self._client = _CompatibleClient(base_url, api_key, transport=transport, timeout=timeout, max_retries=max_retries, sleeper=sleeper)
+        self.batch_size = batch_size
+        self._cache: sqlite3.Connection | None = None
+        self._cache_namespace = hashlib.sha256(
+            json.dumps({"endpoint": self._client.base_url, "model": self.model}, sort_keys=True).encode()
+        ).hexdigest()
+        if cache_path is not None:
+            self._cache = sqlite3.connect(str(cache_path))
+            table = self._cache.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'embedding_cache'"
+            ).fetchone()
+            if table:
+                columns = {row[1] for row in self._cache.execute("PRAGMA table_info(embedding_cache)")}
+                if not {"cache_key", "embedding_json"} <= columns:
+                    self._cache.close()
+                    self._cache = None
+                    self._client.close()
+                    raise RuntimeError("embedding_cache schema is incompatible with namespaced embeddings")
+            else:
+                self._cache.execute(
+                    "CREATE TABLE embedding_cache (cache_key TEXT PRIMARY KEY, embedding_json TEXT NOT NULL)"
+                )
+            self._cache.commit()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        data, _, _ = self._client.post("embeddings", {"input": texts, "model": self.model}, operation="embedding", model=self.model)
-        try:
-            values = sorted(data["data"], key=lambda item: item["index"])
-            if len(values) != len(texts):
-                raise ValueError("response vector count did not match requested input count")
-            return [[float(value) for value in item["embedding"]] for item in values]
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            self._client._fail("embedding", self.model, 0, None, f"malformed embedding response: {exc}", time.monotonic())
-        raise AssertionError("unreachable")
+        result: list[list[float] | None] = [None] * len(texts)
+        missing: list[tuple[int, str, str]] = []
+        for index, text in enumerate(texts):
+            key = self._cache_key(text)
+            cached = self._read_cache(key)
+            if cached is None:
+                missing.append((index, text, key))
+            else:
+                result[index] = cached
+        for start in range(0, len(missing), self.batch_size):
+            batch = missing[start : start + self.batch_size]
+            data, _, _ = self._client.post(
+                "embeddings",
+                {"input": [text for _, text, _ in batch], "model": self.model},
+                operation="embedding",
+                model=self.model,
+            )
+            try:
+                values = sorted(data["data"], key=lambda item: item["index"])
+                if len(values) != len(batch):
+                    raise ValueError("response vector count did not match requested input count")
+                for (index, _, key), item in zip(batch, values):
+                    vector = [float(value) for value in item["embedding"]]
+                    result[index] = vector
+                    self._write_cache(key, vector)
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                self._client._fail("embedding", self.model, 0, None, f"malformed embedding response: {exc}", time.monotonic())
+        return [vector for vector in result if vector is not None]
+
+    def _cache_key(self, text: str) -> str:
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return f"{self._cache_namespace}:{content_hash}"
+
+    def _read_cache(self, key: str) -> list[float] | None:
+        if self._cache is None:
+            return None
+        row = self._cache.execute(
+            "SELECT embedding_json FROM embedding_cache WHERE cache_key = ?", (key,)
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def _write_cache(self, key: str, vector: list[float]) -> None:
+        if self._cache is None:
+            return
+        self._cache.execute(
+            "INSERT OR REPLACE INTO embedding_cache VALUES (?, ?)", (key, json.dumps(vector))
+        )
+        self._cache.commit()
 
     def close(self):
+        if self._cache is not None:
+            self._cache.close()
+            self._cache = None
         self._client.close()
 
 

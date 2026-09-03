@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     embedding_base_url: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_BASE_URL", "EMBEDDING_BASE_URL"))
     embedding_api_key: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_API_KEY", "EMBEDDING_API_KEY"))
     embedding_model: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_MODEL", "EMBEDDING_MODEL"))
+    embedding_batch_size: int = Field(default=256, validation_alias=AliasChoices("DYLA_EMBEDDING_BATCH_SIZE"))
     azure_openai_endpoint: str | None = None
     azure_openai_api_key: str | None = None
     azure_openai_api_version: str | None = None
@@ -40,6 +41,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_web_provider(self) -> "Settings":
+        if not 1 <= self.embedding_batch_size <= 256:
+            raise ValueError("DYLA_EMBEDDING_BATCH_SIZE must be between 1 and 256")
         provider = self.dyla_web_provider.casefold()
         if provider not in {"you", "unconfigured"}:
             raise ValueError("DYLA_WEB_PROVIDER must be 'you' or 'unconfigured'")

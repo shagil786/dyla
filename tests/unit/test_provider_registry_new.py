@@ -46,6 +46,7 @@ def test_settings_reads_provider_neutral_roles(monkeypatch):
     monkeypatch.setenv("EMBEDDING_BASE_URL", "https://embed.example/v1")
     monkeypatch.setenv("EMBEDDING_API_KEY", "fake-embed")
     monkeypatch.setenv("EMBEDDING_MODEL", "embed")
+    monkeypatch.setenv("DYLA_EMBEDDING_BATCH_SIZE", "128")
     monkeypatch.setenv("YOU_API_KEY", "fake-you")
 
     loaded = load_settings()
@@ -53,6 +54,7 @@ def test_settings_reads_provider_neutral_roles(monkeypatch):
     assert loaded.dyla_model_provider == "compatible"
     assert loaded.dyla_vector_store == "local"
     assert loaded.model_base_url == "https://model.example/v1"
+    assert loaded.embedding_batch_size == 128
 
 
 def test_normalize_compatible_endpoint_removes_known_operation_suffixes():
@@ -91,6 +93,69 @@ def test_compatible_embedding_posts_openai_shape():
         "https://host.example/v1", "fake-embed-key", "embed", transport=httpx.MockTransport(handler)
     )
     assert provider.embed(["one"]) == [[1.0, 2.0]]
+
+
+def test_compatible_embedding_batches_large_requests_in_input_order():
+    requests = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        requests.append(payload["input"])
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": index, "embedding": [float(text)]}
+                    for index, text in enumerate(payload["input"])
+                ]
+            },
+        )
+
+    provider = CompatibleEmbeddingProvider(
+        "https://host.example/v1", "fake-embed-key", "embed",
+        transport=httpx.MockTransport(handler), batch_size=256,
+    )
+    texts = [str(index) for index in range(257)]
+
+    assert provider.embed(texts) == [[float(index)] for index in range(257)]
+    assert [len(batch) for batch in requests] == [256, 1]
+    assert requests == [texts[:256], texts[256:]]
+
+
+def test_compatible_embedding_combines_cache_hits_and_results_with_model_namespace(tmp_path):
+    calls = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        calls.append(payload)
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": index, "embedding": [float(text)]}
+                    for index, text in enumerate(payload["input"])
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    cache_path = tmp_path / "embeddings.db"
+    first = CompatibleEmbeddingProvider(
+        "https://host.example/v1", "fake-embed-key", "embed",
+        transport=transport, cache_path=cache_path,
+    )
+    assert first.embed(["1"]) == [[1.0]]
+    assert first.embed(["0", "1", "2"]) == [[0.0], [1.0], [2.0]]
+    first.close()
+
+    second = CompatibleEmbeddingProvider(
+        "https://host.example/v1", "fake-embed-key", "other-model",
+        transport=transport, cache_path=cache_path,
+    )
+    assert second.embed(["1"]) == [[1.0]]
+    second.close()
+
+    assert [call["input"] for call in calls] == [["1"], ["0", "2"], ["1"]]
 
 
 def test_plugin_loader_imports_module_function():
