@@ -95,9 +95,22 @@ class AnalystAgent:
     def _synthesize(self, question: str, memories: list[MemoryRecord], evidence: list[Evidence], date_limitations: list[str]) -> AnalystAnswer:
         if not evidence:
             return AnalystAnswer(answer="Insufficient evidence.", claims=[], limitations=["No retrieved evidence was available.", *date_limitations])
-        context = "\n".join([*(f"Memory: {m.text}" for m in memories), *(f"Evidence: {e.text} ({e.url})" for e in evidence)])
+        evidence_context = "\n\n".join(
+            f"Evidence {index}:\n"
+            f"source_id: {item.source_id}\n"
+            f"chunk_id: {item.chunk_id}\n"
+            f"url: {item.url}\n"
+            f"title: {item.title}\n"
+            f"text: {item.text}"
+            for index, item in enumerate(evidence, start=1)
+        )
+        context = "\n".join([*(f"Memory: {m.text}" for m in memories), evidence_context])
         response = self.model.complete(ModelRequest(
-            messages=[{"role": "system", "content": "Answer using only supplied evidence. Return AnalystAnswer JSON."},
+            messages=[{"role": "system", "content": (
+                "Answer using only supplied evidence. Return AnalystAnswer JSON. "
+                "For every citation, copy source_id, chunk_id, URL, and title exactly "
+                "from one supplied evidence item; do not invent or alter citation metadata."
+            )},
                       {"role": "user", "content": f"Question: {question}\n{context}"}],
             response_schema=AnalystAnswer, max_tokens=1200, temperature=0,
         ))

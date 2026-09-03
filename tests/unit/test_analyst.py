@@ -102,6 +102,74 @@ def test_analyst_returns_insufficient_evidence_without_calling_model():
     assert answer.limitations == ["No retrieved evidence was available."]
 
 
+def test_analyst_synthesis_retains_citation_matching_supplied_metadata():
+    evidence = Evidence(
+        chunk_id="chunk-17", source_id="source-42", url="https://example.com/report",
+        title="Annual Report", text="Revenue increased.", score=0.9, entity_ids=[],
+    )
+
+    class Model:
+        def __init__(self):
+            self.request = None
+
+        def complete(self, request):
+            self.request = request
+            return type("R", (), {"parsed": AnalystAnswer(
+                answer="Revenue increased.",
+                claims=[Claim(
+                    id="c1", text="Revenue increased.",
+                    citations=[Citation(
+                        url="https://example.com/report", title="Annual Report",
+                        source_id="source-42", chunk_id="chunk-17",
+                    )], confidence="high",
+                )], limitations=[],
+            )})()
+
+    model = Model()
+    answer = make_agent(model, ResearchPlan(
+        original_question="Q", subqueries=[{"query": "Q"}], entities=[], date_constraints=[],
+    ))._synthesize("Q", [], [evidence], [])
+
+    assert model.request is not None
+    prompt = model.request.messages[1]["content"]
+    assert "source_id: source-42" in prompt
+    assert "chunk_id: chunk-17" in prompt
+    assert "url: https://example.com/report" in prompt
+    assert "title: Annual Report" in prompt
+    assert "text: Revenue increased." in prompt
+    assert answer.claims[0].citations[0] == Citation(
+        url="https://example.com/report", title="Annual Report",
+        source_id="source-42", chunk_id="chunk-17",
+    )
+
+
+def test_analyst_synthesis_rejects_citation_with_mismatched_supplied_metadata():
+    evidence = Evidence(
+        chunk_id="chunk-17", source_id="source-42", url="https://example.com/report",
+        title="Annual Report", text="Revenue increased.", score=0.9, entity_ids=[],
+    )
+    citation = Citation(
+        url="https://example.com/report", title="Annual Report",
+        source_id="invented-source", chunk_id="invented-chunk",
+    )
+
+    class Model:
+        def complete(self, request):
+            return type("R", (), {"parsed": AnalystAnswer(
+                answer="Fabricated.",
+                claims=[Claim(id="c1", text="Fabricated.", citations=[citation], confidence="high")],
+                limitations=[],
+            )})()
+
+    answer = make_agent(Model(), ResearchPlan(
+        original_question="Q", subqueries=[{"query": "Q"}], entities=[], date_constraints=[],
+    ))._synthesize("Q", [], [evidence], [])
+
+    assert answer.answer == "Insufficient evidence."
+    assert answer.claims == []
+    assert any("citation" in item.lower() for item in answer.limitations)
+
+
 def test_analyst_rejects_claims_with_unmapped_citations():
     citation = Citation(url="https://other", title="Other", source_id="other", chunk_id="x")
     model = type("Model", (), {"complete": lambda self, request: type("R", (), {"parsed": AnalystAnswer(answer="fabricated", claims=[Claim(id="c", text="bad", citations=[citation], confidence="high")], limitations=[])})()})()
