@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -64,22 +65,152 @@ class _CompatibleClient:
         self.client.close()
 
 
+def _parse_structured(text: str, schema: Any) -> Any:
+    try:
+        return schema.model_validate_json(text)
+    except ValidationError as exc:
+        failure = exc
+    for candidate in _json_candidates(text):
+        try:
+            return schema.model_validate(candidate)
+        except ValidationError as exc:
+            failure = exc
+    raise failure
+
+
+def _json_candidates(text: str) -> list[Any]:
+    candidates: list[Any] = []
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    if cleaned and cleaned != text.strip():
+        _try_parse_json(cleaned, candidates)
+    for block in re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL):
+        _try_parse_json(block.strip(), candidates)
+    if (repaired := _repair_truncated_json(cleaned or text)) is not None:
+        _try_parse_json(repaired, candidates)
+    for variant in _truncated_drop_variants(cleaned or text):
+        _try_parse_json(variant, candidates)
+    if (balanced := _balanced_object(text)) is not None:
+        _try_parse_json(balanced, candidates)
+    return candidates
+
+
+def _repair_truncated_json(text: str) -> str | None:
+    start = text.find("{")
+    if start == -1:
+        return None
+    snippet = text[start:].rstrip()
+    closers, in_string = _unclosed_closers(snippet)
+    repaired = snippet + ('"' if in_string else "")
+    if repaired.endswith(","):
+        repaired = repaired[:-1]
+    elif repaired.endswith(":"):
+        repaired += " null"
+    return repaired + "".join(reversed(closers))
+
+
+def _truncated_drop_variants(text: str) -> list[str]:
+    start = text.find("{")
+    if start == -1:
+        return []
+    snippet = text[start:].rstrip()
+    variants: list[str] = []
+    for dropped in range(1, 5):
+        cut = -1
+        seen = 0
+        for index in range(len(snippet) - 1, -1, -1):
+            if snippet[index] in ("}", "]"):
+                seen += 1
+                if seen == dropped:
+                    cut = index
+                    break
+        if cut == -1:
+            break
+        variant = snippet[:cut].rstrip()
+        if variant.endswith(","):
+            variant = variant[:-1]
+        closers, in_string = _unclosed_closers(variant)
+        variants.append(variant + ('"' if in_string else "") + "".join(reversed(closers)))
+    return variants
+
+
+def _unclosed_closers(snippet: str) -> tuple[list[str], bool]:
+    closers: list[str] = []
+    in_string = False
+    escaped = False
+    for char in snippet:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            closers.append("}")
+        elif char == "[":
+            closers.append("]")
+        elif char in ("}", "]") and closers and closers[-1] == char:
+            closers.pop()
+    return closers, in_string
+
+
+def _try_parse_json(raw: str, candidates: list[Any]) -> None:
+    try:
+        candidates.append(json.loads(raw))
+    except json.JSONDecodeError:
+        pass
+
+
+def _balanced_object(text: str) -> str | None:
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : index + 1]
+        start = text.find("{", start + 1)
+    return None
+
+
 class CompatibleModelProvider:
-    def __init__(self, base_url, api_key, model, *, transport=None, timeout=30.0, max_retries=3, sleeper=time.sleep):
+    def __init__(self, base_url, api_key, model, *, transport=None, timeout=30.0, max_retries=3, sleeper=time.sleep, extra_payload: dict[str, Any] | None = None):
         self.model = model
+        self.extra_payload = extra_payload or None
         self._client = _CompatibleClient(base_url, api_key, transport=transport, timeout=timeout, max_retries=max_retries, sleeper=sleeper)
 
     def complete(self, request: ModelRequest) -> ModelResponse:
         payload = {"messages": request.messages, "model": self.model, "max_tokens": request.max_tokens, "temperature": request.temperature}
         if request.response_schema is not None:
             payload["response_format"] = {"type": "json_schema", "json_schema": {"name": request.response_schema.__name__, "strict": True, "schema": request.response_schema.model_json_schema()}}
+        if self.extra_payload:
+            payload.update(self.extra_payload)
         started = time.monotonic()
         data, retry, status = self._client.post("chat/completions", payload, operation="model", model=self.model)
         try:
             text = data["choices"][0]["message"].get("content") or ""
             if isinstance(text, list):
                 text = "".join(part.get("text", "") for part in text)
-            parsed = request.response_schema.model_validate_json(text) if request.response_schema else None
+            parsed = _parse_structured(text, request.response_schema) if request.response_schema else None
             usage = data.get("usage") or {}
             input_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)))
             output_tokens = int(usage.get("completion_tokens", usage.get("output_tokens", 0)))

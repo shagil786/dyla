@@ -1,6 +1,8 @@
 """Application configuration loaded from environment variables."""
 
-from pydantic import AliasChoices, Field, ValidationError, model_validator
+from typing import Any
+
+from pydantic import AliasChoices, Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,9 +17,11 @@ class Settings(BaseSettings):
     model_base_url: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_MODEL_BASE_URL", "MODEL_BASE_URL"))
     model_api_key: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_MODEL_API_KEY", "MODEL_API_KEY"))
     model_name: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_MODEL_NAME", "DYLA_MODEL", "MODEL_NAME"))
+    model_extra_payload: dict[str, Any] | None = Field(default=None, validation_alias=AliasChoices("DYLA_MODEL_EXTRA_PAYLOAD", "MODEL_EXTRA_PAYLOAD"))
     auditor_base_url: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_AUDITOR_BASE_URL", "AUDITOR_BASE_URL"))
     auditor_api_key: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_AUDITOR_API_KEY", "AUDITOR_API_KEY"))
     auditor_model: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_AUDITOR_MODEL", "AUDITOR_MODEL"))
+    auditor_extra_payload: dict[str, Any] | None = Field(default=None, validation_alias=AliasChoices("DYLA_AUDITOR_EXTRA_PAYLOAD", "AUDITOR_EXTRA_PAYLOAD"))
     embedding_base_url: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_BASE_URL", "EMBEDDING_BASE_URL"))
     embedding_api_key: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_API_KEY", "EMBEDDING_API_KEY"))
     embedding_model: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_MODEL", "EMBEDDING_MODEL"))
@@ -40,6 +44,14 @@ class Settings(BaseSettings):
     you_api_key: str | None = None
     you_search_endpoint: str = "https://ydc-index.io/v1/search"
     you_contents_endpoint: str = "https://ydc-index.io/v1/contents"
+
+    @field_validator("model_extra_payload", "auditor_extra_payload", mode="before")
+    @classmethod
+    def blank_extra_payload_is_none(cls, value: Any) -> Any:
+        # An empty env var (e.g. DYLA_MODEL_EXTRA_PAYLOAD=) means "no change to payload".
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def validate_web_provider(self) -> "Settings":

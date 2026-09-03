@@ -44,7 +44,7 @@ def build_model_provider(settings: Settings, *, transport: httpx.BaseTransport |
     if _is_plugin(provider):
         return load_plugin(settings.dyla_model_provider, settings, transport=transport)
     if provider == "compatible":
-        return CompatibleModelProvider(settings.model_base_url or "", settings.model_api_key or "", settings.model_name or "", transport=transport)
+        return CompatibleModelProvider(settings.model_base_url or "", settings.model_api_key or "", settings.model_name or "", transport=transport, extra_payload=settings.model_extra_payload)
     if provider == "azure":
         return AzureChatModel(settings, transport=transport)
     if provider == "local":
@@ -60,7 +60,7 @@ def build_auditor_provider(settings: Settings, *, transport: httpx.BaseTransport
         from .auditor import _TextComparator
         return _TextComparator()
     if provider == "compatible":
-        return CompatibleModelProvider(settings.auditor_base_url or settings.model_base_url or "", settings.auditor_api_key or settings.model_api_key or "", settings.auditor_model or settings.model_name or "", transport=transport)
+        return CompatibleModelProvider(settings.auditor_base_url or settings.model_base_url or "", settings.auditor_api_key or settings.model_api_key or "", settings.auditor_model or settings.model_name or "", transport=transport, extra_payload=settings.auditor_extra_payload)
     if provider == "azure":
         return AzureChatModel(settings, transport=transport, model_name=settings.auditor_model)
     raise ValueError(f"unsupported auditor provider: {settings.dyla_auditor_provider}")

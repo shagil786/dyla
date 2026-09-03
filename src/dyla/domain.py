@@ -17,13 +17,13 @@ class Claim(BaseModel):
     id: str
     text: str
     citations: list[Citation]
-    confidence: str
+    confidence: str = "unknown"
 
 
 class AnalystAnswer(BaseModel):
     answer: str
     claims: list[Claim]
-    limitations: list[str]
+    limitations: list[str] = []
 
 
 class AuditVerdict(BaseModel):

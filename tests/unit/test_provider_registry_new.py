@@ -8,8 +8,9 @@ from pydantic import BaseModel
 
 from dyla.compatible import CompatibleEmbeddingProvider, CompatibleModelProvider, normalize_base_url
 from dyla.config import Settings, load_settings
+from dyla.domain import AnalystAnswer, Citation, Claim
 from dyla.models import ModelRequest
-from dyla.provider_factory import build_provider_bundle, load_plugin
+from dyla.provider_factory import build_auditor_provider, build_model_provider, build_provider_bundle, load_plugin
 
 
 class Answer(BaseModel):
@@ -158,6 +159,238 @@ def test_compatible_embedding_combines_cache_hits_and_results_with_model_namespa
     second.close()
 
     assert [call["input"] for call in calls] == [["1"], ["0", "2"], ["1"]]
+
+
+def test_compatible_model_posts_base_payload_without_extra_keys():
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+    provider = CompatibleModelProvider(
+        "https://host.example/v1", "fake-model-key", "model", transport=httpx.MockTransport(handler)
+    )
+    provider.complete(ModelRequest([{"role": "user", "content": "hi"}], None, 10, 0.2))
+
+    assert requests == [{"messages": [{"role": "user", "content": "hi"}], "model": "model", "max_tokens": 10, "temperature": 0.2}]
+
+
+def test_compatible_model_merges_extra_payload_into_request_body():
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+    provider = CompatibleModelProvider(
+        "https://host.example/v1", "fake-model-key", "model",
+        transport=httpx.MockTransport(handler),
+        extra_payload={"chat_template_kwargs": {"thinking": False}},
+    )
+    provider.complete(ModelRequest([{"role": "user", "content": "hi"}], None, 10, 0.2))
+
+    assert requests[0]["chat_template_kwargs"] == {"thinking": False}
+    assert requests[0]["model"] == "model"
+    assert requests[0]["max_tokens"] == 10
+
+
+def test_compatible_model_extracts_json_from_fenced_block():
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Reasoning first.\n```json\n{\"value\": \"fenced\"}\n```"}}], "usage": {}})
+
+    provider = CompatibleModelProvider("https://host.example/v1", "fake-model-key", "model", transport=httpx.MockTransport(handler))
+
+    response = provider.complete(ModelRequest([{"role": "user", "content": "hi"}], Answer, 10, 0.2))
+
+    assert response.parsed == Answer(value="fenced")
+
+
+def test_compatible_model_extracts_json_after_think_block():
+    content = "<think>Deliberating about { value: fake } and \"quotes\" at length.</think>{\"value\": \"thought-free\"}"
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {}})
+
+    provider = CompatibleModelProvider("https://host.example/v1", "fake-model-key", "model", transport=httpx.MockTransport(handler))
+
+    response = provider.complete(ModelRequest([{"role": "user", "content": "hi"}], Answer, 10, 0.2))
+
+    assert response.parsed == Answer(value="thought-free")
+
+
+def test_compatible_model_extracts_balanced_object_from_prose():
+    content = "Here is the answer: {\"value\": \"from prose\", \"note\": \"braces { inside } strings\"} — hope that helps."
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {}})
+
+    provider = CompatibleModelProvider("https://host.example/v1", "fake-model-key", "model", transport=httpx.MockTransport(handler))
+
+    response = provider.complete(ModelRequest([{"role": "user", "content": "hi"}], Answer, 10, 0.2))
+
+    assert response.parsed == Answer(value="from prose")
+
+
+def test_compatible_model_repairs_truncated_answer_with_whitespace_padding():
+    content = (
+        '{"answer": "known answer", "claims": [{"id": "c1", "text": "claim text", "citations": []}]'
+        + "\n" * 100
+    )
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {}})
+
+    provider = CompatibleModelProvider("https://host.example/v1", "fake-model-key", "model", transport=httpx.MockTransport(handler))
+
+    response = provider.complete(ModelRequest([{"role": "user", "content": "hi"}], AnalystAnswer, 10, 0.2))
+
+    assert response.parsed.answer == "known answer"
+    assert response.parsed.limitations == []
+    assert response.parsed.claims[0].confidence == "unknown"
+
+
+def test_compatible_model_prefers_repaired_answer_over_balanced_decoy_object():
+    content = (
+        '{"answer": "final answer", "claims": [{"id": "c1", "text": "claim text", '
+        '"citations": [{"url": "https://example.com/a", "title": "Source", "source_id": "s1", "chunk_id": "c1"}'
+        + "\n" * 100
+    )
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {}})
+
+    provider = CompatibleModelProvider("https://host.example/v1", "fake-model-key", "model", transport=httpx.MockTransport(handler))
+
+    response = provider.complete(ModelRequest([{"role": "user", "content": "hi"}], AnalystAnswer, 10, 0.2))
+
+    assert response.parsed.answer == "final answer"
+    assert response.parsed.claims[0].citations == [
+        Citation(url="https://example.com/a", title="Source", source_id="s1", chunk_id="c1")
+    ]
+    assert response.parsed.claims[0].confidence == "unknown"
+
+
+def test_compatible_model_repairs_truncation_inside_string_value():
+    content = '{"value": "truncated str'
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {}})
+
+    provider = CompatibleModelProvider("https://host.example/v1", "fake-model-key", "model", transport=httpx.MockTransport(handler))
+
+    response = provider.complete(ModelRequest([{"role": "user", "content": "hi"}], Answer, 10, 0.2))
+
+    assert response.parsed == Answer(value="truncated str")
+
+
+def test_compatible_model_repairs_truncated_answer_by_dropping_partial_claims():
+    content = (
+        '{"answer": "final answer", "claims": ['
+        '{"id": "c1", "text": "first claim", "citations": []}, '
+        '{"id": "c2", "text": "second cl'
+        + "\n" * 100
+    )
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {}})
+
+    provider = CompatibleModelProvider("https://host.example/v1", "fake-model-key", "model", transport=httpx.MockTransport(handler))
+
+    response = provider.complete(ModelRequest([{"role": "user", "content": "hi"}], AnalystAnswer, 10, 0.2))
+
+    assert response.parsed.answer == "final answer"
+    assert response.parsed.claims == [Claim(id="c1", text="first claim", citations=[])]
+    assert response.parsed.limitations == []
+
+
+def test_compatible_model_prefers_drop_repaired_answer_over_balanced_first_claim_object():
+    content = (
+        '{"answer": "final answer", "claims": ['
+        '{"answer": "decoy claim", "claims": [], "id": "c1", "text": "first claim", "citations": []}, '
+        '{"id": "c2", "text": "second cl'
+        + "\n" * 100
+    )
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {}})
+
+    provider = CompatibleModelProvider("https://host.example/v1", "fake-model-key", "model", transport=httpx.MockTransport(handler))
+
+    response = provider.complete(ModelRequest([{"role": "user", "content": "hi"}], AnalystAnswer, 10, 0.2))
+
+    assert response.parsed.answer == "final answer"
+    assert response.parsed.claims == [Claim(id="c1", text="first claim", citations=[])]
+
+
+def test_compatible_model_raises_when_answer_value_truncation_is_unrecoverable():
+    content = '{"answer": "cut off mid sent'
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {}})
+
+    provider = CompatibleModelProvider(
+        "https://host.example/v1", "fake-model-key", "model",
+        transport=httpx.MockTransport(handler), max_retries=0,
+    )
+
+    with pytest.raises(RuntimeError, match="malformed chat response") as error:
+        provider.complete(ModelRequest([{"role": "user", "content": "hi"}], AnalystAnswer, 10, 0.2))
+
+    assert "fake-model-key" not in str(error.value)
+
+
+def test_compatible_model_raises_when_truncated_content_is_unrepairable():
+    content = '{"value": not json'
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {}})
+
+    provider = CompatibleModelProvider(
+        "https://host.example/v1", "fake-model-key", "model",
+        transport=httpx.MockTransport(handler), max_retries=0,
+    )
+
+    with pytest.raises(RuntimeError, match="malformed chat response") as error:
+        provider.complete(ModelRequest([{"role": "user", "content": "hi"}], Answer, 10, 0.2))
+
+    assert "fake-model-key" not in str(error.value)
+
+
+def test_compatible_model_raises_when_no_json_is_extractable():
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "plain prose with no structure"}}], "usage": {}})
+
+    provider = CompatibleModelProvider(
+        "https://host.example/v1", "fake-model-key", "model",
+        transport=httpx.MockTransport(handler), max_retries=0,
+    )
+
+    with pytest.raises(RuntimeError, match="malformed chat response") as error:
+        provider.complete(ModelRequest([{"role": "user", "content": "hi"}], Answer, 10, 0.2))
+
+    assert "fake-model-key" not in str(error.value)
+
+
+def test_settings_parse_extra_payload_json_from_env(monkeypatch):
+    monkeypatch.setenv("DYLA_MODEL_EXTRA_PAYLOAD", '{"chat_template_kwargs": {"thinking": false}}')
+    monkeypatch.setenv("DYLA_AUDITOR_EXTRA_PAYLOAD", '{"seed": 7}')
+
+    loaded = load_settings()
+
+    assert loaded.model_extra_payload == {"chat_template_kwargs": {"thinking": False}}
+    assert loaded.auditor_extra_payload == {"seed": 7}
+
+    monkeypatch.setenv("DYLA_MODEL_EXTRA_PAYLOAD", "")
+    assert load_settings().model_extra_payload is None
+
+
+def test_factory_passes_extra_payload_to_model_and_auditor_providers():
+    model = build_model_provider(settings(model_extra_payload={"chat_template_kwargs": {"thinking": False}}))
+    auditor = build_auditor_provider(settings(dyla_auditor_provider="compatible", auditor_extra_payload={"seed": 7}))
+
+    assert model.extra_payload == {"chat_template_kwargs": {"thinking": False}}
+    assert auditor.extra_payload == {"seed": 7}
 
 
 def test_plugin_loader_imports_module_function():
