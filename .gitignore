@@ -19,3 +19,10 @@ env/
 build/
 dist/
 *.egg-info/
+
+# Local runtime artifacts
+logs/
+reports/
+dyla.db
+skill-observations/
+.freebuff/
