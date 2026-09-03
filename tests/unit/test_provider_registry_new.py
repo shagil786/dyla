@@ -1,4 +1,6 @@
+import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -165,6 +167,52 @@ def test_plugin_loader_imports_module_function():
 
 def plugin(settings):
     return "plugin-result"
+
+
+def test_compatible_embedding_cache_is_safe_from_async_worker_thread(tmp_path):
+    provider = CompatibleEmbeddingProvider(
+        "https://host.example/v1",
+        "fake-embed-key",
+        "embed",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"data": [{"index": 0, "embedding": [1.0, 2.0]}]},
+            )
+        ),
+        cache_path=tmp_path / "embeddings.db",
+    )
+
+    try:
+        assert asyncio.run(asyncio.to_thread(provider.embed, ["worker text"])) == [[1.0, 2.0]]
+    finally:
+        provider.close()
+
+
+def test_compatible_embedding_cache_serializes_concurrent_workers(tmp_path):
+    def handler(request):
+        text = json.loads(request.content)["input"][0]
+        return httpx.Response(
+            200,
+            json={"data": [{"index": 0, "embedding": [float(len(text))]}]},
+        )
+
+    provider = CompatibleEmbeddingProvider(
+        "https://host.example/v1",
+        "fake-embed-key",
+        "embed",
+        transport=httpx.MockTransport(handler),
+        cache_path=tmp_path / "embeddings.db",
+    )
+
+    try:
+        texts = [f"worker text {index}" for index in range(12)]
+        with ThreadPoolExecutor(max_workers=6) as workers:
+            results = list(workers.map(lambda text: provider.embed([text]), texts))
+
+        assert results == [[[float(len(text))]] for text in texts]
+    finally:
+        provider.close()
 
 
 def test_factory_composes_configured_roles_and_rejects_unknown_provider():

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -110,26 +111,28 @@ class CompatibleEmbeddingProvider:
         self._client = _CompatibleClient(base_url, api_key, transport=transport, timeout=timeout, max_retries=max_retries, sleeper=sleeper)
         self.batch_size = batch_size
         self._cache: sqlite3.Connection | None = None
+        self._cache_lock = threading.RLock()
         self._cache_namespace = hashlib.sha256(
             json.dumps({"endpoint": self._client.base_url, "model": self.model}, sort_keys=True).encode()
         ).hexdigest()
         if cache_path is not None:
-            self._cache = sqlite3.connect(str(cache_path))
-            table = self._cache.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'embedding_cache'"
-            ).fetchone()
-            if table:
-                columns = {row[1] for row in self._cache.execute("PRAGMA table_info(embedding_cache)")}
-                if not {"cache_key", "embedding_json"} <= columns:
-                    self._cache.close()
-                    self._cache = None
-                    self._client.close()
-                    raise RuntimeError("embedding_cache schema is incompatible with namespaced embeddings")
-            else:
-                self._cache.execute(
-                    "CREATE TABLE embedding_cache (cache_key TEXT PRIMARY KEY, embedding_json TEXT NOT NULL)"
-                )
-            self._cache.commit()
+            with self._cache_lock:
+                self._cache = sqlite3.connect(str(cache_path), check_same_thread=False)
+                table = self._cache.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'embedding_cache'"
+                ).fetchone()
+                if table:
+                    columns = {row[1] for row in self._cache.execute("PRAGMA table_info(embedding_cache)")}
+                    if not {"cache_key", "embedding_json"} <= columns:
+                        self._cache.close()
+                        self._cache = None
+                        self._client.close()
+                        raise RuntimeError("embedding_cache schema is incompatible with namespaced embeddings")
+                else:
+                    self._cache.execute(
+                        "CREATE TABLE embedding_cache (cache_key TEXT PRIMARY KEY, embedding_json TEXT NOT NULL)"
+                    )
+                self._cache.commit()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -168,25 +171,28 @@ class CompatibleEmbeddingProvider:
         return f"{self._cache_namespace}:{content_hash}"
 
     def _read_cache(self, key: str) -> list[float] | None:
-        if self._cache is None:
-            return None
-        row = self._cache.execute(
-            "SELECT embedding_json FROM embedding_cache WHERE cache_key = ?", (key,)
-        ).fetchone()
-        return json.loads(row[0]) if row else None
+        with self._cache_lock:
+            if self._cache is None:
+                return None
+            row = self._cache.execute(
+                "SELECT embedding_json FROM embedding_cache WHERE cache_key = ?", (key,)
+            ).fetchone()
+            return json.loads(row[0]) if row else None
 
     def _write_cache(self, key: str, vector: list[float]) -> None:
-        if self._cache is None:
-            return
-        self._cache.execute(
-            "INSERT OR REPLACE INTO embedding_cache VALUES (?, ?)", (key, json.dumps(vector))
-        )
-        self._cache.commit()
+        with self._cache_lock:
+            if self._cache is None:
+                return
+            self._cache.execute(
+                "INSERT OR REPLACE INTO embedding_cache VALUES (?, ?)", (key, json.dumps(vector))
+            )
+            self._cache.commit()
 
     def close(self):
-        if self._cache is not None:
-            self._cache.close()
-            self._cache = None
+        with self._cache_lock:
+            if self._cache is not None:
+                self._cache.close()
+                self._cache = None
         self._client.close()
 
 
