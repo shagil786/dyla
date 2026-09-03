@@ -390,7 +390,7 @@ def test_factory_passes_extra_payload_to_model_and_auditor_providers():
     auditor = build_auditor_provider(settings(dyla_auditor_provider="compatible", auditor_extra_payload={"seed": 7}))
 
     assert model.extra_payload == {"chat_template_kwargs": {"thinking": False}}
-    assert auditor.extra_payload == {"seed": 7}
+    assert auditor.provider.extra_payload == {"seed": 7}
 
 
 def test_plugin_loader_imports_module_function():

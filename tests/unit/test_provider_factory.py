@@ -1,7 +1,9 @@
 import pytest
 
+from dyla.auditor import ModelComparator, _TextComparator
+from dyla.compatible import CompatibleModelProvider
 from dyla.config import Settings
-from dyla.provider_factory import build_search_provider
+from dyla.provider_factory import build_auditor_provider, build_search_provider
 from dyla.web import YouResearchProvider
 
 
@@ -35,3 +37,33 @@ def test_build_search_provider_rejects_unconfigured_provider():
 
     with pytest.raises(ValueError, match="web provider"):
         build_search_provider(config)
+
+
+def test_factory_wraps_compatible_auditor_in_model_comparator():
+    config = Settings(
+        dyla_auditor_provider="compatible",
+        auditor_base_url="https://judge.example/v1",
+        auditor_api_key="fake-judge",
+        auditor_model="judge-x",
+    )
+
+    comparator = build_auditor_provider(config)
+
+    assert isinstance(comparator, ModelComparator)
+    assert isinstance(comparator.provider, CompatibleModelProvider)
+    assert comparator.provider.model == "judge-x"
+
+
+def test_factory_wraps_azure_auditor_in_model_comparator():
+    config = settings().model_copy(update={"dyla_auditor_provider": "azure"})
+
+    comparator = build_auditor_provider(config)
+
+    assert isinstance(comparator, ModelComparator)
+    assert type(comparator.provider).__name__ == "AzureChatModel"
+
+
+def test_factory_keeps_text_comparator_for_local_auditor():
+    comparator = build_auditor_provider(Settings(dyla_auditor_provider="local"))
+
+    assert isinstance(comparator, _TextComparator)

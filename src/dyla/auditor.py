@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 import re
 from typing import Any, Literal
 
-from .domain import AnalystAnswer, AuditVerdict, Citation, RunEvent
+from .domain import AnalystAnswer, AuditVerdict, AuditorVerdictModel, Citation, RunEvent
+from .models import ModelRequest
 from .ports import SearchProvider
 
 AuditStatus = Literal["supported", "unsupported", "contradicted", "uncited"]
@@ -172,6 +173,55 @@ class AuditorAgent:
             ))
         except Exception as exc:
             self._record_issue(f"{run_id}: {event} tracing failed: {exc}")
+
+
+class ModelComparator:
+    """Model-backed comparator that judges claims against fetched source documents."""
+
+    def __init__(self, provider: Any, *, max_document_chars: int = 4000, max_prompt_chars: int = 24000) -> None:
+        self.provider = provider
+        self.max_document_chars = max_document_chars
+        self.max_prompt_chars = max_prompt_chars
+
+    def compare(self, claim: Any, documents: dict[str, Any]) -> tuple[AuditStatus, str]:
+        request = ModelRequest(
+            messages=[
+                {"role": "system", "content": _AUDITOR_SYSTEM_PROMPT},
+                {"role": "user", "content": self._build_prompt(claim, documents)},
+            ],
+            response_schema=AuditorVerdictModel,
+            max_tokens=300,
+            temperature=0.0,
+        )
+        response = self.provider.complete(request)
+        verdict = response.parsed
+        if verdict is None:
+            raise ValueError("auditor model returned no structured verdict")
+        status = str(verdict.status).strip().casefold()
+        if status not in {"supported", "unsupported", "contradicted", "uncited"}:
+            raise ValueError(f"invalid audit status: {verdict.status}")
+        return status, str(verdict.explanation)
+
+    def _build_prompt(self, claim: Any, documents: dict[str, Any]) -> str:
+        sections = []
+        for url, document in documents.items():
+            title = getattr(document, "title", None) or "untitled"
+            excerpt = (getattr(document, "text", "") or "")[: self.max_document_chars]
+            sections.append(f"URL: {url}\nTitle: {title}\nText: {excerpt}")
+        prompt = f"Claim:\n{claim.text}\n\nSource documents:\n" + "\n\n".join(sections)
+        return prompt[: self.max_prompt_chars]
+
+
+_AUDITOR_SYSTEM_PROMPT = (
+    "You are an independent auditor. Judge ONLY the claim text against the provided "
+    "source documents. Respond with JSON only and no other text, shaped as "
+    '{"status": "<status>", "explanation": "<explanation>"}. '
+    "status must be exactly one of: supported, unsupported, contradicted, uncited. "
+    "supported = the claim text is directly supported by document content; "
+    "contradicted = document content asserts the opposite of the claim; "
+    "uncited = the documents do not address the claim; "
+    "unsupported = the claim cannot be verified from the documents."
+)
 
 
 def _unique_citations(citations: list[Citation]) -> list[Citation]:

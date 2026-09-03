@@ -1,7 +1,14 @@
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
-from dyla.auditor import AuditorAgent
+import httpx
+import pytest
+
+from dyla.auditor import AuditorAgent, ModelComparator
+from dyla.compatible import CompatibleModelProvider
 from dyla.domain import AnalystAnswer, Citation, Claim, Document
+from dyla.models import ModelResponse
 
 
 def citation(url="https://example.com/source", source_id="source-1"):
@@ -207,3 +214,117 @@ def test_auditor_retries_fetch_with_a_bounded_attempt_count():
 
     assert verdicts[0].status == "supported"
     assert fetcher.calls == 3
+
+
+def chat_response(content):
+    return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": {}})
+
+
+def comparator_claim(url):
+    return Claim(id="c1", text="Water boils at 100C at sea level.", citations=[citation(url)], confidence="high")
+
+
+def test_model_comparator_parses_valid_json_verdict_from_mocked_transport():
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return chat_response(json.dumps({"status": "supported", "explanation": "The claim matches the source."}))
+
+    provider = CompatibleModelProvider("https://host.example/v1", "fake-key", "judge", transport=httpx.MockTransport(handler))
+    comparator = ModelComparator(provider)
+    url = citation().url
+    claim = comparator_claim(url)
+    document = Document(source_id="s1", url=url, title="Physics", text="Water boils at 100C at sea level.", published_at=None)
+
+    result = comparator.compare(claim, {url: document})
+
+    assert result == ("supported", "The claim matches the source.")
+    payload = requests[0]
+    assert payload["model"] == "judge"
+    assert payload["max_tokens"] == 300
+    assert payload["temperature"] == 0
+    assert payload["response_format"]["json_schema"]["name"] == "AuditorVerdictModel"
+    system, user = payload["messages"][0]["content"], payload["messages"][-1]["content"]
+    assert "json" in system.casefold()
+    for expected in ("supported", "unsupported", "contradicted", "uncited"):
+        assert expected in system
+    assert claim.text in user
+    assert url in user
+    assert document.title in user
+
+
+def test_model_comparator_bounds_document_excerpts_and_total_prompt():
+    captured = []
+
+    class CapturingProvider:
+        def complete(self, request):
+            captured.append(request)
+            return ModelResponse(text="", parsed=SimpleNamespace(status="uncited", explanation="not addressed"), input_tokens=0, output_tokens=0, latency_ms=0)
+
+    comparator = ModelComparator(CapturingProvider())
+    url = citation().url
+    claim = comparator_claim(url)
+    long_document = Document(source_id="s1", url=url, title="Source", text="x" * 9000, published_at=None)
+
+    status, explanation = comparator.compare(claim, {url: long_document})
+
+    assert (status, explanation) == ("uncited", "not addressed")
+    user_prompt = captured[0].messages[-1]["content"]
+    assert "x" * 4001 not in user_prompt
+    assert len(user_prompt) <= 24000
+
+
+def test_model_comparator_raises_value_error_on_invalid_status_output():
+    class LooseProvider:
+        def complete(self, request):
+            parsed = SimpleNamespace(status="  MAYBE  ", explanation="unclear")
+            return ModelResponse(text='{"status": "maybe", "explanation": "unclear"}', parsed=parsed, input_tokens=0, output_tokens=0, latency_ms=0)
+
+    comparator = ModelComparator(LooseProvider())
+    url = citation().url
+    claim = comparator_claim(url)
+    document = Document(source_id="s1", url=url, title="Source", text="text", published_at=None)
+
+    with pytest.raises(ValueError, match="invalid audit status"):
+        comparator.compare(claim, {url: document})
+
+
+def test_model_comparator_raises_value_error_when_provider_returns_no_verdict():
+    class EmptyProvider:
+        def complete(self, request):
+            return ModelResponse(text="", parsed=None, input_tokens=0, output_tokens=0, latency_ms=0)
+
+    comparator = ModelComparator(EmptyProvider())
+    url = citation().url
+    claim = comparator_claim(url)
+    document = Document(source_id="s1", url=url, title="Source", text="text", published_at=None)
+
+    with pytest.raises(ValueError, match="no structured verdict"):
+        comparator.compare(claim, {url: document})
+
+
+def test_auditor_run_with_model_comparator_produces_verdicts_and_no_issues():
+    def handler(request):
+        return chat_response(json.dumps({"status": "contradicted", "explanation": "The source states the opposite."}))
+
+    provider = CompatibleModelProvider("https://host.example/v1", "fake-key", "judge", transport=httpx.MockTransport(handler))
+    url = citation().url
+    claim = comparator_claim(url)
+    document = Document(source_id="s1", url=url, title="Source", text="the opposite of the claim", published_at=None)
+    memory = FakeMemory()
+    trace = FakeTrace()
+    agent = AuditorAgent(fetcher=FakeFetcher({url: document}), comparator=ModelComparator(provider), memory=memory, trace_writer=trace)
+
+    verdicts = agent.run(answer_with(claim), "run-model")
+
+    assert [verdict.status for verdict in verdicts] == ["contradicted"]
+    assert verdicts[0].explanation == "The source states the opposite."
+    assert verdicts[0].citations_checked == [citation()]
+    assert agent.audit_state.status == "complete"
+    assert agent.audit_state.issues == []
+    assert [(event.event, event.payload.get("status")) for event in trace.events] == [
+        ("source_fetched", None),
+        ("claim_audited", "contradicted"),
+    ]
+    assert memory.claims == [("c1", "contradicted")]

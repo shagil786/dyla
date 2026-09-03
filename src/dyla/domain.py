@@ -33,6 +33,11 @@ class AuditVerdict(BaseModel):
     citations_checked: list[Citation]
 
 
+class AuditorVerdictModel(BaseModel):
+    status: Literal["supported", "unsupported", "contradicted", "uncited"]
+    explanation: str
+
+
 class RunEvent(BaseModel):
     run_id: str
     timestamp: datetime
