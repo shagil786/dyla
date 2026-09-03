@@ -34,7 +34,9 @@ def settings(**updates):
         azure_search_vector_dimensions=2,
     )
     values.update(updates)
-    return Settings(**values)
+    # _env_file=None keeps programmatic construction independent of the developer's
+    # local .env (pydantic-settings deep-merges dict-valued fields across sources).
+    return Settings(**values, _env_file=None)
 
 
 def test_settings_reads_provider_neutral_roles(monkeypatch):
@@ -372,7 +374,12 @@ def test_compatible_model_raises_when_no_json_is_extractable():
     assert "fake-model-key" not in str(error.value)
 
 
-def test_settings_parse_extra_payload_json_from_env(monkeypatch):
+def test_settings_parse_extra_payload_json_from_env(monkeypatch, tmp_path):
+    # Hermetic: pydantic-settings reads .env relative to cwd and deep-merges dict fields,
+    # so run from a .env-free directory and drop ambient payload vars for both alias forms.
+    monkeypatch.chdir(tmp_path)
+    for var in ("DYLA_MODEL_EXTRA_PAYLOAD", "MODEL_EXTRA_PAYLOAD", "DYLA_AUDITOR_EXTRA_PAYLOAD", "AUDITOR_EXTRA_PAYLOAD"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("DYLA_MODEL_EXTRA_PAYLOAD", '{"chat_template_kwargs": {"thinking": false}}')
     monkeypatch.setenv("DYLA_AUDITOR_EXTRA_PAYLOAD", '{"seed": 7}')
 
@@ -385,7 +392,10 @@ def test_settings_parse_extra_payload_json_from_env(monkeypatch):
     assert load_settings().model_extra_payload is None
 
 
-def test_factory_passes_extra_payload_to_model_and_auditor_providers():
+def test_factory_passes_extra_payload_to_model_and_auditor_providers(monkeypatch):
+    # Drop ambient payload vars (both alias forms) so the explicit kwargs are the sole source.
+    for var in ("DYLA_MODEL_EXTRA_PAYLOAD", "MODEL_EXTRA_PAYLOAD", "DYLA_AUDITOR_EXTRA_PAYLOAD", "AUDITOR_EXTRA_PAYLOAD"):
+        monkeypatch.delenv(var, raising=False)
     model = build_model_provider(settings(model_extra_payload={"chat_template_kwargs": {"thinking": False}}))
     auditor = build_auditor_provider(settings(dyla_auditor_provider="compatible", auditor_extra_payload={"seed": 7}))
 
