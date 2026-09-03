@@ -1,11 +1,12 @@
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 
 from dyla.config import Settings
 from dyla.domain import EvidenceChunk, SearchFilters
 from dyla.provider_factory import build_vector_store
-from dyla.qdrant_vector import QdrantVectorStore
+from dyla.qdrant_vector import QdrantVectorStore, qdrant_point_id
 
 
 class NotFoundError(Exception):
@@ -36,7 +37,7 @@ class FakeClient:
     def query_points(self, **kwargs):
         self.queries.append(kwargs)
         return type("Result", (), {"points": [
-            type("Point", (), {"id": "chunk-1", "score": 0.91, "payload": {
+            type("Point", (), {"id": qdrant_point_id("chunk-1"), "score": 0.91, "payload": {
                 "chunk_id": "chunk-1", "source_id": "source-1", "url": "https://example.com",
                 "title": "Title", "text": "evidence", "entity_ids": ["entity-1"],
             }})(),
@@ -73,6 +74,14 @@ def test_ensure_collection_creates_missing_collection_with_configured_dimensions
     assert vector_config.size == 3
 
 
+def test_qdrant_point_id_is_a_deterministic_uuid():
+    first = qdrant_point_id("chunk-1")
+
+    assert first == qdrant_point_id("chunk-1")
+    assert first != qdrant_point_id("chunk-2")
+    assert UUID(first).version == 5
+
+
 def test_upsert_writes_vector_and_evidence_metadata():
     client = FakeClient(collection_exists=True)
     store = QdrantVectorStore(settings(), client=client)
@@ -80,7 +89,7 @@ def test_upsert_writes_vector_and_evidence_metadata():
     store.upsert([chunk()], vectors=[[0.1, 0.2, 0.3]])
 
     point = client.upserts[0]["points"][0]
-    assert point.id == "chunk-1"
+    assert point.id == qdrant_point_id("chunk-1")
     assert point.vector == [0.1, 0.2, 0.3]
     assert point.payload == {
         "chunk_id": "chunk-1", "source_id": "source-1", "url": "https://example.com",

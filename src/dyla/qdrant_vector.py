@@ -4,12 +4,21 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID, uuid5
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
 from .config import Settings
 from .domain import Evidence, EvidenceChunk, SearchFilters
+
+
+_QDRANT_POINT_NAMESPACE = UUID("b4f0d8f6-0d71-4ad0-bf3a-8dbf7e6f2b0e")
+
+
+def qdrant_point_id(chunk_id: str) -> str:
+    """Return the stable UUID used as Qdrant's point ID for a chunk."""
+    return str(uuid5(_QDRANT_POINT_NAMESPACE, chunk_id))
 
 
 class QdrantVectorStore:
@@ -68,7 +77,7 @@ class QdrantVectorStore:
                 raise ValueError("vector dimension does not match index configuration")
             payload = chunk.model_dump()
             payload["published_at"] = _serialize_date(chunk.published_at)
-            points.append(models.PointStruct(id=chunk.chunk_id, vector=vector, payload=payload))
+            points.append(models.PointStruct(id=qdrant_point_id(chunk.chunk_id), vector=vector, payload=payload))
         try:
             self.client.upsert(collection_name=self.collection_name, points=points, wait=True)
         except Exception as exc:
