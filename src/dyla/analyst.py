@@ -26,7 +26,8 @@ class AnalystAgent:
         self.planner = planner or QueryPlanner(max_subqueries=max_subqueries)
         self.trace_writer, self.search_limit, self.evidence_limit = trace_writer, search_limit, evidence_limit
         self.metrics = {"input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0, "duration_ms": 0,
-                        "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0}
+                        "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0,
+                        "failed_searches": 0, "failed_fetches": 0}
 
     async def run(self, question: str, run_id: str) -> AnalystAnswer:
         started = time.monotonic()
@@ -53,12 +54,17 @@ class AnalystAgent:
 
         self.metrics["searches"] += len(plan.subqueries)
         self.metrics["parallel_calls"] += 1
+        collection_limitations: list[str] = []
         search_results = await asyncio.gather(*[
             asyncio.to_thread(self.searcher.search, item["query"], self.search_limit)
             for item in plan.subqueries
-        ])
+        ], return_exceptions=True)
         hits_by_url: dict[str, tuple[Any, list[str]]] = {}
         for item, batch in zip(plan.subqueries, search_results):
+            if isinstance(batch, Exception):
+                self.metrics["failed_searches"] += 1
+                collection_limitations.append(f"Web search failed for query '{item['query']}'; its results were excluded.")
+                continue
             query_entities = item.get("entities", [])
             if not query_entities:
                 query_entities = [entity for entity in plan.entities if entity.casefold() in item["query"].casefold()]
@@ -71,15 +77,19 @@ class AnalystAgent:
         self.metrics["parallel_calls"] += 1
         documents = await asyncio.gather(*[
             asyncio.to_thread(self.fetcher.fetch, hit.url) for hit, _ in hits_by_url.values()
-        ])
-        for document, (_, ids) in zip(documents, hits_by_url.values()):
+        ], return_exceptions=True)
+        for document, (hit, ids) in zip(documents, hits_by_url.values()):
+            if isinstance(document, Exception):
+                self.metrics["failed_fetches"] += 1
+                collection_limitations.append(f"Page fetch failed for {hit.url}; it was excluded from evidence.")
+                continue
             await asyncio.to_thread(ingest_document, document, self.embedder, self.index, entity_ids=ids)
         vector = await asyncio.to_thread(self.embedder.embed, [question])
         filters, date_limitations = self._filters(entity_ids, plan.date_constraints)
         evidence = await asyncio.to_thread(
             self.index.hybrid_search, question, vector[0], filters, self.evidence_limit,
         )
-        answer = await asyncio.to_thread(self._synthesize, question, memories, evidence, date_limitations)
+        answer = await asyncio.to_thread(self._synthesize, question, memories, evidence, [*collection_limitations, *date_limitations])
         self.metrics["duration_ms"] = int((time.monotonic() - started) * 1000)
         return answer
 

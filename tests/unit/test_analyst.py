@@ -227,3 +227,93 @@ def test_analyst_preserves_query_entity_attribution_and_date_filters():
     assert index.filters[0].entity_ids == ["e1", "e2"]
     assert index.filters[0].published_after == datetime(2025, 1, 1, tzinfo=UTC)
     assert index.filters[0].published_before == datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def test_analyst_survives_partial_fetch_failure_and_reports_exclusion():
+    fail_url = "https://example.com/1"
+
+    class FlakyFetcher:
+        def fetch(self, url):
+            if url == fail_url:
+                raise ValueError("malformed contents response")
+            return type("Document", (), {"source_id": url, "url": url, "title": "Source", "text": "evidence", "published_at": None})()
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q two"}], entities=[], date_constraints=[])
+    index = FakeIndex()
+    agent = AnalystAgent(model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(), searcher=FakeSearcher(),
+                         fetcher=FlakyFetcher(), index=index, embedder=FakeEmbedder(), planner=controlled_planner(plan))
+    answer = asyncio.run(agent.run("Q", "run-fetch-failure"))
+    assert answer.answer == "Answer"
+    assert "Page fetch failed for https://example.com/1; it was excluded from evidence." in answer.limitations
+    assert agent.metrics["failed_fetches"] == 1
+    assert agent.metrics["fetches"] == 2
+    assert len(index.upserted) >= 1
+
+
+def test_analyst_survives_partial_search_failure_and_reports_exclusion():
+    class FlakySearcher:
+        def search(self, query, limit=5):
+            if query == "Q bad":
+                raise TimeoutError("search backend unavailable")
+            return [SearchHit(url=f"https://example.com/{query.removeprefix('Q ')}", title="Source", snippet=query, published_at=None)]
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q bad"}, {"query": "Q two"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(), searcher=FlakySearcher(),
+                         fetcher=FakeFetcher(), index=FakeIndex(), embedder=FakeEmbedder(), planner=controlled_planner(plan))
+    answer = asyncio.run(agent.run("Q", "run-search-failure"))
+    assert answer.answer == "Answer"
+    assert "Web search failed for query 'Q bad'; its results were excluded." in answer.limitations
+    assert agent.metrics["failed_searches"] == 1
+    assert agent.metrics["fetches"] == 2
+
+
+def test_analyst_returns_insufficient_evidence_when_all_fetches_fail():
+    class FailingFetcher:
+        def fetch(self, url):
+            raise ValueError("malformed contents response")
+
+    class Model:
+        def complete(self, request):
+            raise AssertionError("empty evidence must not synthesize")
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q two"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=Model(), resolver=FakeResolver(), memory=FakeMemory(), searcher=FakeSearcher(),
+                         fetcher=FailingFetcher(), index=FakeIndex(evidence=[]), embedder=FakeEmbedder(), planner=controlled_planner(plan))
+    answer = asyncio.run(agent.run("Q", "run-all-fetch-failures"))
+    assert answer.answer == "Insufficient evidence."
+    assert answer.claims == []
+    assert "No retrieved evidence was available." in answer.limitations
+    fetch_failures = [item for item in answer.limitations if item.startswith("Page fetch failed for ")]
+    assert len(fetch_failures) == 2
+    assert agent.metrics["failed_fetches"] == 2
+
+
+def test_analyst_returns_insufficient_evidence_when_all_searches_fail():
+    class FailingSearcher:
+        def search(self, query, limit=5):
+            raise TimeoutError("search backend unavailable")
+
+    class Model:
+        def complete(self, request):
+            raise AssertionError("empty evidence must not synthesize")
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q two"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=Model(), resolver=FakeResolver(), memory=FakeMemory(), searcher=FailingSearcher(),
+                         fetcher=FakeFetcher(), index=FakeIndex(evidence=[]), embedder=FakeEmbedder(), planner=controlled_planner(plan))
+    answer = asyncio.run(agent.run("Q", "run-all-search-failures"))
+    assert answer.answer == "Insufficient evidence."
+    assert answer.claims == []
+    search_failures = [item for item in answer.limitations if item.startswith("Web search failed for query ")]
+    assert len(search_failures) == 2
+    assert agent.metrics["failed_searches"] == 2
+    assert agent.metrics["fetches"] == 0
+
+
+def test_analyst_adds_no_limitations_when_everything_succeeds():
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q two"}], entities=[], date_constraints=[])
+    agent = make_agent(FakeModel(), plan)
+    answer = asyncio.run(agent.run("Q", "run-no-failures"))
+    assert answer.answer == "Answer"
+    assert answer.limitations == []
+    assert agent.metrics["failed_searches"] == 0
+    assert agent.metrics["failed_fetches"] == 0
