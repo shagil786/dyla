@@ -98,6 +98,40 @@ def test_upsert_writes_vector_and_evidence_metadata():
     }
 
 
+def test_upsert_batches_points_by_configured_maximum_without_data_loss():
+    client = FakeClient(collection_exists=True)
+    store = QdrantVectorStore(settings(qdrant_upsert_batch_size=2), client=client)
+    chunks = [chunk().model_copy(update={"chunk_id": f"chunk-{index}", "position": index}) for index in range(5)]
+    vectors = [[index + 0.1, 0.2, 0.3] for index in range(5)]
+
+    store.upsert(chunks, vectors=vectors)
+
+    assert [len(upsert["points"]) for upsert in client.upserts] == [2, 2, 1]
+    points = [point for upsert in client.upserts for point in upsert["points"]]
+    assert [point.id for point in points] == [qdrant_point_id(chunk.chunk_id) for chunk in chunks]
+    assert [point.vector for point in points] == vectors
+    assert [point.payload["position"] for point in points] == list(range(5))
+
+
+def test_upsert_batches_points_by_estimated_payload_bytes():
+    client = FakeClient(collection_exists=True)
+    store = QdrantVectorStore(settings(qdrant_upsert_batch_size=100, qdrant_upsert_batch_bytes=1_000), client=client)
+    chunks = [chunk().model_copy(update={"chunk_id": f"chunk-{index}", "text": "evidence " * 100}) for index in range(3)]
+
+    store.upsert(chunks, vectors=[[0.1, 0.2, 0.3] for _ in chunks])
+
+    assert len(client.upserts) == 3
+    assert [point.payload["chunk_id"] for upsert in client.upserts for point in upsert["points"]] == [chunk.chunk_id for chunk in chunks]
+
+
+def test_upsert_batch_limits_must_be_positive():
+    with pytest.raises(ValueError, match="QDRANT_UPSERT_BATCH_SIZE"):
+        QdrantVectorStore(settings(qdrant_upsert_batch_size=0), client=FakeClient(collection_exists=True))
+
+    with pytest.raises(ValueError, match="QDRANT_UPSERT_BATCH_BYTES"):
+        QdrantVectorStore(settings(qdrant_upsert_batch_bytes=0), client=FakeClient(collection_exists=True))
+
+
 def test_vector_search_applies_metadata_filters_and_normalizes_evidence():
     client = FakeClient(collection_exists=True)
     store = QdrantVectorStore(settings(), client=client)

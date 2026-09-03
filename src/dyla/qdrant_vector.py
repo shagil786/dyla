@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid5
@@ -44,6 +45,8 @@ class QdrantVectorStore:
         self.api_key = settings.qdrant_api_key
         self.collection_name = settings.qdrant_collection
         self.vector_dimensions = settings.qdrant_vector_dimensions
+        self.upsert_batch_size = settings.qdrant_upsert_batch_size
+        self.upsert_batch_bytes = settings.qdrant_upsert_batch_bytes
         self.embedder = embedder
         self.client = client or QdrantClient(url=self.url, api_key=self.api_key, timeout=timeout)
         self.ensure_collection()
@@ -78,6 +81,22 @@ class QdrantVectorStore:
             payload = chunk.model_dump()
             payload["published_at"] = _serialize_date(chunk.published_at)
             points.append(models.PointStruct(id=qdrant_point_id(chunk.chunk_id), vector=vector, payload=payload))
+        if not points:
+            self._upsert_points(points)
+            return
+        batch: list[models.PointStruct] = []
+        batch_bytes = 0
+        for point in points:
+            point_bytes = _estimate_point_bytes(point)
+            if batch and (len(batch) >= self.upsert_batch_size or batch_bytes + point_bytes > self.upsert_batch_bytes):
+                self._upsert_points(batch)
+                batch = []
+                batch_bytes = 0
+            batch.append(point)
+            batch_bytes += point_bytes
+        self._upsert_points(batch)
+
+    def _upsert_points(self, points: list[models.PointStruct]) -> None:
         try:
             self.client.upsert(collection_name=self.collection_name, points=points, wait=True)
         except Exception as exc:
@@ -108,6 +127,15 @@ class QdrantVectorStore:
     def _safe_error(self, operation: str, exc: Exception) -> RuntimeError:
         detail = str(exc).replace(self.api_key, "[REDACTED]")
         return RuntimeError(f"{operation} failed: {detail}")
+
+
+def _estimate_point_bytes(point: models.PointStruct) -> int:
+    serialized = json.dumps(
+        {"id": point.id, "vector": point.vector, "payload": point.payload},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return len(serialized.encode("utf-8"))
 
 
 def _serialize_date(value: datetime | None) -> str | None:

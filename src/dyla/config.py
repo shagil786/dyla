@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
     qdrant_collection: str = "dyla-evidence"
     qdrant_vector_dimensions: int = 1536
+    qdrant_upsert_batch_size: int = Field(default=64, validation_alias=AliasChoices("DYLA_QDRANT_UPSERT_BATCH_SIZE", "QDRANT_UPSERT_BATCH_SIZE"))
+    qdrant_upsert_batch_bytes: int = Field(default=8 * 1024 * 1024, validation_alias=AliasChoices("DYLA_QDRANT_UPSERT_BATCH_BYTES", "QDRANT_UPSERT_BATCH_BYTES"))
     you_api_key: str | None = None
     you_search_endpoint: str = "https://ydc-index.io/v1/search"
     you_contents_endpoint: str = "https://ydc-index.io/v1/contents"
@@ -54,6 +56,10 @@ class Settings(BaseSettings):
                 raise ValueError("compatible model provider requires model base URL, API key, and model")
         if self.dyla_embedding_provider.casefold() == "compatible" and not all((self.embedding_base_url, self.embedding_api_key, self.embedding_model)):
             raise ValueError("compatible embedding provider requires embedding base URL, API key, and model")
+        if self.qdrant_upsert_batch_size < 1:
+            raise ValueError("QDRANT_UPSERT_BATCH_SIZE must be positive")
+        if self.qdrant_upsert_batch_bytes < 1:
+            raise ValueError("QDRANT_UPSERT_BATCH_BYTES must be positive")
         return self
 
     model_config = SettingsConfigDict(
