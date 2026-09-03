@@ -106,12 +106,13 @@ class PageFetcher:
         *,
         params: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
+        json_body: object | None = None,
         accepted_types: tuple[str, ...] = ("text/", "html", "xml"),
     ) -> tuple[str, bytes, str | None, str]:
         current = validate_external_url(url, resolver=self.resolver)
         request_params = params
         for redirect_count in range(self.max_redirects + 1):
-            with self.client.stream(method, current, params=request_params, headers=headers) as response:
+            with self.client.stream(method, current, params=request_params, headers=headers, json=json_body) as response:
                 if response.is_redirect:
                     location = response.headers.get("location")
                     if not location:
@@ -141,9 +142,18 @@ class PageFetcher:
                 return str(response.url), bytes(content), response.encoding, content_type
         raise ValueError("maximum redirect count exceeded")
 
-    def request_json(self, url: str, *, params: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> object:
+    def request_json(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        params: dict[str, str] | None = None,
+        json_body: object | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> object:
         _, content, _, _ = self._request_bytes(
-            "GET", url, params=params, headers=headers, accepted_types=("application/json", "text/json", "text/"),
+            method, url, params=params, json_body=json_body, headers=headers,
+            accepted_types=("application/json", "text/json", "text/"),
         )
         try:
             return httpx.Response(200, content=content, headers={"content-type": "application/json; charset=utf-8"}).json()
@@ -217,13 +227,17 @@ class YouResearchProvider:
     def fetch(self, url: str) -> Document:
         safe_url = validate_external_url(url, resolver=self.resolver)
         payload = self.fetcher.request_json(
-            self.contents_endpoint, params={"url": safe_url},
-            headers={"X-API-Key": self.api_key, "Accept": "application/json"},
+            self.contents_endpoint, method="POST", json_body={"urls": [safe_url]},
+            headers={
+                "X-API-Key": self.api_key,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
         )
         item = _contents_item(payload, safe_url)
         if item is None:
             raise ValueError("malformed contents response")
-        text = item.get("content") or item.get("text") or item.get("contents")
+        text = item.get("markdown") or item.get("html")
         if not isinstance(text, str) or not text.strip():
             raise ValueError("malformed contents response")
         returned_url = item.get("url", safe_url)
@@ -232,12 +246,20 @@ class YouResearchProvider:
         parser = _TextParser()
         parser.feed(text)
         normalized_text = "\n".join(part for part in parser.parts if part) or text.strip()
+        metadata = item.get("metadata")
+        metadata_date = (
+            metadata.get("published_at") or metadata.get("published_date")
+            if isinstance(metadata, dict) else None
+        )
+        published_at = _parse_datetime(
+            item.get("published_at") or item.get("published_date") or metadata_date
+        )
         return Document(
             source_id=self._source_id(safe_url),
             url=safe_url,
             title=_text(item.get("title")) or parser.title,
             text=normalized_text,
-            published_at=_parse_datetime(item.get("published_at") or item.get("published_date")),
+            published_at=published_at,
         )
 
     @staticmethod
@@ -263,11 +285,12 @@ def _search_items(payload: object) -> list[object]:
 
 
 def _contents_item(payload: object, requested_url: str) -> dict | None:
-    if not isinstance(payload, dict):
-        return None
-    values = payload.get("contents", payload.get("results"))
-    if isinstance(values, dict):
-        values = [values]
+    if isinstance(payload, dict):
+        values = payload.get("contents", payload.get("results"))
+        if isinstance(values, dict):
+            values = [values]
+    else:
+        values = payload
     if not isinstance(values, list):
         return None
     for item in values:

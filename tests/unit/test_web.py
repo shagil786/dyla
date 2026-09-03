@@ -20,10 +20,15 @@ def test_you_provider_normalizes_search_results_and_contents():
                 {"url": "https://example.com/no-date", "title": "No date", "snippet": "One"},
             ]}})
         assert request.url.path == "/contents"
-        assert request.url.params["url"] == "https://example.com/article"
-        return httpx.Response(200, json={"contents": [{
-            "url": "https://example.com/article", "title": "Article", "content": "Readable page text", "published_at": "2025-01-02T03:04:05+00:00"
-        }]})
+        assert request.method == "POST"
+        assert request.headers["X-API-Key"] == "fake-you-key"
+        assert request.headers["Accept"] == "application/json"
+        assert request.headers["Content-Type"] == "application/json"
+        assert request.read() == b'{"urls":["https://example.com/article"]}'
+        return httpx.Response(200, json=[{
+            "url": "https://example.com/article", "title": "Article", "markdown": "Readable **page** text", "html": "<p>Ignored HTML</p>",
+            "metadata": {"published_date": "2025-01-02T03:04:05+00:00"}
+        }])
 
     provider = YouResearchProvider(
         "https://api.example.com/search", "https://api.example.com/contents", "fake-you-key",
@@ -37,8 +42,22 @@ def test_you_provider_normalizes_search_results_and_contents():
     ]
     assert provider.fetch("https://example.com/article") == Document(
         source_id=provider._source_id("https://example.com/article"), url="https://example.com/article",
-        title="Article", text="Readable page text", published_at=datetime.fromisoformat("2025-01-02T03:04:05+00:00"),
+        title="Article", text="Readable **page** text", published_at=datetime.fromisoformat("2025-01-02T03:04:05+00:00"),
     )
+
+
+def test_you_provider_uses_html_when_markdown_is_missing():
+    provider = provider_for(lambda request: httpx.Response(200, json=[{
+        "url": "https://example.com/article",
+        "title": "HTML article",
+        "html": "<h1>Heading</h1><p>Readable HTML</p>",
+    }]))
+
+    assert provider.fetch("https://example.com/article").model_dump(exclude={"source_id", "published_at"}) == {
+        "url": "https://example.com/article",
+        "title": "HTML article",
+        "text": "Heading\nReadable HTML",
+    }
 
 
 def test_you_provider_skips_malformed_search_items_and_rejects_malformed_contents():
@@ -46,7 +65,7 @@ def test_you_provider_skips_malformed_search_items_and_rejects_malformed_content
         "/search": httpx.Response(200, json={"results": {"web": [
             {"title": "missing url"}, {"url": "http://unsafe.example", "title": "unsafe"}
         ]}}),
-        "/contents": httpx.Response(200, json={"contents": []}),
+        "/contents": httpx.Response(200, json=[]),
     }
     provider = YouResearchProvider(
         "https://api.example.com/search", "https://api.example.com/contents", "fake-you-key",
@@ -59,10 +78,11 @@ def test_you_provider_skips_malformed_search_items_and_rejects_malformed_content
         provider.fetch("https://example.com/article")
 
 
-def test_you_provider_auth_failure_is_propagated_without_secret():
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_you_provider_auth_failure_is_propagated_without_secret(status_code):
     provider = YouResearchProvider(
         "https://api.example.com/search", "https://api.example.com/contents", "super-secret-key",
-        transport=httpx.MockTransport(lambda request: httpx.Response(401, text="invalid key")),
+        transport=httpx.MockTransport(lambda request: httpx.Response(status_code, text="invalid key")),
         resolver=lambda host, port: PUBLIC_ADDRESSES,
     )
 
