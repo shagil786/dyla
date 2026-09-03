@@ -1,3 +1,5 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from dyla.domain import AuditVerdict, Claim, Citation
@@ -123,6 +125,31 @@ def test_research_warning_rejects_empty_text(tmp_path):
         pass
     else:
         raise AssertionError("empty research warning was accepted")
+
+
+def test_memory_operations_are_safe_from_worker_threads_and_concurrent_access(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    store.initialize()
+    store.add_memory("seed record", kind="note")
+
+    async def search_from_worker():
+        return await asyncio.to_thread(store.search_memory, "seed", 10)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(store.add_memory, f"concurrent record {index}", kind="note")
+            for index in range(20)
+        ]
+        futures.extend(
+            executor.submit(store.search_memory, "record", 50)
+            for _ in range(20)
+        )
+        worker_search = asyncio.run(search_from_worker())
+        for future in futures:
+            future.result()
+
+    assert [record.text for record in worker_search] == ["seed record"]
+    assert len(store.search_memory("concurrent", limit=50)) == 20
 
 
 def test_initialize_is_safe_to_call_more_than_once(tmp_path):

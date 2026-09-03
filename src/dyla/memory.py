@@ -6,13 +6,26 @@ import hashlib
 import json
 import sqlite3
 import string
+import threading
 import unicodedata
 import uuid
+from functools import wraps
 from pathlib import Path
+from typing import Any, Callable, TypeVar
 
 from .domain import AuditVerdict, Claim, MemoryRecord
 
 _NAMESPACE = uuid.UUID("9f3e5b95-7c47-4c73-a2e7-6ddf5d6d64f8")
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _synchronized(method: _F) -> _F:
+    @wraps(method)
+    def wrapper(self: "MemoryStore", *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
 
 
 def normalize_text(value: str) -> str:
@@ -24,10 +37,12 @@ def normalize_text(value: str) -> str:
 class MemoryStore:
     def __init__(self, database: str | Path = "dyla.db") -> None:
         self.database = str(database)
-        self.connection = sqlite3.connect(self.database)
+        self._lock = threading.RLock()
+        self.connection = sqlite3.connect(self.database, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
 
+    @_synchronized
     def initialize(self) -> None:
         self.connection.executescript(
             """
@@ -81,6 +96,7 @@ class MemoryStore:
         )
         self.connection.commit()
 
+    @_synchronized
     def upsert_entity(self, canonical_name: str, entity_type: str) -> str:
         normalized = normalize_text(canonical_name)
         if not normalized:
@@ -98,6 +114,7 @@ class MemoryStore:
         self.connection.commit()
         return entity_id
 
+    @_synchronized
     def add_alias(self, entity_id: str, alias: str, confidence: float) -> None:
         normalized = normalize_text(alias)
         if not normalized:
@@ -115,6 +132,7 @@ class MemoryStore:
         )
         self.connection.commit()
 
+    @_synchronized
     def find_entities(self, query: str) -> list[sqlite3.Row]:
         normalized = normalize_text(query)
         rows = self.connection.execute(
@@ -129,6 +147,7 @@ class MemoryStore:
         ).fetchall()
         return rows
 
+    @_synchronized
     def entity_candidates(self) -> list[sqlite3.Row]:
         return self.connection.execute(
             """
@@ -144,6 +163,7 @@ class MemoryStore:
             """
         ).fetchall()
 
+    @_synchronized
     def add_memory(
         self,
         text: str,
@@ -179,6 +199,7 @@ class MemoryStore:
         )
         self.connection.commit()
 
+    @_synchronized
     def save_research_warning(self, warning: str) -> int:
         warning = warning.strip()
         if not warning:
@@ -191,6 +212,7 @@ class MemoryStore:
             raise RuntimeError("SQLite did not return a warning ID")
         return int(cursor.lastrowid)
 
+    @_synchronized
     def read_research_warnings(self, limit: int = 50) -> list[str]:
         if limit < 1:
             return []
@@ -199,6 +221,7 @@ class MemoryStore:
         ).fetchall()
         return [row["warning"] for row in rows]
 
+    @_synchronized
     def search_memory(self, query: str, limit: int = 10) -> list[MemoryRecord]:
         if limit < 1:
             return []
@@ -222,6 +245,7 @@ class MemoryStore:
             for row in rows
         ]
 
+    @_synchronized
     def save_claim(self, claim: Claim, verdict: AuditVerdict | None) -> None:
         citations = [citation.model_dump(mode="json") for citation in claim.citations]
         with self.connection:
