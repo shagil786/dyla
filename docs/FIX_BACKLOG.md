@@ -151,8 +151,14 @@ rather than four loosely."*
 4. **Scope.** P0, P1, P2 and P3-1 are done (P3-1 partially — see its row).
    Remaining: **P3-3** (adversarial analyst, needs a live model) and P4.
 
-5. **Known unfixed defect.** The entity-attribution merge in
-   `LocalVectorStore.upsert()` has not been applied to the Qdrant or Azure
-   adapters, which carry the same latent overwrite bug. They need the same
-   read-merge-write and cannot be tested here without credentials. Disclosed in
-   `docs/WRITEUP.md` §3.
+5. ✅ **Qdrant entity-overwrite bug FIXED.** `QdrantVectorStore.upsert()` now
+   reads the stored `entity_ids` for each point and unions them before writing.
+   Qdrant replaces a point's payload wholesale, so re-ingesting a page under a
+   different entity used to erase its attribution — **live, not latent, for any
+   Qdrant deployment.** Covered by five tests using a fake client (no
+   credentials needed), verified to fail when the merge is removed. The read is
+   non-fatal on error: losing attribution is recoverable on a later run, losing
+   the ingestion is not.
+
+   **Azure AI Search (`search.py`) still has the same bug and is not fixed** —
+   see the open question about whether Azure should be supported at all.

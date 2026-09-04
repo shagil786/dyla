@@ -175,10 +175,18 @@ That single change took the saving from 19% to 38% of embedding tokens.
 
 ### The honest caveat
 
-The entity-merge fix is in `LocalVectorStore` only. **The Qdrant and Azure
-adapters have the same latent overwrite bug** and need the same read-merge-write.
-They are untested here because they need credentials. This is a known, unfixed
-defect and it is in the backlog, not hidden in it.
+The entity-merge fix originally landed in `LocalVectorStore` only. **Qdrant has
+since been fixed too** — and it mattered more there: Qdrant replaces a point's
+payload wholesale on upsert, so for anyone actually running Qdrant this was
+live data corruption, not a latent risk. The fix reads the stored `entity_ids`
+and unions them before writing, and the read is deliberately non-fatal: losing
+attribution is recoverable on a later run, losing the ingestion is not. Five
+tests cover it with a fake client, and I checked they fail when the merge is
+removed rather than assuming they would.
+
+**Azure AI Search still has the bug.** It is unfixed and untested, and it is
+the reason the Azure adapter is now an open question rather than a feature —
+see §6.
 
 ---
 
@@ -356,7 +364,9 @@ Ranked by how much they would bother me in review.
    every artifact header.
 2. **The auditor has no scope reasoning** (4.2) and currently fails Q1 because
    of it.
-3. **Qdrant and Azure adapters still have the entity-overwrite bug** (§3).
+3. **Azure AI Search still has the entity-overwrite bug** (§3). Qdrant is
+   fixed; Azure is not, and carrying an unused, unfixed, credential-gated
+   adapter is worse than not shipping one.
 4. **Extra credit not achieved** — 27.8%, not 50% (§3).
 5. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
    pre-registers Zerodha, Infosys, Wipro and Zepto, because entity resolution is
