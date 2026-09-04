@@ -130,6 +130,8 @@ class AuditorAgent:
         future = pool.submit(self.comparator.compare, claim, documents)
         try:
             result = future.result(timeout=self.timeout_seconds)
+        except FutureTimeout as exc:
+            raise TimeoutError(f"comparator did not finish within {self.timeout_seconds}s") from exc
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
         if isinstance(result, AuditVerdict):

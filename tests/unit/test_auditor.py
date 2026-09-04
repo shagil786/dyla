@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -193,6 +194,24 @@ def test_auditor_failure_persists_warning_and_returns_no_verdicts():
 
     assert verdicts == []
     assert memory.warnings == ["run-4: auditor failed: comparator down"]
+
+
+def test_auditor_comparator_timeout_records_descriptive_issue():
+    class SlowComparator:
+        def compare(self, claim, documents):
+            time.sleep(0.5)
+            return "supported", "checked"
+
+    claim = Claim(id="slow", text="claim", citations=[citation()], confidence="high")
+    url = claim.citations[0].url
+    fetcher = FakeFetcher({url: Document(source_id="s1", url=url, title="Source", text="source", published_at=None)})
+    agent = AuditorAgent(fetcher=fetcher, comparator=SlowComparator(), timeout_seconds=0.05)
+
+    verdicts = agent.run(answer_with(claim), "run-timeout")
+
+    assert verdicts == []
+    assert agent.audit_state.status in {"failed", "partial"}
+    assert any("comparator did not finish within" in issue for issue in agent.audit_state.issues)
 
 
 def test_auditor_retries_fetch_with_a_bounded_attempt_count():
