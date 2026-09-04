@@ -60,7 +60,13 @@ def test_run_evaluation_reports_per_question_costs_totals_and_trend(tmp_path):
     assert cost["totals"] == {
         "input_tokens": 180, "output_tokens": 110, "estimated_cost": 0.75,
         "duration_ms": 1900, "memory_hits": 3,
+        "embedding_tokens": 0, "searches": 3, "fetches": 2, "searches_skipped": 0,
+        # No model name is supplied here, so no price can be established. The
+        # report says so rather than reporting 0, which would read as "free".
+        "cost_in_rupees": None, "cost_in_usd": None,
     }
+    assert cost["pricing"]["resolved"] is False
+    assert "DYLA_PRICE_INPUT_PER_MTOK_USD" in cost["pricing"]["note"]
 
     stored = json.loads(Path(tmp_path, "evaluation.json").read_text())
     assert stored["total"] == 2
@@ -72,9 +78,12 @@ def test_run_evaluation_reports_per_question_costs_totals_and_trend(tmp_path):
 
     markdown = Path(tmp_path, "evaluation.md").read_text()
     assert "## Cost per question" in markdown
-    assert "Estimated cost (adapter units)" in markdown
-    assert "| 1 | first question | complete | 100 | 50 | 0.5 | 1000 | 0 |" in markdown
-    assert "| | **Total** | | 180 | 110 | 0.75 | 1900 | 3 |" in markdown
+    assert "Embed tok" in markdown and "Searches" in markdown and "Cost (rupees)" in markdown
+    # Columns: # | Question | Status | input | output | embed | searches | fetches |
+    # skipped | duration | rupees. Web-call counts sit alongside tokens because
+    # memory reuse shows up there first.
+    assert "| 1 | first question | complete | 100 | 50 | 0 | 2 | 1 | 0 | 1000 | unpriced |" in markdown
+    assert "| | **Total** | | 180 | 110 | 0 | 3 | 2 | 0 | 1900 | unpriced |" in markdown
     assert "## Cost trend" in markdown
     assert "- Total tokens: 290 (input 180, output 110)" in markdown
     assert "- Total estimated_cost (adapter units): 0.75" in markdown
@@ -99,8 +108,10 @@ def test_run_evaluation_cost_rows_default_to_zero_without_metrics(tmp_path):
     assert report["cost_report"]["totals"] == {
         "input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0,
         "duration_ms": 0, "memory_hits": 0,
+        "embedding_tokens": 0, "searches": 0, "fetches": 0, "searches_skipped": 0,
+        "cost_in_rupees": None, "cost_in_usd": None,
     }
-    assert "| | **Total** | | 0 | 0 | 0.0 | 0 | 0 |" in Path(tmp_path, "evaluation.md").read_text()
+    assert "| | **Total** | | 0 | 0 | 0 | 0 | 0 | 0 | 0 | unpriced |" in Path(tmp_path, "evaluation.md").read_text()
 
 
 def test_every_module_imports_on_this_interpreter():

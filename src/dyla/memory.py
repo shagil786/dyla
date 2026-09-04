@@ -178,6 +178,22 @@ class MemoryStore:
         return rows
 
     @_synchronized
+    def known_entity_names(self) -> list[str]:
+        """Canonical names of every entity the system has already researched."""
+        rows = self.connection.execute(
+            "SELECT canonical_name FROM entities ORDER BY canonical_name COLLATE NOCASE"
+        ).fetchall()
+        return [row["canonical_name"] for row in rows]
+
+    @_synchronized
+    def known_entities(self) -> list[tuple[str, str]]:
+        """(entity_id, canonical_name) for every entity already researched."""
+        rows = self.connection.execute(
+            "SELECT id, canonical_name FROM entities ORDER BY canonical_name COLLATE NOCASE"
+        ).fetchall()
+        return [(row["id"], row["canonical_name"]) for row in rows]
+
+    @_synchronized
     def entity_candidates(self) -> list[sqlite3.Row]:
         return self.connection.execute(
             """

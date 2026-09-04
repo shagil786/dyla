@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .pricing import price_run, resolve_pricing
+
 # Assignment suite: eight questions of increasing difficulty; questions after the
 # first four deliberately reuse entities introduced earlier so durable memory is
 # exercised (memory_hits in the cost report should be non-zero for Q5-Q8).
@@ -48,9 +50,9 @@ DEFAULT_QUESTIONS = (
     "State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each.",
 )
 
-COST_FIELDS = ("input_tokens", "output_tokens", "estimated_cost", "duration_ms", "memory_hits")
+COST_FIELDS = ("input_tokens", "output_tokens", "embedding_tokens", "estimated_cost",
+               "duration_ms", "memory_hits", "searches", "fetches", "searches_skipped")
 ESTIMATED_COST_UNIT = "adapter units"
-RUPEES_PER_ADAPTER_UNIT = 0.8  # Conversion rate; adjust based on actual adapter pricing
 HISTORY_CAP = 50
 
 
@@ -71,41 +73,84 @@ def _metric_value(metrics: Any, field: str) -> int | float:
     return value if isinstance(value, (int, float)) else 0
 
 
-def _cost_row(item: dict[str, Any]) -> dict[str, Any]:
+def _cost_row(item: dict[str, Any], model: str | None = None) -> dict[str, Any]:
     metrics = item.get("metrics")
     row: dict[str, Any] = {"question": item.get("question"), "status": item.get("status")}
     row.update({field: _metric_value(metrics, field) for field in COST_FIELDS})
-    row["cost_in_rupees"] = row["estimated_cost"] * RUPEES_PER_ADAPTER_UNIT if isinstance(row.get("estimated_cost"), (int, float)) else 0
+    priced = price_run(model, int(row["input_tokens"]), int(row["output_tokens"]))
+    row["cost_in_rupees"] = priced["cost_inr"]
+    row["cost_in_usd"] = priced["cost_usd"]
+    row["priced"] = priced["priced"]
     return row
 
 
-def _cost_report(results: list[dict[str, Any]]) -> dict[str, Any]:
-    rows = [_cost_row(item) for item in results]
+def _cost_report(results: list[dict[str, Any]], model: str | None = None) -> dict[str, Any]:
+    rows = [_cost_row(item, model) for item in results]
     totals: dict[str, Any] = {}
     for field in COST_FIELDS:
         summed = sum(row[field] for row in rows)
         totals[field] = float(summed) if field == "estimated_cost" else int(summed)
-    return {"estimated_cost_unit": ESTIMATED_COST_UNIT, "questions": rows, "totals": totals}
+    priced_rows = [row for row in rows if row["priced"]]
+    totals["cost_in_rupees"] = round(sum(row["cost_in_rupees"] for row in priced_rows), 6) if priced_rows else None
+    totals["cost_in_usd"] = round(sum(row["cost_in_usd"] for row in priced_rows), 8) if priced_rows else None
+    pricing = resolve_pricing(model)
+    return {
+        "estimated_cost_unit": ESTIMATED_COST_UNIT,
+        "questions": rows,
+        "totals": totals,
+        "pricing": {
+            "model": model,
+            "resolved": pricing is not None,
+            "input_per_mtok_usd": pricing.input_per_mtok_usd if pricing else None,
+            "output_per_mtok_usd": pricing.output_per_mtok_usd if pricing else None,
+            "usd_to_inr": pricing.usd_to_inr if pricing else None,
+            "rate_source": pricing.source if pricing else None,
+            "note": None if pricing else price_run(model, 0, 0)["note"],
+        },
+    }
 
 
 def _md_cost_table(cost: dict[str, Any]) -> list[str]:
     lines = [
         "## Cost per question", "",
-        "| # | Question | Status | Input tokens | Output tokens | Estimated cost (adapter units) | Duration (ms) | Memory hits | Cost (rupees) |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| # | Question | Status | Input tok | Output tok | Embed tok | Searches | Fetches | Skipped | Duration (ms) | Cost (rupees) |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for index, row in enumerate(cost["questions"], start=1):
         question = _md_escape(row["question"])
         lines.append(
             f"| {index} | {question} | {row['status']} | {row['input_tokens']} | {row['output_tokens']}"
-            f" | {row['estimated_cost']} | {row['duration_ms']} | {row['memory_hits']} | {row['cost_in_rupees']} |"
+            f" | {row['embedding_tokens']} | {row['searches']} | {row['fetches']} | {row['searches_skipped']}"
+            f" | {row['duration_ms']} | {_rupees(row['cost_in_rupees'])} |"
         )
     totals = cost["totals"]
     lines.append(
         f"| | **Total** | | {totals['input_tokens']} | {totals['output_tokens']}"
-        f" | {totals['estimated_cost']} | {totals['duration_ms']} | {totals['memory_hits']} | {totals['estimated_cost'] * RUPEES_PER_ADAPTER_UNIT} |"
+        f" | {totals['embedding_tokens']} | {totals['searches']} | {totals['fetches']} | {totals['searches_skipped']}"
+        f" | {totals['duration_ms']} | {_rupees(totals.get('cost_in_rupees'))} |"
     )
+    pricing = cost.get("pricing") or {}
+    lines.append("")
+    if pricing.get("resolved"):
+        lines.append(
+            f"Priced at ${pricing['input_per_mtok_usd']}/1M input and "
+            f"${pricing['output_per_mtok_usd']}/1M output tokens for `{pricing['model']}` "
+            f"({pricing['rate_source']}), converted at {pricing['usd_to_inr']} INR/USD."
+        )
+    else:
+        lines.append(f"**Cost in rupees is unavailable.** {pricing.get('note', '')}")
     return lines
+
+
+def _rupees(value: Any) -> str:
+    """Render a rupee amount, or an explicit marker when no price is known.
+
+    Never renders 0 for an unpriced run: a zero in a cost column reads as "this
+    was free" rather than "we do not know".
+    """
+    if value is None:
+        return "unpriced"
+    return f"{value:.4f}"
 
 
 def _verdict_detail(value: Any) -> list[dict[str, Any]]:
@@ -174,12 +219,15 @@ def run_evaluation(
     questions: tuple[str, ...] = DEFAULT_QUESTIONS,
     runner: Callable[[str], Any] | None = None,
     output_dir: str | Path = "reports",
+    model_name: str | None = None,
 ) -> dict[str, Any]:
     """Run the configured question suite and write stable JSON and Markdown reports."""
     if runner is None:
         from .cli import _build_orchestrator
         from .config import load_settings
-        orchestrator = _build_orchestrator(load_settings())
+        settings = load_settings()
+        orchestrator = _build_orchestrator(settings)
+        model_name = model_name or getattr(settings, "model_name", None)
         runner = lambda question: asyncio.run(orchestrator.ask(question))
 
     results: list[dict[str, Any]] = []
@@ -201,7 +249,7 @@ def run_evaluation(
         results.append(result)
 
     passed = sum(item["status"] in {"passed", "complete"} for item in results)
-    cost = _cost_report(results)
+    cost = _cost_report(results, model=model_name)
     report: dict[str, Any] = {
         "total": len(results), "passed": passed, "failed": len(results) - passed,
         "cost_report": cost, "results": results,

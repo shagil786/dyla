@@ -801,3 +801,61 @@ def test_the_reuse_decision_is_traced(tmp_path):
     assert reuse, "the reuse decision was not traced"
     assert reuse[0]["payload"]["covered_entities"] == 1
     assert reuse[0]["payload"]["skipped_queries"]
+
+
+class _KnownEntityMemory:
+    """Minimal memory stub exposing only what content attribution needs."""
+
+    def __init__(self, entities):
+        self._entities = entities
+
+    def known_entities(self):
+        return list(self._entities)
+
+
+def _attributor(entities):
+    agent = AnalystAgent.__new__(AnalystAgent)
+    agent.memory = _KnownEntityMemory(entities)
+    return agent
+
+
+def test_a_page_is_tagged_with_the_entity_it_discusses_not_the_one_that_found_it():
+    """The whole point: attribution follows content, not the query.
+
+    A page about Infosys found while answering a question that names no
+    company must still be reusable by a later Infosys question.
+    """
+    agent = _attributor([("e-inf", "Infosys"), ("e-wip", "Wipro"), ("e-zep", "Zepto")])
+
+    ids = agent._entity_ids_from_content(
+        "Bengaluru's largest exporters are Infosys and Wipro, by revenue."
+    )
+
+    assert sorted(ids) == ["e-inf", "e-wip"], "page not attributed to the firms it is about"
+
+
+def test_content_attribution_matches_whole_words_only():
+    """Substring matching would tag every page mentioning 'winfosystems'."""
+    agent = _attributor([("e-inf", "Infosys")])
+
+    assert agent._entity_ids_from_content("Winfosystems Ltd filed its results.") == []
+    assert agent._entity_ids_from_content("Infosys filed its results.") == ["e-inf"]
+
+
+def test_content_attribution_is_case_insensitive_and_survives_punctuation():
+    agent = _attributor([("e-zer", "Zerodha")])
+
+    assert agent._entity_ids_from_content("(ZERODHA), the broker, said...") == ["e-zer"]
+
+
+def test_content_attribution_degrades_quietly_when_memory_cannot_answer():
+    """A tagging failure must never take down a research run."""
+
+    class Broken:
+        def known_entities(self):
+            raise RuntimeError("db gone")
+
+    agent = AnalystAgent.__new__(AnalystAgent)
+    agent.memory = Broken()
+
+    assert agent._entity_ids_from_content("Infosys") == []

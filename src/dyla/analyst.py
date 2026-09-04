@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -14,6 +15,25 @@ from .ports import SearchProvider
 from .query_planner import QueryPlanner
 
 _REJECTED_VERDICTS = frozenset({"unsupported", "contradicted"})
+
+
+class _CountingEmbedder:
+    """Wrap an embedding provider so its token spend lands in the run metrics.
+
+    Ingestion embeds every chunk of every fetched page, which is billed. Without
+    counting it, memory reuse looks free in the token column even though the
+    saving is largely there.
+    """
+
+    def __init__(self, embedder: Any, metrics: dict[str, Any]) -> None:
+        self._embedder, self._metrics = embedder, metrics
+
+    def embed(self, texts: list[str]) -> Any:
+        self._metrics["embedding_tokens"] += sum(max(1, len(text) // 4) for text in texts)
+        return self._embedder.embed(texts)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._embedder, name)
 
 
 def _claim_fingerprint(text: str) -> frozenset[str]:
@@ -54,7 +74,7 @@ class AnalystAgent:
         reuse_min_sources: int = 2, reuse_min_score: float = 0.0, min_evidence: int = 1,
     ) -> None:
         self.model, self.resolver, self.memory = model, resolver, memory
-        self.searcher, self.fetcher, self.index, self.embedder = searcher, fetcher, index, embedder
+        self.searcher, self.fetcher, self.index = searcher, fetcher, index
         self.planner = planner or QueryPlanner(max_subqueries=max_subqueries)
         self.trace_writer, self.search_limit, self.evidence_limit = trace_writer, search_limit, evidence_limit
         self.reuse_enabled, self.reuse_min_sources = reuse_enabled, reuse_min_sources
@@ -63,7 +83,9 @@ class AnalystAgent:
                         "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0,
                         "failed_searches": 0, "failed_fetches": 0, "failed_ingestions": 0,
                         "claims_blocked_by_audit_feedback": 0,
-                        "searches_skipped": 0, "evidence_reused": 0, "reuse_corrections": 0}
+                        "searches_skipped": 0, "evidence_reused": 0, "reuse_corrections": 0,
+                        "embedding_tokens": 0}
+        self.embedder = _CountingEmbedder(embedder, self.metrics)
 
     async def run(self, question: str, run_id: str) -> AnalystAnswer:
         started = time.monotonic()
@@ -75,6 +97,7 @@ class AnalystAgent:
         self._trace(run_id, "memory_retrieved", {"count": len(memories)})
         self.metrics["memory_hits"] += len(memories)
         plan = await asyncio.to_thread(self.planner.expand, question, memories)
+        plan = await asyncio.to_thread(self._augment_entities, plan, question, run_id)
         resolved: dict[str, str] = {}
         for entity in plan.entities:
             result = await asyncio.to_thread(self.resolver.resolve, entity, question)
@@ -127,6 +150,59 @@ class AnalystAgent:
         answer = await asyncio.to_thread(self._synthesize, question, memories, evidence, [*collection_limitations, *date_limitations])
         self.metrics["duration_ms"] = int((time.monotonic() - started) * 1000)
         return answer
+
+    def _entity_ids_from_content(self, text: str) -> list[str]:
+        """Tag a page with every known entity it actually discusses.
+
+        Attribution used to come only from the query that found the page, so a
+        page about Infosys fetched while answering "largest exporters
+        headquartered in Bengaluru" -- a question naming no company -- was
+        stored untagged, and a later Infosys question could not reuse it. The
+        page is about Infosys regardless of how it was found.
+
+        Matching is on whole words against canonical names only. Aliases are
+        deliberately excluded: they are lower-confidence by construction, and a
+        wrong tag here silently poisons reuse for that entity.
+        """
+        known = getattr(self.memory, "known_entities", None)
+        if known is None or not text:
+            return []
+        try:
+            entities = known()
+        except Exception:
+            return []
+        haystack = f" {' '.join(re.findall(r'[A-Za-z0-9&.-]+', text.casefold()))} "
+        return [
+            entity_id for entity_id, name in entities
+            if name.strip() and f" {name.casefold()} " in haystack
+        ]
+
+    def _augment_entities(self, plan: Any, question: str, run_id: str) -> Any:
+        """Add entities the system already knows about and that appear in the question.
+
+        The planner derives entities from retrieved memory *records*, so on a
+        question whose wording does not overlap any stored record text it finds
+        nothing -- and with no entities there is no resolution, no entity filter
+        and no memory reuse. Consulting the entity store directly is what lets
+        knowledge carry across questions rather than only across paraphrases.
+        """
+        known = getattr(self.memory, "known_entity_names", None)
+        if known is None:
+            return plan
+        try:
+            names = known()
+        except Exception as exc:
+            self._trace(run_id, "reuse_probe_failed", {"error": f"entity lookup failed: {exc}"})
+            return plan
+        haystack = question.casefold()
+        found = [name for name in names if name.casefold() in haystack]
+        if not found:
+            return plan
+        merged = list(dict.fromkeys([*plan.entities, *found]))
+        if merged == list(plan.entities):
+            return plan
+        self._trace(run_id, "memory_retrieved", {"known_entities_in_question": found})
+        return plan.model_copy(update={"entities": merged})
 
     async def _assess_reuse(
         self, question: str, vector: list[float], entity_ids: list[str],
@@ -230,6 +306,8 @@ class AnalystAgent:
                 limitations.append(f"Page fetch failed for {hit.url}; it was excluded from evidence.")
                 continue
             self._trace(run_id, "page_fetched", {"url": hit.url, "chars": len(document.text)})
+            content_ids = await asyncio.to_thread(self._entity_ids_from_content, document.text)
+            ids = list(dict.fromkeys([*ids, *content_ids]))
             try:
                 await asyncio.to_thread(ingest_document, document, self.embedder, self.index, entity_ids=ids)
             except Exception as exc:

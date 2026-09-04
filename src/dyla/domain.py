@@ -139,9 +139,14 @@ class ResearchPlan(BaseModel):
 class Metrics(BaseModel):
     input_tokens: int
     output_tokens: int
+    # Embeddings are billed too. Skipping a redundant fetch removes the whole
+    # ingest-and-embed cost for that page, which is where memory reuse shows up
+    # in the token column rather than only in the search/fetch counts.
+    embedding_tokens: int = 0
     estimated_cost: float
     duration_ms: int
     searches: int
     fetches: int
     memory_hits: int
     parallel_calls: int
+    searches_skipped: int = 0

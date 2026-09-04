@@ -314,9 +314,11 @@ class RunOrchestrator:
         )
         return Metrics(
             input_tokens=int(totals["input_tokens"]), output_tokens=int(totals["output_tokens"]),
+            embedding_tokens=int(totals["embedding_tokens"]),
             estimated_cost=float(totals["estimated_cost"]), duration_ms=int(totals["duration_ms"]),
             searches=int(totals["searches"]), fetches=int(totals["fetches"]),
             memory_hits=int(totals["memory_hits"]), parallel_calls=int(totals["parallel_calls"]),
+            searches_skipped=int(totals["searches_skipped"]),
         )
 
     def _trace(self, run_id: str, event: str, payload: dict[str, Any]) -> bool:
