@@ -218,6 +218,75 @@ def proper_nouns(text: str) -> set[str]:
     return {token for token in found if token not in _STOPWORDS and len(token) > 1}
 
 
+# Capitalised tokens that are common sentence openers or generic, and so carry
+# no attribution signal. Kept small on purpose: a big list here starts silently
+# excusing real misattributions.
+_ATTRIBUTION_IGNORED = frozenset({
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december", "monday", "tuesday",
+    "wednesday", "thursday", "friday", "saturday", "sunday", "the", "this",
+    "that", "these", "those", "its", "their", "company", "companies",
+})
+
+
+def named_entities(text: str, known: frozenset[str] | set[str] = frozenset()) -> set[str]:
+    """Capitalised tokens that are not merely sentence-initial.
+
+    Distinct from :func:`proper_nouns`, which takes every capitalised token and
+    is right for a loose topicality signal. Attribution checking needs the
+    stricter set: "Restaurant services in India are taxed at 5%" opens with a
+    capitalised ordinary word, and treating "Restaurant" as a named entity would
+    manufacture attribution failures on perfectly good claims.
+    """
+    known = {name.casefold() for name in known}
+    found: set[str] = set()
+    for sentence in sentences(text):
+        tokens = re.findall(r"[A-Za-z][\w&.'-]*", sentence)
+        for index, token in enumerate(tokens):
+            if not token[:1].isupper():
+                continue
+            # Position is the only cheap signal for "capitalised because it is a
+            # name" versus "capitalised because the sentence starts here", and
+            # it is wrong for the common case "Wipro reported revenue of ...".
+            # `known` -- the entities the system has actually researched --
+            # rescues that case without a dictionary.
+            if index == 0 and token.casefold().strip(".'-") not in known:
+                continue
+            folded = token.casefold().strip(".'-")
+            # Tokens carrying digits are period labels ("FY2024", "Q3"), not
+            # entities. The first version of this check flagged FY2024 as an
+            # unmentioned entity against a source reading "financial year 2024"
+            # and turned five correct verdicts wrong. Periods are already
+            # checked by the year extractor; checking them here as well only
+            # adds a spelling requirement the sources never agreed to.
+            if any(character.isdigit() for character in folded):
+                continue
+            if len(folded) > 1 and folded not in _STOPWORDS and folded not in _ATTRIBUTION_IGNORED:
+                found.add(folded)
+    return found
+
+
+def unmentioned_entities(
+    claim_text: str, source_text: str, known: frozenset[str] | set[str] = frozenset()
+) -> set[str]:
+    """Named entities the claim asserts something about that no source mentions.
+
+    This is the misattribution check. A true statement bolted onto the wrong
+    company -- "Nithin Kamath is the chief executive officer of Infosys" cited
+    to a page about Zerodha -- shares almost all of its wording with the source
+    and sails through both lexical entailment and numeric agreement. The only
+    thing wrong with it is the name, so the name is what has to be checked.
+
+    Absence is deliberately treated as *unsupported*, never *contradicted*. The
+    source not mentioning Infosys is not the source denying the sentence.
+    """
+    haystack = (source_text or "").casefold()
+    return {
+        entity for entity in named_entities(claim_text, known)
+        if not re.search(rf"(?<![\w]){re.escape(entity)}(?![\w])", haystack)
+    }
+
+
 def sentences(text: str) -> list[str]:
     return [part.strip() for part in _SENTENCE_SPLIT.split(text or "") if part.strip()]
 
@@ -315,7 +384,11 @@ def _polarity_conflict(claim: str, sentence: str) -> str | None:
     return None
 
 
-def verify_claim(claim_text: str, documents: dict[str, str]) -> VerificationResult:
+def verify_claim(
+    claim_text: str,
+    documents: dict[str, str],
+    known_entities: frozenset[str] | set[str] = frozenset(),
+) -> VerificationResult:
     """Judge ``claim_text`` against ``{url: document_text}`` without a model.
 
     Each document is examined separately. That matters for disagreement: if one
@@ -361,6 +434,22 @@ def verify_claim(claim_text: str, documents: dict[str, str]) -> VerificationResu
             "uncited",
             "The fetched sources do not address the claim "
             f"(only {topicality:.0%} of its key terms or entities appear).",
+            topicality=topicality,
+        )
+
+    # --- misattribution: the claim names something no source ever mentions ---
+    # Placed before every other check because it invalidates them. If the
+    # sources never mention the subject, matching numbers and matching wording
+    # are evidence about some other subject, and letting them return
+    # "supported" is precisely how a swapped entity slips through.
+    unmentioned = unmentioned_entities(claim_text, combined, known_entities)
+    if unmentioned:
+        names = ", ".join(sorted(unmentioned))
+        return VerificationResult(
+            "unsupported",
+            f"The claim is attributed to {names}, which none of the fetched sources "
+            "mention. Whatever else the sources confirm is about something else.",
+            missing_facts=sorted(unmentioned),
             topicality=topicality,
         )
 

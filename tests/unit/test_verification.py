@@ -281,3 +281,68 @@ def test_numeric_fact_tolerance_bands():
     assert not base.matches(NumericFact(1030.0, "currency", "1030"))   # 3%   -> no match
     assert not base.conflicts(NumericFact(1030.0, "currency", "1030")) # 3%   -> no conflict
     assert base.conflicts(NumericFact(1200.0, "currency", "1200"))     # 20%  -> conflict
+
+
+# --- misattribution -------------------------------------------------------
+# A true statement bolted onto the wrong company is the failure mode that
+# survived every other check: it matches on wording and on numbers, and only
+# the name is wrong.
+
+
+def test_a_true_statement_attributed_to_the_wrong_company_is_not_supported():
+    result = verify_claim(
+        "Nithin Kamath is the chief executive officer of Infosys.",
+        {"https://example.com/zerodha": (
+            "Nithin Kamath is the chief executive officer of Zerodha, the "
+            "discount broker he co-founded in 2010."
+        )},
+    )
+
+    assert result.status == "unsupported", (
+        "the source is about Zerodha; it cannot vouch for a claim about Infosys"
+    )
+    assert "infosys" in result.explanation.casefold()
+
+
+def test_misattribution_is_unsupported_not_contradicted():
+    """Silence is not denial.
+
+    A page about Zerodha that never mentions Infosys does not assert anything
+    false about Infosys. Calling that "contradicted" would overstate what the
+    auditor actually knows.
+    """
+    result = verify_claim(
+        "Wipro reported revenue of 89,760 crore rupees.",
+        {"https://example.com/infosys": "Infosys reported revenue of 89,760 crore rupees."},
+        known_entities=frozenset({"Wipro", "Infosys"}),
+    )
+
+    assert result.status == "unsupported"
+
+
+def test_period_labels_are_not_treated_as_entities():
+    """Regression: FY2024 is a period, not a company.
+
+    The first version of the attribution check demanded the source spell
+    "FY2024" the same way the claim did, which broke five correct verdicts
+    against sources reading "financial year 2024".
+    """
+    result = verify_claim(
+        "Infosys reported revenue of 1,53,670 crore rupees in FY2024.",
+        {"https://example.com/infosys": (
+            "Infosys Limited reported consolidated revenue of Rs 1,53,670 crore "
+            "for the financial year 2024."
+        )},
+    )
+
+    assert result.status == "supported"
+
+
+def test_a_sentence_initial_ordinary_word_is_not_an_entity():
+    """"Restaurant services..." must not require the source to capitalise it."""
+    result = verify_claim(
+        "Restaurant services are taxed at 5% GST.",
+        {"https://example.gov.in/gst": "Standalone restaurant services are taxed at 5% GST."},
+    )
+
+    assert result.status == "supported"

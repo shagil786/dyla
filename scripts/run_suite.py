@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import shutil
 import sys
 import time
@@ -31,6 +32,9 @@ from dyla.analyst import AnalystAgent  # noqa: E402
 from dyla.auditor import AuditorAgent  # noqa: E402
 from dyla.entities import EntityResolver  # noqa: E402
 from dyla.evaluation import DEFAULT_QUESTIONS, run_evaluation  # noqa: E402
+from dyla.findings import (  # noqa: E402
+    build_findings_markdown, run_seeded_defect_audit, summarise_verdicts,
+)
 from dyla.local_vector import LocalVectorStore  # noqa: E402
 from dyla.memory import MemoryStore  # noqa: E402
 from dyla.offline import OfflineEmbedder, OfflineModel, OfflineResearchProvider  # noqa: E402
@@ -73,6 +77,38 @@ def seed_entities(memory: MemoryStore) -> None:
         memory.upsert_entity(name, "company")
 
 
+def slugify(text: str, limit: int = 48) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "-", text.casefold()).strip("-")
+    return cleaned[:limit].rstrip("-")
+
+
+def archive_logs(root: Path, rows: list[dict], label: str) -> Path:
+    """Copy the raw JSONL traces somewhere a human can find them.
+
+    Runs are keyed by an opaque run_id, which is right for the machine and
+    useless for a reviewer told to read the logs for question 5. The archive is
+    a rename, not a rewrite: the JSONL is copied byte for byte so nothing is
+    editorialised out of the record.
+    """
+    destination = root / "runs" / label
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    index = []
+    for number, row in enumerate(rows, start=1):
+        source = root / "logs" / f"{row['run_id']}.jsonl"
+        name = f"q{number:02d}-{slugify(row['question'])}.jsonl"
+        if source.exists():
+            shutil.copyfile(source, destination / name)
+        index.append({"number": number, "log": name, **row})
+    (destination / "index.json").write_text(
+        json.dumps(index, indent=2), encoding="utf-8"
+    )
+    return destination
+
+
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true", help="use configured providers instead of fixtures")
@@ -105,12 +141,14 @@ def main() -> int:
         model_name = "offline-extractive"
 
     per_question: list[dict] = []
+    answers: list = []
 
     def runner(question: str):
         before_searches = len(provider.searches) if provider else 0
         before_fetches = len(provider.fetches) if provider else 0
         question_started = time.monotonic()
         result = asyncio.run(orchestrator.ask(question))
+        answers.append(result.answer)
         per_question.append({
             "question": question,
             "run_id": result.run_id,
@@ -127,6 +165,22 @@ def main() -> int:
         output_dir=root / args.out, model_name=model_name,
     )
 
+    label = "no-reuse" if args.no_reuse else "reuse"
+    archive = archive_logs(root, per_question, label)
+
+    defects = run_seeded_defect_audit(
+        answers=answers, audit=lambda answer, run_id: orchestrator.auditor.run(answer, run_id)
+    )
+    findings = build_findings_markdown(
+        summary=summarise_verdicts(report["results"]), defects=defects,
+        mode=f"{'live' if args.live else 'offline-fixtures'} / reuse={not args.no_reuse}",
+    )
+    findings_path = root / args.out / (
+        "auditor-findings.md" if not args.no_reuse else "auditor-findings-no-reuse.md"
+    )
+    findings_path.parent.mkdir(parents=True, exist_ok=True)
+    findings_path.write_text(findings, encoding="utf-8")
+
     elapsed = time.monotonic() - started
     summary = {
         "mode": "live" if args.live else "offline-fixtures",
@@ -136,6 +190,11 @@ def main() -> int:
         "questions": per_question,
         "totals": report["cost_report"]["totals"],
         "pricing": report["cost_report"]["pricing"],
+        "auditor": {
+            "seeded_defects_planted": defects.total,
+            "seeded_defects_caught": defects.caught,
+            "by_class": {k: {"caught": c, "planted": t} for k, (c, t) in defects.by_class().items()},
+        },
     }
     out = root / args.out / ("run-summary-no-reuse.json" if args.no_reuse else "run-summary.json")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -146,7 +205,10 @@ def main() -> int:
     for row in per_question:
         print(f"  {row['status']:<11} {row['wall_seconds']:>6.2f}s  "
               f"search={row['web_searches']} fetch={row['web_fetches']}  {row['question'][:60]}")
+    print(f"seeded-defect audit: {defects.caught}/{defects.total} caught")
     print(f"wrote {out}")
+    print(f"wrote {findings_path}")
+    print(f"archived logs to {archive}")
     return 0
 
 

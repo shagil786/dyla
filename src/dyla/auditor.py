@@ -39,7 +39,7 @@ class AuditorAgent:
         if retries < 0 or timeout_seconds <= 0:
             raise ValueError("retries must be non-negative and timeout_seconds must be positive")
         self.fetcher = fetcher
-        self.comparator = comparator or _TextComparator()
+        self.comparator = comparator or _TextComparator(memory)
         self.memory = memory
         self.trace_writer = trace_writer
         self.retries = retries
@@ -272,6 +272,22 @@ def _unique_citations(citations: list[Citation]) -> list[Citation]:
     return result
 
 
+def _known_entity_names(memory: Any | None) -> frozenset[str]:
+    """Entity names the system has already researched.
+
+    Used only to decide whether a *sentence-initial* capitalised word is a name.
+    Everything mid-sentence is checked regardless, so an auditor with no memory
+    attached is weaker at misattribution detection but never wrong in a new way.
+    """
+    getter = getattr(memory, "known_entity_names", None)
+    if getter is None:
+        return frozenset()
+    try:
+        return frozenset(getter())
+    except Exception:
+        return frozenset()
+
+
 class _TextComparator:
     """Deterministic comparator used when no judge model is configured.
 
@@ -282,10 +298,24 @@ class _TextComparator:
     unsupported and no claim could ever be marked contradicted.
     """
 
+    def __init__(self, memory: Any | None = None) -> None:
+        # Read from memory per comparison, never snapshotted. Snapshotting at
+        # construction looked equivalent and was not: the auditor is built
+        # before the first question runs, so the snapshot was always empty and
+        # entities discovered during the run were invisible to the
+        # misattribution check. That silently cost half its detection rate.
+        self.memory = memory
+
+    @property
+    def known_entities(self) -> frozenset[str]:
+        return _known_entity_names(self.memory)
+
     def compare(self, claim: Any, documents: dict[str, Any]) -> tuple[AuditStatus, str]:
         texts = {
             url: (getattr(document, "text", "") or "")
             for url, document in documents.items()
         }
-        result = verify_claim(getattr(claim, "text", "") or "", texts)
+        result = verify_claim(
+            getattr(claim, "text", "") or "", texts, self.known_entities
+        )
         return result.status, result.explanation

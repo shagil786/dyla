@@ -347,3 +347,29 @@ def test_auditor_run_with_model_comparator_produces_verdicts_and_no_issues():
         ("claim_audited", "contradicted"),
     ]
     assert memory.claims == [("c1", "contradicted")]
+
+
+def test_misattribution_check_sees_entities_learned_after_the_auditor_was_built():
+    """Regression: the comparator must not snapshot memory at construction.
+
+    The auditor is constructed before the first question runs. A snapshot taken
+    then is always empty, so every entity the run discovers is invisible to the
+    misattribution check -- which looked fine and quietly halved its detection
+    rate.
+    """
+    from dyla.auditor import _TextComparator
+
+    class GrowingMemory:
+        def __init__(self):
+            self.names = []
+
+        def known_entity_names(self):
+            return list(self.names)
+
+    memory = GrowingMemory()
+    comparator = _TextComparator(memory)
+    assert comparator.known_entities == frozenset()
+
+    memory.names.append("Infosys")
+
+    assert comparator.known_entities == frozenset({"Infosys"})
