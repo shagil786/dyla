@@ -318,8 +318,30 @@ a per-question verdict trend across the last 16 full-suite runs.
 | Content-based entity attribution | Q6, Q7 went 1 search → 0; embedding savings 19% → 38% |
 | `embedding_tokens` added to cost fields | Measured savings went from a flat 0% to 13.5% — the saving had been real all along and invisible |
 | Misattribution check | Seeded-defect detection 75% → 95% |
+| Plan, rejections and retries traced | The four ways the analyst overrules its own model became machine-readable instead of prose buried in `limitations` |
+| Redactor exemption for token counts | Every token count had been replaced with `[REDACTED]` in every trace |
 
-That seventh row is worth pausing on. For one full measurement cycle the reuse
+Two rows are worth pausing on.
+
+**The redactor was eating the deliverable.** The credential filter matched the
+substring `token`, so `model_tokens` — and any other `*_tokens` field routed
+through it — was written to every trace as `[REDACTED]`. The cost report is
+built from those numbers. A redactor careful enough to destroy the thing it was
+protecting is not being careful. Credentials are singular (`access_token`);
+counts are plural and suffixed, and that is what the exemption keys on.
+
+**Adding trace events silently failed the entire suite.** The trace validator
+holds an allowlist of event names, and an unrecognised event is treated as a
+corrupt trace. Adding four events took the suite from 7/8 to **0/8** — with
+every unit test still green, because no unit test ran a question end to end and
+then validated the resulting trace. `tests/integration/test_trace_completeness.py`
+now does, and I checked it fails when an event is removed from the allowlist
+rather than assuming it would. The first version of that guard only exercised
+the happy path, so deleting `claim_rejected` from the allowlist left it green —
+a guard that only covers the path where nothing goes wrong does not cover the
+events that exist for when something does.
+
+That row about `embedding_tokens` is worth pausing on too. For one full measurement cycle the reuse
 feature *appeared* to save nothing, and the reason was that the cost report did
 not count the token type reuse actually saves. **The metric, not the feature,
 was broken.** If I had trusted the report I would have reverted working code.

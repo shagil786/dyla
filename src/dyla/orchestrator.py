@@ -91,13 +91,35 @@ class _CoroutineAgent:
     runtime load-bearing without rewriting two well-tested agents.
     """
 
-    def __init__(self, factory: Any) -> None:
+    def __init__(self, factory: Any, component: Any | None = None) -> None:
         self._factory = factory
+        self._component = component
 
     async def run(self, input: AgentInput, tools: Any) -> AgentResult:
         del tools
+        before = self._counters()
         data = await self._factory()
-        return AgentResult(data=data, metrics={})
+        after = self._counters()
+        # Report what this stage actually spent. The runtime otherwise logs only
+        # its BudgetLedger totals, and the analyst calls its model directly
+        # rather than through the ledger -- so the trace read "model_tokens: 0"
+        # on a stage that had just spent several hundred. That was invisible
+        # while the redactor was eating the field; once it became readable it
+        # was plainly wrong. Reported as a delta so a per-question figure does
+        # not accumulate across the suite.
+        return AgentResult(
+            data=data,
+            metrics={key: after[key] - before.get(key, 0) for key in after},
+        )
+
+    def _counters(self) -> dict[str, int | float]:
+        values = getattr(self._component, "metrics", None)
+        if not isinstance(values, dict):
+            return {}
+        return {
+            key: value for key, value in values.items()
+            if isinstance(value, (int, float)) and key != "duration_ms"
+        }
 
 
 class RunOrchestrator:
@@ -237,7 +259,7 @@ class RunOrchestrator:
 
         runtime.model = None
         budget = self._budget(remaining)
-        agent = _CoroutineAgent(factory)
+        agent = _CoroutineAgent(factory, self.analyst if stage == "analyst" else self.auditor)
         restore = self._attach_ledger(stage, ledger)
         try:
             result = await runtime.run(agent, AgentInput(question="", context={"run_id": run_id}), budget)

@@ -373,3 +373,82 @@ def test_misattribution_check_sees_entities_learned_after_the_auditor_was_built(
     memory.names.append("Infosys")
 
     assert comparator.known_entities == frozenset({"Infosys"})
+
+
+# --- retries must be visible ----------------------------------------------
+
+
+def test_a_source_that_succeeds_on_retry_says_so_in_the_trace(tmp_path):
+    """A source fetched on the third attempt must not look like a clean first try.
+
+    Retries were silent: each attempt overwrote last_error and only a total
+    failure ever surfaced. Flakiness and the latency spent on it were invisible.
+    """
+    from dyla.tracing import TraceWriter
+
+    class FlakyFetcher:
+        def __init__(self):
+            self.calls = 0
+
+        def fetch(self, url):
+            self.calls += 1
+            if self.calls < 3:
+                raise ValueError("upstream 503")
+            return type("Doc", (), {"url": url, "text": "Acme reported revenue of 10 crore rupees."})()
+
+    fetcher = FlakyFetcher()
+    auditor = AuditorAgent(
+        fetcher=fetcher, trace_writer=TraceWriter(tmp_path), retries=2, timeout_seconds=5.0
+    )
+    answer = AnalystAnswer(
+        answer="a",
+        claims=[Claim(
+            id="c1", text="Acme reported revenue of 10 crore rupees.",
+            citations=[Citation(url="https://example.com/a", source_id="s1", chunk_id=None, title="A")],
+        )],
+    )
+
+    auditor.run(answer, "run-retry")
+
+    events = [
+        json.loads(line)
+        for line in Path(tmp_path, "logs", "run-retry.jsonl").read_text().splitlines()
+    ]
+    retried = [e for e in events if e["event"] == "source_fetch_retried"]
+    recovered = [e for e in events if e["event"] == "source_fetch_recovered"]
+
+    assert len(retried) == 2, "both failed attempts must be recorded"
+    assert [e["payload"]["attempt"] for e in retried] == [1, 2]
+    assert [e["payload"]["will_retry"] for e in retried] == [True, True]
+    assert "upstream 503" in retried[0]["payload"]["error"]
+    assert len(recovered) == 1 and recovered[0]["payload"]["attempt"] == 3
+
+
+def test_the_last_failed_attempt_is_not_marked_as_retrying(tmp_path):
+    """will_retry must tell the truth about whether anything follows."""
+    from dyla.tracing import TraceWriter
+
+    class DeadFetcher:
+        def fetch(self, url):
+            raise ValueError("gone")
+
+    auditor = AuditorAgent(
+        fetcher=DeadFetcher(), trace_writer=TraceWriter(tmp_path), retries=1, timeout_seconds=5.0
+    )
+    answer = AnalystAnswer(
+        answer="a",
+        claims=[Claim(
+            id="c1", text="Acme is profitable.",
+            citations=[Citation(url="https://example.com/a", source_id="s1", chunk_id=None, title="A")],
+        )],
+    )
+
+    auditor.run(answer, "run-dead")
+
+    events = [
+        json.loads(line)
+        for line in Path(tmp_path, "logs", "run-dead.jsonl").read_text().splitlines()
+    ]
+    retried = [e for e in events if e["event"] == "source_fetch_retried"]
+
+    assert [e["payload"]["will_retry"] for e in retried] == [True, False]
