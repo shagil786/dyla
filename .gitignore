@@ -20,9 +20,12 @@ build/
 dist/
 *.egg-info/
 
-# Local runtime artifacts
+# Local runtime artifacts. logs/ is scratch -- the working directory a run
+# writes into, keyed by opaque run_id and wiped by --fresh. The committed
+# record lives in runs/, which is the same JSONL copied under readable names,
+# and in reports/, which the brief asks for as a deliverable. Ignoring those
+# would mean the graded artifacts only exist on the machine that ran them.
 logs/
-reports/
 dyla.db
 skill-observations/
 .freebuff/
