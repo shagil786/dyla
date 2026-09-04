@@ -13,7 +13,7 @@ from .auditor import AuditorAgent
 
 from .config import Settings, load_settings
 from .entities import EntityResolver
-from .evaluation import run_evaluation
+from .evaluation import DEFAULT_QUESTIONS, run_evaluation
 from .memory import MemoryStore
 from .orchestrator import RunOrchestrator, RunResult
 from .provider_factory import (
@@ -137,10 +137,25 @@ def audit(artifact: str, json_output: bool = typer.Option(False, "--json")) -> N
     typer.echo(json.dumps(verdicts, indent=2) if json_output else f"Verdicts: {len(verdicts)}")
 
 
+def _read_questions_file(path: Path) -> tuple[str, ...]:
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+    questions = tuple(line for line in lines if line)
+    if not questions:
+        raise typer.BadParameter(f"questions file contains no questions: {path}")
+    return questions
+
+
 @app.command()
-def evaluate(json_output: bool = typer.Option(False, "--json")) -> None:
-    """Run the default question suite and write reports/evaluation.{json,md}."""
-    payload = run_evaluation()
+def evaluate(
+    json_output: bool = typer.Option(False, "--json"),
+    questions_file: Path | None = typer.Option(
+        None, "--questions-file", exists=True, dir_okay=False,
+        help="Optional file with one question per line, replacing the default eight-question suite.",
+    ),
+) -> None:
+    """Run the default question suite (or --questions-file) and write reports/evaluation.{json,md}."""
+    questions = _read_questions_file(questions_file) if questions_file else DEFAULT_QUESTIONS
+    payload = run_evaluation(questions=questions)
     typer.echo(json.dumps(payload, indent=2) if json_output else f"Evaluated {payload['total']} questions; {payload['passed']} passed")
 
 

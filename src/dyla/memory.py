@@ -34,6 +34,26 @@ def normalize_text(value: str) -> str:
     return " ".join(value.split())
 
 
+_SEARCH_STOPWORDS = frozenset(
+    {
+        "a", "an", "and", "are", "as", "at", "been", "by", "did", "do", "does",
+        "for", "from", "had", "has", "have", "he", "her", "him", "his", "in",
+        "is", "it", "its", "of", "on", "or", "she", "that", "the", "their",
+        "them", "they", "to", "was", "were", "what", "which", "who", "with",
+    }
+)
+
+
+def _query_terms(query: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", query).casefold()
+    terms = []
+    for token in normalized.split():
+        term = token.strip(string.punctuation)
+        if len(term) >= 2 and term not in _SEARCH_STOPWORDS:
+            terms.append(term)
+    return list(dict.fromkeys(terms))
+
+
 class MemoryStore:
     def __init__(self, database: str | Path = "dyla.db") -> None:
         self.database = str(database)
@@ -225,25 +245,33 @@ class MemoryStore:
     def search_memory(self, query: str, limit: int = 10) -> list[MemoryRecord]:
         if limit < 1:
             return []
-        terms = [term for term in normalize_text(query).split() if term]
+        terms = _query_terms(query)
         if not terms:
             return []
-        clauses = " AND ".join("text LIKE ? COLLATE NOCASE" for _ in terms)
         rows = self.connection.execute(
-            f"SELECT * FROM memory_records WHERE {clauses} ORDER BY rowid LIMIT ?",
-            tuple(f"%{term}%" for term in terms) + (limit,),
+            "SELECT rowid, * FROM memory_records ORDER BY rowid"
         ).fetchall()
-        return [
-            MemoryRecord(
-                id=row["id"],
-                kind=row["kind"],
-                text=row["text"],
-                entity_ids=json.loads(row["entity_ids_json"]),
-                source_ids=json.loads(row["source_ids_json"]),
-                verified=bool(row["verified"]),
-            )
-            for row in rows
-        ]
+        scored: list[tuple[int, int, MemoryRecord]] = []
+        for row in rows:
+            text = unicodedata.normalize("NFKC", row["text"]).casefold()
+            score = sum(1 for term in terms if term in text)
+            if score:
+                scored.append(
+                    (
+                        score,
+                        row["rowid"],
+                        MemoryRecord(
+                            id=row["id"],
+                            kind=row["kind"],
+                            text=row["text"],
+                            entity_ids=json.loads(row["entity_ids_json"]),
+                            source_ids=json.loads(row["source_ids_json"]),
+                            verified=bool(row["verified"]),
+                        ),
+                    )
+                )
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [record for _, _, record in scored[:limit]]
 
     @_synchronized
     def save_claim(self, claim: Claim, verdict: AuditVerdict | None) -> None:

@@ -152,6 +152,96 @@ def test_memory_operations_are_safe_from_worker_threads_and_concurrent_access(tm
     assert len(store.search_memory("concurrent", limit=50)) == 20
 
 
+def test_search_memory_strips_punctuation_from_each_query_term(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    store.initialize()
+    store.add_memory(
+        "Zerodha was founded in 2010 by Nithin Kamath.", kind="fact"
+    )
+
+    records = store.search_memory("Zerodha, founded", limit=10)
+
+    assert [record.text for record in records] == [
+        "Zerodha was founded in 2010 by Nithin Kamath."
+    ]
+
+
+def test_search_memory_finds_relevant_record_for_multi_word_question(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    store.initialize()
+    store.add_memory(
+        "He joined Zerodha in 2013 to start its technology team.", kind="fact"
+    )
+    store.add_memory("Acme announced a quarterly filing.", kind="fact")
+
+    records = store.search_memory(
+        "Who is the chief technology officer of Zerodha and what did he do before?",
+        limit=10,
+    )
+
+    assert [record.text for record in records] == [
+        "He joined Zerodha in 2013 to start its technology team."
+    ]
+
+
+def test_search_memory_orders_records_by_number_of_overlapping_terms(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    store.initialize()
+    store.add_memory("Zerodha is an Indian stockbroker.", kind="fact")
+    store.add_memory(
+        "Nithin Kamath is the chief executive officer of Zerodha.", kind="fact"
+    )
+
+    records = store.search_memory(
+        "Who is the chief executive officer of Zerodha?", limit=10
+    )
+
+    assert [record.text for record in records] == [
+        "Nithin Kamath is the chief executive officer of Zerodha.",
+        "Zerodha is an Indian stockbroker.",
+    ]
+
+
+def test_search_memory_ignores_stopword_only_and_punctuation_only_queries(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    store.initialize()
+    store.add_memory("Zerodha is an Indian stockbroker.", kind="fact")
+
+    assert store.search_memory("The of and who is?", limit=10) == []
+    assert store.search_memory("?! ..., ;", limit=10) == []
+
+
+def test_search_memory_returns_nothing_for_unrelated_queries(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    store.initialize()
+    store.add_memory(
+        "He joined Zerodha in 2013 to start its technology team.", kind="fact"
+    )
+    store.add_memory(
+        "Zerodha was founded in 2010 by Nithin Kamath.", kind="fact"
+    )
+
+    records = store.search_memory("What is the capital of France?", limit=10)
+
+    assert records == []
+
+
+def test_search_memory_limit_applies_to_ranked_results(tmp_path):
+    store = MemoryStore(tmp_path / "memory.db")
+    store.initialize()
+    store.add_memory("Zerodha is an Indian stockbroker.", kind="fact")
+    store.add_memory("Zerodha built its ranking technology in house.", kind="fact")
+    store.add_memory("Zerodha publishes a ranking of brokers.", kind="fact")
+
+    records = store.search_memory("Zerodha ranking", limit=2)
+
+    assert [record.text for record in records] == [
+        "Zerodha built its ranking technology in house.",
+        "Zerodha publishes a ranking of brokers.",
+    ]
+    assert store.search_memory("Zerodha ranking", limit=1) == [records[0]]
+
+
 def test_initialize_is_safe_to_call_more_than_once(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
 

@@ -116,3 +116,44 @@ def test_evaluate_writes_json_and_markdown_reports(tmp_path, monkeypatch):
     assert json.loads(result.stdout)["total"] == 8
     assert json.loads((tmp_path / "reports" / "evaluation.json").read_text())["passed"] == 8
     assert "# Evaluation" in (tmp_path / "reports" / "evaluation.md").read_text()
+
+
+def test_evaluate_accepts_questions_file_override(tmp_path, monkeypatch):
+    questions_file = tmp_path / "questions.txt"
+    questions_file.write_text(
+        "\nWhat is the current GST rate on restaurant services in India?\n\nWho leads Zerodha?\n"
+    )
+    asked = []
+
+    class Orchestrator:
+        async def ask(self, question):
+            asked.append(question)
+            return type("Result", (), {
+                "quality": type("Quality", (), {"status": "complete"})(),
+                "run_id": question,
+                "metrics": type("Metrics", (), {"model_dump": lambda self, **kwargs: {}})(),
+            })()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dyla.config.load_settings", lambda: object())
+    monkeypatch.setattr("dyla.cli._build_orchestrator", lambda settings: Orchestrator())
+
+    result = CliRunner().invoke(app, ["evaluate", "--json", "--questions-file", str(questions_file)])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["total"] == 2
+    assert asked == [
+        "What is the current GST rate on restaurant services in India?",
+        "Who leads Zerodha?",
+    ]
+    assert json.loads((tmp_path / "reports" / "evaluation.json").read_text())["total"] == 2
+
+
+def test_evaluate_rejects_empty_questions_file(tmp_path):
+    questions_file = tmp_path / "empty.txt"
+    questions_file.write_text("\n   \n")
+
+    result = CliRunner().invoke(app, ["evaluate", "--json", "--questions-file", str(questions_file)])
+
+    assert result.exit_code != 0
+    assert "no questions" in result.output

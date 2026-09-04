@@ -73,6 +73,7 @@ dyla audit <run-id>          # show audit verdicts for a past run
 dyla replay <run-id>         # re-examine a run with zero API calls (free)
 dyla memory list             # inspect accumulated research memory
 dyla evaluate                # full eight-question suite (makes many live API calls)
+dyla evaluate --questions-file questions.txt  # run a custom suite instead (one question per line)
 dyla ask --json "question"   # machine-readable output
 ```
 
@@ -95,4 +96,4 @@ Every run's full detail is in its JSONL trace under `logs/`; `dyla replay` re-re
 - `dyla audit TRACE_OR_RUN_ID` reads audit events from a JSONL trace path or from `logs/<run-id>.jsonl`.
 - `dyla replay TRACE_OR_RUN_ID` replays either form without model or web calls.
 - `dyla memory list` inspects durable research memory.
-- `dyla evaluate` runs the default eight-question suite and writes `reports/evaluation.json` and `reports/evaluation.md`.
+- `dyla evaluate` runs the default eight-question suite and writes `reports/evaluation.json` and `reports/evaluation.md`. Pass `--questions-file PATH` (one question per line, blank lines ignored) to run a custom suite instead. Both reports include a per-question cost table (tokens, estimated cost in adapter units, duration, memory hits) with totals, and the Markdown report adds a cost-trend note showing how cost and memory hits evolved across the suite.
