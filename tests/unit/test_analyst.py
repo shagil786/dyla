@@ -497,3 +497,135 @@ def test_analyst_propagates_question_embedding_failure():
                          fetcher=FakeFetcher(), index=FakeIndex(), embedder=QuestionEmbedFailure(), planner=controlled_planner(plan))
     with pytest.raises(ValueError, match="retry exhaustion"):
         asyncio.run(agent.run(question, "run-question-embed-failure"))
+
+
+# ---------------------------------------------------------------------------
+# Auditor -> analyst feedback loop
+#
+# This mechanism shipped to main as dead code: the function that was supposed to
+# suppress previously rejected claims was never called, and the list feeding it
+# was built from `verified is True` — the auditor's *approved* claims. Wired up
+# as written it would have suppressed the best claims. It had no tests at all.
+# ---------------------------------------------------------------------------
+
+_REJECTED_TEXT = "Acme opened 250 new stores in 2024."
+
+
+class _MemoryWithVerdicts:
+    def __init__(self, records):
+        self._records = records
+
+    def search_memory(self, query, limit=10):
+        return list(self._records)
+
+
+def _claim_record(text, verdict_status, verified=False):
+    return MemoryRecord(
+        id=f"claim::{text}", kind="claim", text=text, entity_ids=["e1"],
+        source_ids=[], verified=verified, verdict_status=verdict_status,
+    )
+
+
+class _ModelReturning:
+    """Model that always emits one claim with the given text."""
+
+    def __init__(self, text):
+        self.text = text
+        self.system_prompts = []
+
+    def complete(self, request):
+        self.system_prompts.append(request.messages[0]["content"])
+        answer = AnalystAnswer(
+            answer="Answer",
+            claims=[Claim(
+                id="c1", text=self.text,
+                citations=[Citation(url="https://example.com/1", title="Source",
+                                    source_id="s1", chunk_id="c1")],
+                confidence="high",
+            )],
+            limitations=[],
+        )
+        return type("Response", (), {"parsed": answer})()
+
+
+def _agent_with(memory, model):
+    return AnalystAgent(
+        model=model, resolver=FakeResolver(), memory=memory, searcher=FakeSearcher(),
+        fetcher=FakeFetcher(), index=FakeIndex(), embedder=FakeEmbedder(), max_subqueries=1,
+    )
+
+
+def test_claim_rejected_by_a_previous_audit_is_blocked_on_the_next_run():
+    memory = _MemoryWithVerdicts([_claim_record(_REJECTED_TEXT, "unsupported")])
+    agent = _agent_with(memory, _ModelReturning(_REJECTED_TEXT))
+
+    result = asyncio.run(agent.run("How many stores did Acme open?", "run-fb-1"))
+
+    assert result.claims == []
+    assert any("earlier audit" in item for item in result.limitations), result.limitations
+    assert agent.metrics["claims_blocked_by_audit_feedback"] == 1
+
+
+def test_contradicted_claims_are_blocked_too():
+    memory = _MemoryWithVerdicts([_claim_record(_REJECTED_TEXT, "contradicted")])
+    agent = _agent_with(memory, _ModelReturning(_REJECTED_TEXT))
+
+    result = asyncio.run(agent.run("How many stores did Acme open?", "run-fb-2"))
+
+    assert result.claims == []
+
+
+def test_a_paraphrase_of_a_rejected_claim_is_also_blocked():
+    """Substring matching would miss this; fingerprint overlap catches it."""
+    memory = _MemoryWithVerdicts([_claim_record(_REJECTED_TEXT, "unsupported")])
+    agent = _agent_with(memory, _ModelReturning("In 2024, Acme opened 250 new stores."))
+
+    result = asyncio.run(agent.run("How many stores did Acme open?", "run-fb-3"))
+
+    assert result.claims == []
+
+
+def test_a_previously_SUPPORTED_claim_is_not_blocked():
+    """Regression guard for the inverted condition that shipped to main.
+
+    The old code collected records with verified=True — which memory.py sets for
+    *supported* verdicts — into `prior_rejected_claims`. If that inversion ever
+    returns, this test fails.
+    """
+    memory = _MemoryWithVerdicts([_claim_record(_REJECTED_TEXT, "supported", verified=True)])
+    agent = _agent_with(memory, _ModelReturning(_REJECTED_TEXT))
+
+    result = asyncio.run(agent.run("How many stores did Acme open?", "run-fb-4"))
+
+    assert [claim.text for claim in result.claims] == [_REJECTED_TEXT]
+    assert agent.metrics["claims_blocked_by_audit_feedback"] == 0
+
+
+def test_an_unaudited_claim_is_not_blocked():
+    """verdict_status=None means never audited, which must not imply rejected."""
+    memory = _MemoryWithVerdicts([_claim_record(_REJECTED_TEXT, None)])
+    agent = _agent_with(memory, _ModelReturning(_REJECTED_TEXT))
+
+    result = asyncio.run(agent.run("How many stores did Acme open?", "run-fb-5"))
+
+    assert len(result.claims) == 1
+
+
+def test_an_unrelated_claim_about_the_same_entity_is_not_suppressed():
+    memory = _MemoryWithVerdicts([_claim_record(_REJECTED_TEXT, "unsupported")])
+    agent = _agent_with(memory, _ModelReturning("Acme appointed a new chief financial officer."))
+
+    result = asyncio.run(agent.run("Who is Acme's CFO?", "run-fb-6"))
+
+    assert len(result.claims) == 1
+
+
+def test_rejected_claims_are_named_in_the_system_prompt():
+    memory = _MemoryWithVerdicts([_claim_record(_REJECTED_TEXT, "unsupported")])
+    model = _ModelReturning("Acme appointed a new chief financial officer.")
+    agent = _agent_with(memory, model)
+
+    asyncio.run(agent.run("Who is Acme's CFO?", "run-fb-7"))
+
+    assert _REJECTED_TEXT in model.system_prompts[0]
+    assert "independent auditor" in model.system_prompts[0]

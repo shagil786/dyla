@@ -5,12 +5,12 @@ from __future__ import annotations
 from concurrent.futures import TimeoutError as FutureTimeout, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import re
 from typing import Any, Literal
 
 from .domain import AnalystAnswer, AuditVerdict, AuditorVerdictModel, Citation, RunEvent
 from .models import ModelRequest
 from .ports import SearchProvider
+from .verification import verify_claim
 
 AuditStatus = Literal["supported", "unsupported", "contradicted", "uncited"]
 AuditRunStatus = Literal["complete", "partial", "failed"]
@@ -242,49 +242,19 @@ def _unique_citations(citations: list[Citation]) -> list[Citation]:
 
 
 class _TextComparator:
-    """Deterministic fallback comparator for deployments without a judge model.
+    """Deterministic comparator used when no judge model is configured.
 
-    Detects source disagreement: when claim text appears in only some fetched
-    sources rather than all, or when documents contain contradictory statements
-    about the same claim.
+    Delegates to :mod:`dyla.verification`, which decomposes a claim into
+    numeric/date facts plus content words and checks those against the source.
+    The previous implementation required the whole claim to appear verbatim as a
+    substring, so paraphrasing sources — that is, all real sources — were marked
+    unsupported and no claim could ever be marked contradicted.
     """
 
     def compare(self, claim: Any, documents: dict[str, Any]) -> tuple[AuditStatus, str]:
-        claim_text = _normalize(claim.text)
-        normalized_texts: list[str] = []
-        for url, document in documents.items():
-            text = _normalize(getattr(document, "text", "") or "")
-            normalized_texts.append(text)
-        source_text = " ".join(normalized_texts)
-
-        claim_present_in_all = all(
-            claim_text in text for text in normalized_texts
-        )
-        claim_present_in_any = any(
-            claim_text in text for text in normalized_texts
-        )
-
-        if not claim_present_in_any:
-            return "unsupported", "The claim text was not found in any independently fetched sources."
-
-        if claim_present_in_all:
-            return "supported", "The complete claim text appears in all independently fetched sources."
-
-        # Claim present in some but not all sources: partial support with disagreement
-        present_count = sum(1 for text in normalized_texts if claim_text in text)
-        total = len(normalized_texts)
-        if present_count > 1 and present_count < total:
-            return "unsupported", (
-                f"Source disagreement: claim found in {present_count}/{total} sources "
-                f"but not in all; the claim is not uniformly verified."
-            )
-
-        # Edge case: only one source has the claim, others don't contain it
-        return "unsupported", (
-            f"Source disagreement: claim found in only 1/{total} source(s); "
-            f"not enough independent verification."
-        )
-
-
-def _normalize(value: str) -> str:
-    return " ".join(re.findall(r"\w+", value.casefold()))
+        texts = {
+            url: (getattr(document, "text", "") or "")
+            for url, document in documents.items()
+        }
+        result = verify_claim(getattr(claim, "text", "") or "", texts)
+        return result.status, result.explanation

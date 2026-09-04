@@ -100,6 +100,10 @@ class MemoryRecord(BaseModel):
     entity_ids: list[str]
     source_ids: list[str]
     verified: bool
+    # The auditor's actual verdict, when this record came from an audited claim.
+    # `verified` alone is a bool and cannot distinguish "audited and rejected"
+    # from "never audited", which the analyst feedback loop needs to know.
+    verdict_status: str | None = None
 
 
 class Budget(BaseModel):

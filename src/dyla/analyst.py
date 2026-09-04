@@ -13,6 +13,37 @@ from .models import ModelRequest
 from .ports import SearchProvider
 from .query_planner import QueryPlanner
 
+_REJECTED_VERDICTS = frozenset({"unsupported", "contradicted"})
+
+
+def _claim_fingerprint(text: str) -> frozenset[str]:
+    """Content-word fingerprint used to recognise a restated claim."""
+    from .verification import content_words
+
+    return frozenset(content_words(text))
+
+
+def _restates_rejected_claim(text: str, rejected: list[str], threshold: float = 0.8) -> bool:
+    """True when `text` substantially restates a previously rejected claim.
+
+    Substring matching was the earlier approach and is too weak: a reworded
+    restatement of a rejected claim slips straight through. Comparing
+    content-word fingerprints catches paraphrase, and the 0.8 threshold keeps a
+    merely adjacent claim about the same entity from being suppressed.
+    """
+    current = _claim_fingerprint(text)
+    if not current:
+        return False
+    for prior in rejected:
+        previous = _claim_fingerprint(prior)
+        if not previous:
+            continue
+        overlap = len(current & previous) / len(previous)
+        if overlap >= threshold:
+            return True
+    return False
+
+
 
 class AnalystAgent:
     def __init__(
@@ -27,7 +58,8 @@ class AnalystAgent:
         self.trace_writer, self.search_limit, self.evidence_limit = trace_writer, search_limit, evidence_limit
         self.metrics = {"input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0, "duration_ms": 0,
                         "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0,
-                        "failed_searches": 0, "failed_fetches": 0, "failed_ingestions": 0}
+                        "failed_searches": 0, "failed_fetches": 0, "failed_ingestions": 0,
+                        "claims_blocked_by_audit_feedback": 0}
 
     async def run(self, question: str, run_id: str) -> AnalystAnswer:
         started = time.monotonic()
@@ -142,29 +174,36 @@ class AnalystAgent:
             f"text: {item.text}"
             for index, item in enumerate(evidence, start=1)
         )
-        # --- Feedback loop: check previously audited claims from memory ---
-        prior_rejected_claims: list[str] = []
-        for record in memories:
-            if record.kind == "claim" and record.text:
-                if record.verified:
-                    prior_rejected_claims.append(record.text)
-
-        def _was_previously_rejected(claim_text: str) -> bool:
-            import re
-            normalized = " ".join(re.findall(r"\w+", claim_text.casefold()))
-            for prior_text in prior_rejected_claims:
-                prior_normalized = " ".join(re.findall(r"\w+", prior_text.casefold()))
-                if prior_normalized and prior_normalized in normalized:
-                    return True
-            return False
+        # --- Auditor -> analyst feedback ---
+        # Claims a previous run asserted and the auditor then rejected. Read from
+        # verdict_status, not from `verified`: `verified` is a bool that cannot
+        # separate "audited and rejected" from "never audited", and the earlier
+        # implementation of this block collected records where verified was True
+        # (i.e. the auditor's *approved* claims) into a list it called
+        # prior_rejected_claims, then never called the function that used it.
+        rejected_before = [
+            record.text
+            for record in memories
+            if record.kind == "claim"
+            and record.text
+            and (record.verdict_status or "") in _REJECTED_VERDICTS
+        ]
 
         context = "\n".join([*(f"Memory: {m.text}" for m in memories), evidence_context])
+        system_prompt = (
+            "Answer using only supplied evidence. Return AnalystAnswer JSON. "
+            "For every citation, copy source_id, chunk_id, URL, and title exactly "
+            "from one supplied evidence item; do not invent or alter citation metadata."
+        )
+        if rejected_before:
+            system_prompt += (
+                " An independent auditor previously re-fetched the cited sources for the "
+                "following claims and found they were not supported by them. Do not restate "
+                "any of these unless the evidence supplied now independently establishes it:\n"
+                + "\n".join(f"- {text}" for text in rejected_before[:10])
+            )
         response = self.model.complete(ModelRequest(
-            messages=[{"role": "system", "content": (
-                "Answer using only supplied evidence. Return AnalystAnswer JSON. "
-                "For every citation, copy source_id, chunk_id, URL, and title exactly "
-                "from one supplied evidence item; do not invent or alter citation metadata."
-            )},
+            messages=[{"role": "system", "content": system_prompt},
                       {"role": "user", "content": f"Question: {question}\n{context}"}],
             response_schema=AnalystAnswer, max_tokens=1200, temperature=0,
         ))
@@ -185,6 +224,16 @@ class AnalystAgent:
                 continue
             if claim.confidence.casefold() in {"low", "medium", "weak"} and len({citation.source_id for citation in mapped}) < 2:
                 limitations.append(f"Claim {claim.id} was rejected for lacking independent evidence.")
+                continue
+            if _restates_rejected_claim(claim.text, rejected_before):
+                # The prompt above asks the model not to restate these. Asking is
+                # advisory; this filter is not. The loop has to hold even when the
+                # model ignores the instruction.
+                limitations.append(
+                    f"Claim {claim.id} was rejected because an earlier audit found the same "
+                    "assertion unsupported by its cited sources."
+                )
+                self.metrics["claims_blocked_by_audit_feedback"] += 1
                 continue
             valid_claims.append(claim)
         if not answer.claims or not valid_claims:
