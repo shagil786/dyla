@@ -27,5 +27,6 @@ dist/
 # would mean the graded artifacts only exist on the machine that ran them.
 logs/
 dyla.db
+*.db
 skill-observations/
 .freebuff/
