@@ -42,13 +42,22 @@ class RunOrchestrator:
     async def ask(self, question: str) -> RunResult:
         if not question.strip():
             raise ValueError("question must not be empty")
+        max_wall_clock_seconds = 120.0
         started = time.monotonic()
         baseline = self._snapshot_metrics()
         run_id = str(self.run_id_factory())
         self._run_issues = []
         self.memory.initialize()
         answer = await self.analyst.run(question, run_id)
+        if time.monotonic() - started > max_wall_clock_seconds:
+            self._run_issues.append(
+                f"wall clock exceeded {max_wall_clock_seconds}s ceiling after analyst stage"
+            )
         verdicts = await asyncio.to_thread(self.auditor.run, answer, run_id)
+        if time.monotonic() - started > max_wall_clock_seconds:
+            self._run_issues.append(
+                f"wall clock exceeded {max_wall_clock_seconds}s ceiling after auditor stage"
+            )
         for claim in answer.claims:
             verdict = next((item for item in verdicts if item.claim_id == claim.id), None)
             try:

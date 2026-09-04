@@ -222,7 +222,12 @@ _AUDITOR_SYSTEM_PROMPT = (
     "supported = the claim text is directly supported by document content; "
     "contradicted = document content asserts the opposite of the claim; "
     "uncited = the documents do not address the claim; "
-    "unsupported = the claim cannot be verified from the documents."
+    "unsupported = the claim cannot be verified from the documents. "
+    "For profitability claims, judge by the reported financial results: a reported "
+    "net loss in the company's latest published period supports a claim that it is "
+    "not profitable, and a reported net profit supports a claim that it is "
+    "profitable. Statements of future intent (e.g. 'aims to be profitable', 'on "
+    "track to profitability') do not contradict a claim about current profitability."
 )
 
 
@@ -237,14 +242,48 @@ def _unique_citations(citations: list[Citation]) -> list[Citation]:
 
 
 class _TextComparator:
-    """Deterministic fallback comparator for deployments without a judge model."""
+    """Deterministic fallback comparator for deployments without a judge model.
+
+    Detects source disagreement: when claim text appears in only some fetched
+    sources rather than all, or when documents contain contradictory statements
+    about the same claim.
+    """
 
     def compare(self, claim: Any, documents: dict[str, Any]) -> tuple[AuditStatus, str]:
         claim_text = _normalize(claim.text)
-        source_text = " ".join(_normalize(getattr(document, "text", "")) for document in documents.values())
-        if claim_text and claim_text in source_text:
-            return "supported", "The complete claim text appears in the independently fetched sources."
-        return "unsupported", "The complete claim text was not found in the independently fetched sources."
+        normalized_texts: list[str] = []
+        for url, document in documents.items():
+            text = _normalize(getattr(document, "text", "") or "")
+            normalized_texts.append(text)
+        source_text = " ".join(normalized_texts)
+
+        claim_present_in_all = all(
+            claim_text in text for text in normalized_texts
+        )
+        claim_present_in_any = any(
+            claim_text in text for text in normalized_texts
+        )
+
+        if not claim_present_in_any:
+            return "unsupported", "The claim text was not found in any independently fetched sources."
+
+        if claim_present_in_all:
+            return "supported", "The complete claim text appears in all independently fetched sources."
+
+        # Claim present in some but not all sources: partial support with disagreement
+        present_count = sum(1 for text in normalized_texts if claim_text in text)
+        total = len(normalized_texts)
+        if present_count > 1 and present_count < total:
+            return "unsupported", (
+                f"Source disagreement: claim found in {present_count}/{total} sources "
+                f"but not in all; the claim is not uniformly verified."
+            )
+
+        # Edge case: only one source has the claim, others don't contain it
+        return "unsupported", (
+            f"Source disagreement: claim found in only 1/{total} source(s); "
+            f"not enough independent verification."
+        )
 
 
 def _normalize(value: str) -> str:

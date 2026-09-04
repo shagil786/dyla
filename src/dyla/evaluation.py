@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,8 @@ DEFAULT_QUESTIONS = (
 
 COST_FIELDS = ("input_tokens", "output_tokens", "estimated_cost", "duration_ms", "memory_hits")
 ESTIMATED_COST_UNIT = "adapter units"
+RUPEES_PER_ADAPTER_UNIT = 0.8  # Conversion rate; adjust based on actual adapter pricing
+HISTORY_CAP = 50
 
 
 def _metric_value(metrics: Any, field: str) -> int | float:
@@ -62,6 +65,7 @@ def _cost_row(item: dict[str, Any]) -> dict[str, Any]:
     metrics = item.get("metrics")
     row: dict[str, Any] = {"question": item.get("question"), "status": item.get("status")}
     row.update({field: _metric_value(metrics, field) for field in COST_FIELDS})
+    row["cost_in_rupees"] = row["estimated_cost"] * RUPEES_PER_ADAPTER_UNIT if isinstance(row.get("estimated_cost"), (int, float)) else 0
     return row
 
 
@@ -77,20 +81,66 @@ def _cost_report(results: list[dict[str, Any]]) -> dict[str, Any]:
 def _md_cost_table(cost: dict[str, Any]) -> list[str]:
     lines = [
         "## Cost per question", "",
-        "| # | Question | Status | Input tokens | Output tokens | Estimated cost (adapter units) | Duration (ms) | Memory hits |",
-        "|---|---|---|---|---|---|---|---|",
+        "| # | Question | Status | Input tokens | Output tokens | Estimated cost (adapter units) | Duration (ms) | Memory hits | Cost (rupees) |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for index, row in enumerate(cost["questions"], start=1):
         question = str(row["question"]).replace("|", "\\|")
         lines.append(
             f"| {index} | {question} | {row['status']} | {row['input_tokens']} | {row['output_tokens']}"
-            f" | {row['estimated_cost']} | {row['duration_ms']} | {row['memory_hits']} |"
+            f" | {row['estimated_cost']} | {row['duration_ms']} | {row['memory_hits']} | {row['cost_in_rupees']} |"
         )
     totals = cost["totals"]
     lines.append(
         f"| | **Total** | | {totals['input_tokens']} | {totals['output_tokens']}"
-        f" | {totals['estimated_cost']} | {totals['duration_ms']} | {totals['memory_hits']} |"
+        f" | {totals['estimated_cost']} | {totals['duration_ms']} | {totals['memory_hits']} | {totals['estimated_cost'] * RUPEES_PER_ADAPTER_UNIT} |"
     )
+    return lines
+
+
+def _verdict_detail(value: Any) -> list[dict[str, Any]]:
+    """Per-claim verdict quality from a run result, so reports show exactly which
+    claims were supported or rejected instead of only the question-level status."""
+    answer = getattr(value, "answer", None)
+    claims = getattr(answer, "claims", None)
+    verdicts = getattr(value, "verdicts", None)
+    if not claims or not verdicts:
+        return []
+    by_id = {verdict.claim_id: verdict for verdict in verdicts}
+    detail: list[dict[str, Any]] = []
+    for claim in claims:
+        verdict = by_id.get(claim.id)
+        if verdict is None:
+            continue
+        urls = [citation.url for citation in getattr(claim, "citations", [])]
+        if not urls:
+            urls = [citation.url for citation in getattr(verdict, "citations_checked", [])]
+        detail.append({
+            "claim_id": claim.id,
+            "text": claim.text,
+            "status": verdict.status,
+            "explanation": verdict.explanation,
+            "urls": urls,
+        })
+    return detail
+
+
+def _md_verdict_detail(item: dict[str, Any], index: int) -> list[str]:
+    lines = [f"### {index}. {item['question'].replace('|', '\\|')} — {item['status']}"]
+    run_id = item.get("run_id")
+    if run_id:
+        lines.append(f"Run: `{run_id}`")
+    verdicts = item.get("verdicts") or []
+    if not verdicts:
+        lines.append("_No claims were audited for this question._")
+        return lines
+    lines.extend(["", "| Claim | Verdict | Cited sources |", "|---|---|---|"])
+    for verdict in verdicts:
+        urls = "; ".join(url for url in verdict.get("urls", [])) or "—"
+        lines.append(
+            f"| {verdict['claim_id'].replace('|', '\\|')} | {verdict['status']} | {urls.replace('|', '\\|')} |"
+        )
+    lines.append("")
     return lines
 
 
@@ -132,11 +182,12 @@ def run_evaluation(
                     "status": value.quality.status,
                     "run_id": value.run_id,
                     "metrics": value.metrics.model_dump(mode="json"),
+                    "verdicts": _verdict_detail(value),
                 }
             else:
-                result = {"question": question, "status": "passed", "result": value}
+                result = {"question": question, "status": "passed", "result": value, "verdicts": []}
         except Exception as exc:
-            result = {"question": question, "status": "failed", "error": str(exc)}
+            result = {"question": question, "status": "failed", "error": str(exc), "verdicts": []}
         results.append(result)
 
     passed = sum(item["status"] in {"passed", "complete"} for item in results)
@@ -147,10 +198,122 @@ def run_evaluation(
     }
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
+    json_path = directory / "evaluation.json"
+    history = _load_history(json_path)
+    history.append({
+        "timestamp": datetime.now(UTC).isoformat(),
+        "passed": passed,
+        "total": len(results),
+        "questions": [
+            {
+                "question": item["question"],
+                "status": item["status"],
+                "supported": sum(1 for verdict in item.get("verdicts") or [] if verdict["status"] == "supported"),
+                "total": len(item.get("verdicts") or []),
+                "run_id": item.get("run_id"),
+            }
+            for item in results
+        ],
+    })
+    if len(history) > HISTORY_CAP:
+        history = history[-HISTORY_CAP:]
+    report["history"] = history
     (directory / "evaluation.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
     lines = ["# Evaluation", "", f"- Total: {report['total']}", f"- Passed: {report['passed']}", f"- Failed: {report['failed']}", "", "## Questions", ""]
     for item in results:
         lines.append(f"- **{item['status']}** — {item['question']}")
-    lines.extend(["", *_md_cost_table(cost), "", *_md_trend(cost)])
+    lines.extend(["", "## Verdict detail", ""])
+    for index, item in enumerate(results, start=1):
+        lines.extend(_md_verdict_detail(item, index))
+    lines.extend([*_md_cost_table(cost), "", *_md_trend(cost), "", *_md_history(history)])
     (directory / "evaluation.md").write_text("\n".join(lines) + "\n")
     return report
+
+
+def _load_history(path: Path) -> list[dict[str, Any]]:
+    """Read the persisted run history so repeated evaluations accumulate instead of
+    overwriting; a missing or malformed history file starts a fresh history."""
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return []
+    history = data.get("history", []) if isinstance(data, dict) else []
+    return [entry for entry in history if isinstance(entry, dict)]
+
+
+def _md_history(history: list[dict[str, Any]]) -> list[str]:
+    if not history:
+        return ["## Run history", "", "_No complete-suite runs recorded yet._"]
+    lines = ["## Run history", "", f"Most recent {len(history)} full-suite runs recorded.", ""]
+    lines.extend(_md_trend_table(history))
+    lines.extend(["**Run details (newest first):**", ""])
+    for entry in reversed(history):
+        passed, total = entry.get("passed"), entry.get("total")
+        summary = f"{passed}/{total} passed" if isinstance(passed, int) and isinstance(total, int) else "status unknown"
+        lines.append(f"### {entry.get('timestamp', '?')} — {summary}")
+        for row in entry.get("questions", []):
+            counts = f" · {row['supported']}/{row['total']} claims supported" if row.get("total") else ""
+            run_id = f" · `{row['run_id']}`" if row.get("run_id") else ""
+            lines.append(f"- **{row.get('status', '?')}** — {row.get('question', '?')}{counts}{run_id}")
+        lines.append("")
+    return lines
+
+
+def _short_timestamp(value: Any) -> str:
+    if not value:
+        return "?"
+    try:
+        return datetime.fromisoformat(str(value)).strftime("%m-%d %H:%M")
+    except ValueError:
+        return str(value)[:16]
+
+
+def _trend_cell(row: dict[str, Any] | None) -> str:
+    """Compact cell: '✓ 4/4' for a passed run with audited claims, '✗ 2/4' for a
+    failed one, the status word when nothing was audited, or '—' when the
+    question did not participate in that run."""
+    if row is None:
+        return "—"
+    status = str(row.get("status", "?"))
+    passed = status in {"complete", "passed"}
+    total = row.get("total")
+    supported = row.get("supported")
+    if isinstance(total, int) and total > 0:
+        supported = supported if isinstance(supported, int) else 0
+        return f"{'✓' if passed else '✗'} {supported}/{total}"
+    return "✓" if passed else status
+
+
+def _md_trend_table(history: list[dict[str, Any]]) -> list[str]:
+    """One row per question, one column per recorded run (oldest left), so
+    supported-vs-total movement over time is visible at a glance."""
+    runs: list[dict[str, Any]] = []
+    questions: list[str] = []
+    for entry in history:
+        rows = {row.get("question"): row for row in entry.get("questions", []) if row.get("question")}
+        for question in rows:
+            if question not in questions:
+                questions.append(question)
+        runs.append(rows)
+    lines = ["**Verdict trend, oldest run on the left:**", "",
+             "Cell = supported/total claims audited; ✓ = passed, ✗ = not passed; — = question absent from that run.", ""]
+    header = ["| # | Question | Pass rate |"]
+    header.append(" | ".join(f"{_short_timestamp(entry.get('timestamp'))}" for entry in history) + " |")
+    lines.append(" | ".join(header))
+    lines.append("|" + "---|" * (len(history) + 3))
+    for index, question in enumerate(questions, start=1):
+        cells: list[str] = []
+        passed_runs = total_runs = 0
+        for rows in runs:
+            row = rows.get(question)
+            cells.append(_trend_cell(row))
+            if row is not None:
+                total_runs += 1
+                if row.get("status") in {"complete", "passed"}:
+                    passed_runs += 1
+        rate = f"{passed_runs}/{total_runs}" if total_runs else "—"
+        lines.append(
+            f"| {index} | {question.replace('|', '\\|')} | {rate} | " + " | ".join(cells) + " |"
+        )
+    lines.append("")
+    return lines

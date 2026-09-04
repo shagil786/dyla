@@ -142,6 +142,22 @@ class AnalystAgent:
             f"text: {item.text}"
             for index, item in enumerate(evidence, start=1)
         )
+        # --- Feedback loop: check previously audited claims from memory ---
+        prior_rejected_claims: list[str] = []
+        for record in memories:
+            if record.kind == "claim" and record.text:
+                if record.verified:
+                    prior_rejected_claims.append(record.text)
+
+        def _was_previously_rejected(claim_text: str) -> bool:
+            import re
+            normalized = " ".join(re.findall(r"\w+", claim_text.casefold()))
+            for prior_text in prior_rejected_claims:
+                prior_normalized = " ".join(re.findall(r"\w+", prior_text.casefold()))
+                if prior_normalized and prior_normalized in normalized:
+                    return True
+            return False
+
         context = "\n".join([*(f"Memory: {m.text}" for m in memories), evidence_context])
         response = self.model.complete(ModelRequest(
             messages=[{"role": "system", "content": (
