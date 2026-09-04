@@ -111,6 +111,19 @@ def test_quality_gate_rejects_trace_from_another_run_and_invalid_events(tmp_path
     assert "research trace has unknown event: arbitrary" in result.issues
 
 
+def test_quality_gate_accepts_ingest_failed_events(tmp_path):
+    trace = tmp_path / "run.jsonl"
+    write_trace(trace, event="ingest_failed", payload={"url": "https://example.com", "error": "retry exhaustion"})
+    citation = Citation(url="https://example.com", title="Source", source_id="s1", chunk_id="c1")
+
+    result = QualityGate().validate(
+        AnalystAnswer(answer="answer", claims=[claim("c1", [citation])], limitations=[]),
+        [verdict("c1", "supported", [citation])], trace,
+    )
+
+    assert result == QualityResult(status="complete", issues=[])
+
+
 def test_quality_gate_requires_saved_trace(tmp_path):
     citation = Citation(url="https://example.com", title=None, source_id="s", chunk_id=None)
     result = QualityGate().validate(

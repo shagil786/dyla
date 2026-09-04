@@ -5,6 +5,8 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from dyla.analyst import AnalystAgent
 from dyla.domain import AnalystAnswer, Citation, Claim, Evidence, MemoryRecord, ResearchPlan, SearchHit
 from dyla.tracing import TraceWriter
@@ -395,3 +397,97 @@ def test_analyst_without_trace_writer_emits_no_events(tmp_path, monkeypatch):
 
     assert answer.answer == "Answer"
     assert not (tmp_path / "logs").exists()
+
+
+def test_analyst_survives_ingestion_failure_and_reports_exclusion(tmp_path):
+    fail_url = "https://example.com/1"
+
+    class GlitchyEmbedder:
+        def embed(self, texts):
+            if any("glitch" in text for text in texts):
+                raise ValueError("Compatible embedding call failed: retry exhaustion")
+            return [[0.0] for _ in texts]
+
+    class MarkerFetcher:
+        def fetch(self, url):
+            text = "glitch evidence" if url == fail_url else "evidence"
+            return type("Document", (), {"source_id": url, "url": url, "title": "Source", "text": text, "published_at": None})()
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q two"}], entities=[], date_constraints=[])
+    index = FakeIndex()
+    agent = AnalystAgent(model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(), searcher=FakeSearcher(),
+                         fetcher=MarkerFetcher(), index=index, embedder=GlitchyEmbedder(),
+                         planner=controlled_planner(plan), trace_writer=TraceWriter(tmp_path))
+    answer = asyncio.run(agent.run("Q", "run-ingest-failure"))
+
+    assert answer.answer == "Answer"
+    assert "Page content from https://example.com/1 could not be indexed for retrieval; it was excluded from evidence." in answer.limitations
+    assert agent.metrics["failed_ingestions"] == 1
+    assert len(index.upserted) >= 1
+    events = _read_trace(tmp_path, "run-ingest-failure")
+    failures = [event for event in events if event["event"] == "ingest_failed"]
+    fetched = [event for event in events if event["event"] == "page_fetched"]
+    assert len(failures) == 1
+    assert failures[0]["payload"]["url"] == fail_url
+    assert "retry exhaustion" in failures[0]["payload"]["error"]
+    assert {event["payload"]["url"] for event in fetched} == {"https://example.com/1", "https://example.com/2"}
+
+
+def test_analyst_returns_insufficient_evidence_when_all_ingestions_fail():
+    class GlitchyEmbedder:
+        def embed(self, texts):
+            if any("glitch" in text for text in texts):
+                raise ValueError("Compatible embedding call failed: retry exhaustion")
+            return [[0.0] for _ in texts]
+
+    class GlitchyFetcher:
+        def fetch(self, url):
+            return type("Document", (), {"source_id": url, "url": url, "title": "Source", "text": "glitch evidence", "published_at": None})()
+
+    class Model:
+        def complete(self, request):
+            raise AssertionError("empty evidence must not synthesize")
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q two"}], entities=[], date_constraints=[])
+    index = FakeIndex(evidence=[])
+    agent = AnalystAgent(model=Model(), resolver=FakeResolver(), memory=FakeMemory(), searcher=FakeSearcher(),
+                         fetcher=GlitchyFetcher(), index=index, embedder=GlitchyEmbedder(), planner=controlled_planner(plan))
+    answer = asyncio.run(agent.run("Q", "run-all-ingest-failures"))
+
+    assert answer.answer == "Insufficient evidence."
+    assert answer.claims == []
+    assert "No retrieved evidence was available." in answer.limitations
+    ingest_failures = [item for item in answer.limitations if item.startswith("Page content from ")]
+    assert len(ingest_failures) == 2
+    assert agent.metrics["failed_ingestions"] == 2
+    assert index.upserted == []
+
+
+def test_analyst_records_no_ingestion_failures_when_everything_succeeds(tmp_path):
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q two"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(), searcher=FakeSearcher(),
+                         fetcher=FakeFetcher(), index=FakeIndex(), embedder=FakeEmbedder(),
+                         planner=controlled_planner(plan), trace_writer=TraceWriter(tmp_path))
+    answer = asyncio.run(agent.run("Q", "run-no-ingest-failures"))
+
+    assert answer.answer == "Answer"
+    assert answer.limitations == []
+    assert agent.metrics["failed_ingestions"] == 0
+    events = _read_trace(tmp_path, "run-no-ingest-failures")
+    assert [event for event in events if event["event"] == "ingest_failed"] == []
+
+
+def test_analyst_propagates_question_embedding_failure():
+    question = "What happened to Acme?"
+
+    class QuestionEmbedFailure:
+        def embed(self, texts):
+            if texts == [question]:
+                raise ValueError("Compatible embedding call failed: retry exhaustion")
+            return [[0.0] for _ in texts]
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(), searcher=FakeSearcher(),
+                         fetcher=FakeFetcher(), index=FakeIndex(), embedder=QuestionEmbedFailure(), planner=controlled_planner(plan))
+    with pytest.raises(ValueError, match="retry exhaustion"):
+        asyncio.run(agent.run(question, "run-question-embed-failure"))

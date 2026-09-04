@@ -27,7 +27,7 @@ class AnalystAgent:
         self.trace_writer, self.search_limit, self.evidence_limit = trace_writer, search_limit, evidence_limit
         self.metrics = {"input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0, "duration_ms": 0,
                         "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0,
-                        "failed_searches": 0, "failed_fetches": 0}
+                        "failed_searches": 0, "failed_fetches": 0, "failed_ingestions": 0}
 
     async def run(self, question: str, run_id: str) -> AnalystAnswer:
         started = time.monotonic()
@@ -88,7 +88,13 @@ class AnalystAgent:
                 collection_limitations.append(f"Page fetch failed for {hit.url}; it was excluded from evidence.")
                 continue
             self._trace(run_id, "page_fetched", {"url": hit.url, "chars": len(document.text)})
-            await asyncio.to_thread(ingest_document, document, self.embedder, self.index, entity_ids=ids)
+            try:
+                await asyncio.to_thread(ingest_document, document, self.embedder, self.index, entity_ids=ids)
+            except Exception as exc:
+                self.metrics["failed_ingestions"] += 1
+                self._trace(run_id, "ingest_failed", {"url": hit.url, "error": str(exc)})
+                collection_limitations.append(f"Page content from {hit.url} could not be indexed for retrieval; it was excluded from evidence.")
+                continue
         vector = await asyncio.to_thread(self.embedder.embed, [question])
         filters, date_limitations = self._filters(entity_ids, plan.date_constraints)
         evidence = await asyncio.to_thread(
