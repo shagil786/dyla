@@ -160,5 +160,11 @@ rather than four loosely."*
    non-fatal on error: losing attribution is recoverable on a later run, losing
    the ingestion is not.
 
-   **Azure AI Search (`search.py`) still has the same bug and is not fixed** —
-   see the open question about whether Azure should be supported at all.
+   ✅ **Azure was removed instead of fixed.** Nothing used it, it was the
+   *default* for three provider roles despite requiring credentials nobody had,
+   and its vector store carried the same overwrite bug. Deleted:
+   `azure_models.py`, `search.py` (that file was the Azure AI Search adapter
+   despite the generic name), their tests, 9 config settings and 4 factory
+   branches — about 830 lines. Defaults for every role are now `local`, so a
+   fresh checkout runs with no credentials. Azure endpoints that speak the
+   standard OpenAI API still work through the `compatible` adapter.

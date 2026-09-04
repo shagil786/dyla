@@ -184,9 +184,14 @@ attribution is recoverable on a later run, losing the ingestion is not. Five
 tests cover it with a fake client, and I checked they fail when the merge is
 removed rather than assuming they would.
 
-**Azure AI Search still has the bug.** It is unfixed and untested, and it is
-the reason the Azure adapter is now an open question rather than a feature —
-see §6.
+**Azure AI Search had the bug too, and was deleted rather than fixed.** It was
+unused, it was the *default* for three of the five provider roles despite
+needing credentials nobody had, and shipping a knowingly-broken adapter to
+support a provider no one runs is worse than not shipping one. That removal
+also fixed a quieter problem: a fresh checkout used to default to Azure, so the
+configuration a new reader got was one that could not possibly work. Every role
+now defaults to `local`, which is the configuration the tests actually
+exercise.
 
 ---
 
@@ -364,9 +369,10 @@ Ranked by how much they would bother me in review.
    every artifact header.
 2. **The auditor has no scope reasoning** (4.2) and currently fails Q1 because
    of it.
-3. **Azure AI Search still has the entity-overwrite bug** (§3). Qdrant is
-   fixed; Azure is not, and carrying an unused, unfixed, credential-gated
-   adapter is worse than not shipping one.
+3. **Removing Azure is a breaking change** for anyone who was using those
+   adapters. Nobody here was, and the alternative was carrying ~830 lines of
+   knowingly-broken, untestable, credential-gated code — but it is a break and
+   it belongs on this list rather than in a footnote.
 4. **Extra credit not achieved** — 27.8%, not 50% (§3).
 5. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
    pre-registers Zerodha, Infosys, Wipro and Zepto, because entity resolution is
