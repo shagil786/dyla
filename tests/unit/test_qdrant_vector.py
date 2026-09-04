@@ -3,6 +3,8 @@ from uuid import UUID
 
 import pytest
 
+from qdrant_client.http import models
+
 from dyla.config import Settings
 from dyla.domain import EvidenceChunk, SearchFilters
 from dyla.provider_factory import build_vector_store
@@ -14,20 +16,26 @@ class NotFoundError(Exception):
 
 
 class FakeClient:
-    def __init__(self, *, collection_exists=False):
+    def __init__(self, *, collection_exists=False, payload_schema=None):
         self.collection_exists = collection_exists
+        self.payload_schema = payload_schema or {}
         self.created = []
+        self.indexes = []
         self.upserts = []
         self.queries = []
 
     def get_collection(self, collection_name):
         if not self.collection_exists:
             raise NotFoundError("missing collection")
-        return object()
+        return type("CollectionInfo", (), {"payload_schema": dict(self.payload_schema)})()
 
     def create_collection(self, **kwargs):
         self.created.append(kwargs)
         self.collection_exists = True
+        return True
+
+    def create_payload_index(self, **kwargs):
+        self.indexes.append(kwargs)
         return True
 
     def upsert(self, **kwargs):
@@ -72,6 +80,51 @@ def test_ensure_collection_creates_missing_collection_with_configured_dimensions
     assert client.created[0]["collection_name"] == "evidence"
     vector_config = client.created[0]["vectors_config"]
     assert vector_config.size == 3
+
+
+def test_ensure_collection_creates_datetime_index_for_fresh_collection():
+    client = FakeClient()
+
+    QdrantVectorStore(settings(), client=client)
+
+    assert client.created[0]["collection_name"] == "evidence"
+    assert client.indexes == [{
+        "collection_name": "evidence",
+        "field_name": "published_at",
+        "field_schema": models.PayloadSchemaType.DATETIME,
+    }]
+
+
+def test_ensure_collection_skips_index_when_collection_already_has_it():
+    client = FakeClient(collection_exists=True, payload_schema={"published_at": {"data_type": "datetime"}})
+
+    QdrantVectorStore(settings(), client=client)
+
+    assert client.indexes == []
+
+
+def test_ensure_collection_adds_missing_index_to_existing_collection():
+    client = FakeClient(collection_exists=True)
+
+    QdrantVectorStore(settings(), client=client)
+
+    assert client.indexes == [{
+        "collection_name": "evidence",
+        "field_name": "published_at",
+        "field_schema": models.PayloadSchemaType.DATETIME,
+    }]
+
+
+def test_qdrant_index_errors_redact_api_key():
+    class FailingClient(FakeClient):
+        def create_payload_index(self, **kwargs):
+            raise RuntimeError("index failed with fake-qdrant-key")
+
+    with pytest.raises(RuntimeError) as error:
+        QdrantVectorStore(settings(), client=FailingClient(collection_exists=True))
+
+    assert "fake-qdrant-key" not in str(error.value)
+    assert "[REDACTED]" in str(error.value)
 
 
 def test_qdrant_point_id_is_a_deterministic_uuid():

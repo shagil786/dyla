@@ -53,18 +53,31 @@ class QdrantVectorStore:
 
     def ensure_collection(self) -> None:
         try:
-            self.client.get_collection(collection_name=self.collection_name)
-            return
+            info = self.client.get_collection(collection_name=self.collection_name)
         except Exception as exc:
             if getattr(exc, "status_code", None) != 404:
                 raise self._safe_error("checking Qdrant collection", exc) from exc
+            try:
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=models.VectorParams(size=self.vector_dimensions, distance=models.Distance.COSINE),
+                )
+            except Exception as exc:
+                raise self._safe_error("creating Qdrant collection", exc) from exc
+            self._create_published_at_index()
+            return
+        if "published_at" not in (getattr(info, "payload_schema", None) or {}):
+            self._create_published_at_index()
+
+    def _create_published_at_index(self) -> None:
         try:
-            self.client.create_collection(
+            self.client.create_payload_index(
                 collection_name=self.collection_name,
-                vectors_config=models.VectorParams(size=self.vector_dimensions, distance=models.Distance.COSINE),
+                field_name="published_at",
+                field_schema=models.PayloadSchemaType.DATETIME,
             )
         except Exception as exc:
-            raise self._safe_error("creating Qdrant collection", exc) from exc
+            raise self._safe_error("creating Qdrant payload index", exc) from exc
 
     def upsert(self, chunks: list[EvidenceChunk], vectors: list[list[float]] | None = None) -> None:
         if vectors is None:
