@@ -235,9 +235,13 @@ def test_analyst_preserves_query_entity_attribution_and_date_filters():
     agent = AnalystAgent(model=FakeModel(), resolver=Resolver(), memory=Memory(), searcher=FakeSearcher(), fetcher=FakeFetcher(), index=index, embedder=FakeEmbedder(), planner=controlled_planner(plan))
     asyncio.run(agent.run("Q", "run-attribution"))
     assert {frozenset(chunk.entity_ids) for chunk in index.upserted} == {frozenset({"e1"}), frozenset({"e2"})}
-    assert index.filters[0].entity_ids == ["e1", "e2"]
-    assert index.filters[0].published_after == datetime(2025, 1, 1, tzinfo=UTC)
-    assert index.filters[0].published_before == datetime(2026, 1, 1, tzinfo=UTC)
+    # Memory-first retrieval probes the index once per entity before searching,
+    # so filters[0] is now a single-entity coverage probe rather than the main
+    # retrieval filter. Select the main one by the date range it carries.
+    main = next(item for item in index.filters if item.published_after is not None)
+    assert main.entity_ids == ["e1", "e2"]
+    assert main.published_after == datetime(2025, 1, 1, tzinfo=UTC)
+    assert main.published_before == datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def test_analyst_survives_partial_fetch_failure_and_reports_exclusion():
@@ -629,3 +633,171 @@ def test_rejected_claims_are_named_in_the_system_prompt():
 
     assert _REJECTED_TEXT in model.system_prompts[0]
     assert "independent auditor" in model.system_prompts[0]
+
+
+# ---------------------------------------------------------------------------
+# Memory-first retrieval (cost reduction that transfers)
+#
+# The brief is explicit that caching an answer already seen does not count, and
+# that only memory transferring to an unseen question does. These tests assert
+# transfer: evidence indexed while answering one question suppresses web work on
+# a *different* question about the same entity.
+# ---------------------------------------------------------------------------
+
+class CountingSearcher:
+    def __init__(self):
+        self.queries = []
+
+    def search(self, query, limit=5):
+        self.queries.append(query)
+        return [SearchHit(url=f"https://example.com/{len(self.queries)}", title="Source",
+                          snippet=query, published_at=None)]
+
+
+class CountingFetcher:
+    def __init__(self):
+        self.urls = []
+
+    def fetch(self, url):
+        self.urls.append(url)
+        return type("Document", (), {"source_id": url, "url": url, "title": "Source",
+                                     "text": "evidence", "published_at": None})()
+
+
+class StockedIndex:
+    """Index that already holds evidence for an entity from prior questions."""
+
+    def __init__(self, sources_for_entity=2, score=0.9):
+        self.filters = []
+        self.upserted = []
+        self._evidence = [
+            Evidence(chunk_id=f"c{i}", source_id=f"s{i}", url=f"https://example.com/prior{i}",
+                     title="Prior", text="prior evidence", score=score, entity_ids=["e1"])
+            for i in range(sources_for_entity)
+        ]
+
+    def upsert(self, chunks, vectors):
+        self.upserted.extend(chunks)
+
+    def hybrid_search(self, query, vector, filters, limit):
+        self.filters.append(filters)
+        return list(self._evidence)
+
+
+def _reuse_agent(index, searcher, fetcher, plan, **kwargs):
+    return AnalystAgent(
+        model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(), searcher=searcher,
+        fetcher=fetcher, index=index, embedder=FakeEmbedder(),
+        planner=controlled_planner(plan), **kwargs,
+    )
+
+
+def _entity_plan(question="Q"):
+    return ResearchPlan(
+        original_question=question,
+        subqueries=[{"query": f"Acme {question}", "entities": ["Acme"]}],
+        entities=["Acme"], date_constraints=[],
+    )
+
+
+def test_evidence_from_earlier_questions_suppresses_search_and_fetch():
+    searcher, fetcher = CountingSearcher(), CountingFetcher()
+    agent = _reuse_agent(StockedIndex(sources_for_entity=2), searcher, fetcher, _entity_plan())
+
+    asyncio.run(agent.run("Is Acme profitable?", "run-reuse-1"))
+
+    assert searcher.queries == [], "web search ran despite sufficient indexed evidence"
+    assert fetcher.urls == []
+    assert agent.metrics["searches_skipped"] == 1
+    assert agent.metrics["evidence_reused"] == 1
+
+
+def test_a_single_prior_source_is_not_enough_to_skip():
+    """One uncorroborated prior page is exactly the evidence the analyst distrusts.
+
+    Reusing it would trade correctness for cost, which is not the deal.
+    """
+    searcher, fetcher = CountingSearcher(), CountingFetcher()
+    agent = _reuse_agent(StockedIndex(sources_for_entity=1), searcher, fetcher, _entity_plan())
+
+    asyncio.run(agent.run("Is Acme profitable?", "run-reuse-2"))
+
+    assert len(searcher.queries) == 1
+    assert agent.metrics["searches_skipped"] == 0
+
+
+def test_an_unknown_entity_still_hits_the_web():
+    """Reuse must not starve a genuinely novel question."""
+    searcher, fetcher = CountingSearcher(), CountingFetcher()
+
+    class UnresolvedResolver:
+        def resolve(self, mention, context):
+            return type("R", (), {"entity_id": None, "canonical_name": None, "status": "unknown"})()
+
+    agent = AnalystAgent(
+        model=FakeModel(), resolver=UnresolvedResolver(), memory=FakeMemory(), searcher=searcher,
+        fetcher=fetcher, index=StockedIndex(), embedder=FakeEmbedder(),
+        planner=controlled_planner(_entity_plan()),
+    )
+    asyncio.run(agent.run("Who founded Novel Corp?", "run-reuse-3"))
+
+    assert len(searcher.queries) == 1
+
+
+def test_reuse_can_be_disabled():
+    searcher, fetcher = CountingSearcher(), CountingFetcher()
+    agent = _reuse_agent(StockedIndex(), searcher, fetcher, _entity_plan(), reuse_enabled=False)
+
+    asyncio.run(agent.run("Is Acme profitable?", "run-reuse-4"))
+
+    assert len(searcher.queries) == 1
+
+
+def test_reuse_that_underdelivers_triggers_a_course_correction():
+    """Skipping a search is a bet. This is the path that pays it off when wrong."""
+
+    class ProbeRichButEmptyIndex(StockedIndex):
+        """Reports coverage on the per-entity probe, then returns nothing for the
+        real retrieval — the shape of a stale or mis-filtered index.
+
+        Discriminated by call order, not by the filter: with no date constraints
+        the probe filter and the main retrieval filter are identical.
+        """
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.calls = 0
+
+        def hybrid_search(self, query, vector, filters, limit):
+            self.filters.append(filters)
+            self.calls += 1
+            if self.calls == 1:
+                return list(self._evidence)      # per-entity coverage probe
+            if self.calls == 2:
+                return []                        # main retrieval finds nothing
+            return list(self._evidence)          # retry after recovery
+
+    searcher, fetcher = CountingSearcher(), CountingFetcher()
+    index = ProbeRichButEmptyIndex(sources_for_entity=2)
+    agent = _reuse_agent(index, searcher, fetcher, _entity_plan())
+
+    asyncio.run(agent.run("Is Acme profitable?", "run-reuse-5"))
+
+    assert agent.metrics["reuse_corrections"] == 1
+    assert len(searcher.queries) == 1, "the skipped query was not re-run"
+    assert agent.metrics["searches_skipped"] == 0, "a corrected skip must not be counted as a saving"
+
+
+def test_the_reuse_decision_is_traced(tmp_path):
+    searcher, fetcher = CountingSearcher(), CountingFetcher()
+    writer = TraceWriter(root=tmp_path)
+    agent = _reuse_agent(StockedIndex(), searcher, fetcher, _entity_plan(), trace_writer=writer)
+
+    asyncio.run(agent.run("Is Acme profitable?", "run-reuse-6"))
+
+    events = [json.loads(line) for line in
+              (tmp_path / "logs" / "run-reuse-6.jsonl").read_text().splitlines() if line.strip()]
+    reuse = [event for event in events if event["event"] == "memory_reuse_evaluated"]
+    assert reuse, "the reuse decision was not traced"
+    assert reuse[0]["payload"]["covered_entities"] == 1
+    assert reuse[0]["payload"]["skipped_queries"]

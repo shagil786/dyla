@@ -73,6 +73,7 @@ class QualityGate:
             "source_fetch_failed", "claim_audited", "auditor_failed", "memory_saved",
             "quality_completed", "memory_retrieved", "web_searched", "web_search_failed",
             "page_fetched", "page_fetch_failed", "ingest_failed", "evidence_selected",
+            "memory_reuse_evaluated", "reuse_probe_failed", "reuse_insufficient",
         }
         try:
             for line_number, line in enumerate(trace_path.read_text(encoding="utf-8").splitlines(), 1):

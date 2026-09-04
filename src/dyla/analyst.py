@@ -50,16 +50,20 @@ class AnalystAgent:
         self, *, model: Any, resolver: Any, memory: Any, searcher: SearchProvider, fetcher: SearchProvider,
         index: Any, embedder: Any, planner: QueryPlanner | None = None,
         max_subqueries: int = 4, search_limit: int = 5, evidence_limit: int = 8,
-        trace_writer: Any | None = None,
+        trace_writer: Any | None = None, reuse_enabled: bool = True,
+        reuse_min_sources: int = 2, reuse_min_score: float = 0.0, min_evidence: int = 1,
     ) -> None:
         self.model, self.resolver, self.memory = model, resolver, memory
         self.searcher, self.fetcher, self.index, self.embedder = searcher, fetcher, index, embedder
         self.planner = planner or QueryPlanner(max_subqueries=max_subqueries)
         self.trace_writer, self.search_limit, self.evidence_limit = trace_writer, search_limit, evidence_limit
+        self.reuse_enabled, self.reuse_min_sources = reuse_enabled, reuse_min_sources
+        self.reuse_min_score, self.min_evidence = reuse_min_score, min_evidence
         self.metrics = {"input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0, "duration_ms": 0,
                         "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0,
                         "failed_searches": 0, "failed_fetches": 0, "failed_ingestions": 0,
-                        "claims_blocked_by_audit_feedback": 0}
+                        "claims_blocked_by_audit_feedback": 0,
+                        "searches_skipped": 0, "evidence_reused": 0, "reuse_corrections": 0}
 
     async def run(self, question: str, run_id: str) -> AnalystAnswer:
         started = time.monotonic()
@@ -85,29 +89,135 @@ class AnalystAgent:
             memories = [record for record in by_id.values() if not record.entity_ids or set(record.entity_ids) & set(entity_ids)]
             self.metrics["memory_hits"] += len(entity_memory)
 
-        self.metrics["searches"] += len(plan.subqueries)
-        self.metrics["parallel_calls"] += 1
+        vector = await asyncio.to_thread(self.embedder.embed, [question])
+        filters, date_limitations = self._filters(entity_ids, plan.date_constraints)
+
+        # --- Memory-first retrieval -----------------------------------------
+        # Evidence indexed while answering earlier questions is durable, so a
+        # question about an entity already researched can often be answered
+        # without paying for search and fetch again. memory_hits was previously
+        # counted but changed no behaviour; this is what makes it pay.
+        reuse = await self._assess_reuse(question, vector[0], entity_ids, plan, resolved, run_id)
         collection_limitations: list[str] = []
+        if reuse["to_run"]:
+            collection_limitations += await self._collect_from_web(reuse["to_run"], plan, resolved, run_id)
+
+        evidence = await asyncio.to_thread(
+            self.index.hybrid_search, question, vector[0], filters, self.evidence_limit,
+        )
+
+        # Course correction: reuse promised coverage that did not materialise.
+        # Skipping a search is a bet; this is the path that pays it off when the
+        # bet is wrong, rather than answering from thin evidence.
+        if reuse["skipped"] and len(evidence) < self.min_evidence:
+            self._trace(run_id, "reuse_insufficient", {
+                "evidence_found": len(evidence),
+                "evidence_required": self.min_evidence,
+                "recovering_queries": [item["query"] for item in reuse["skipped"]],
+            })
+            self.metrics["reuse_corrections"] += 1
+            self.metrics["searches_skipped"] -= len(reuse["skipped"])
+            collection_limitations += await self._collect_from_web(
+                reuse["skipped"], plan, resolved, run_id
+            )
+            evidence = await asyncio.to_thread(
+                self.index.hybrid_search, question, vector[0], filters, self.evidence_limit,
+            )
+        self._trace(run_id, "evidence_selected", {"count": len(evidence)})
+        answer = await asyncio.to_thread(self._synthesize, question, memories, evidence, [*collection_limitations, *date_limitations])
+        self.metrics["duration_ms"] = int((time.monotonic() - started) * 1000)
+        return answer
+
+    async def _assess_reuse(
+        self, question: str, vector: list[float], entity_ids: list[str],
+        plan: Any, resolved: dict[str, str], run_id: str,
+    ) -> dict[str, Any]:
+        """Decide which subqueries the durable index already covers.
+
+        An entity counts as covered when the index already holds evidence from
+        at least ``reuse_min_sources`` distinct sources for it. Requiring more
+        than one source matters: a single prior page is exactly the thin,
+        uncorroborated evidence the analyst is supposed to distrust, so reusing
+        it would trade cost for correctness. Requiring two means reuse only
+        happens where the earlier run already cross-checked.
+        """
+        subqueries = list(plan.subqueries)
+        if not entity_ids or not self.reuse_enabled:
+            return {"to_run": subqueries, "skipped": [], "covered": []}
+
+        covered: list[str] = []
+        for entity_id in entity_ids:
+            try:
+                prior = await asyncio.to_thread(
+                    self.index.hybrid_search, question, vector,
+                    SearchFilters(entity_ids=[entity_id]), self.evidence_limit,
+                )
+            except Exception as exc:
+                self._trace(run_id, "reuse_probe_failed", {"entity_id": entity_id, "error": str(exc)})
+                continue
+            sources = {item.source_id for item in prior if item.score >= self.reuse_min_score}
+            if len(sources) >= self.reuse_min_sources:
+                covered.append(entity_id)
+
+        if not covered:
+            self._trace(run_id, "memory_reuse_evaluated", {"covered_entities": 0, "skipped_queries": 0})
+            return {"to_run": subqueries, "skipped": [], "covered": []}
+
+        covered_set = set(covered)
+        all_covered = covered_set >= set(entity_ids)
+        to_run, skipped = [], []
+        for item in subqueries:
+            ids = self._subquery_entity_ids(item, plan, resolved)
+            if ids:
+                (skipped if set(ids) <= covered_set else to_run).append(item)
+            else:
+                # The bare question carries no entity of its own; it is only
+                # redundant when every entity in the plan is already covered.
+                (skipped if all_covered else to_run).append(item)
+
+        self.metrics["searches_skipped"] += len(skipped)
+        self.metrics["evidence_reused"] += len(covered)
+        self._trace(run_id, "memory_reuse_evaluated", {
+            "covered_entities": len(covered),
+            "skipped_queries": [item["query"] for item in skipped],
+            "remaining_queries": [item["query"] for item in to_run],
+        })
+        return {"to_run": to_run, "skipped": skipped, "covered": covered}
+
+    @staticmethod
+    def _subquery_entity_ids(item: dict, plan: Any, resolved: dict[str, str]) -> list[str]:
+        entities = item.get("entities") or [
+            entity for entity in plan.entities
+            if entity.casefold() in str(item.get("query", "")).casefold()
+        ]
+        return [resolved[e.casefold()] for e in entities if e.casefold() in resolved]
+
+    async def _collect_from_web(
+        self, subqueries: list[dict], plan: Any, resolved: dict[str, str], run_id: str,
+    ) -> list[str]:
+        """Search and fetch for the given subqueries, ingesting what comes back."""
+        limitations: list[str] = []
+        self.metrics["searches"] += len(subqueries)
+        self.metrics["parallel_calls"] += 1
         search_results = await asyncio.gather(*[
             asyncio.to_thread(self.searcher.search, item["query"], self.search_limit)
-            for item in plan.subqueries
+            for item in subqueries
         ], return_exceptions=True)
+
         hits_by_url: dict[str, tuple[Any, list[str]]] = {}
-        for item, batch in zip(plan.subqueries, search_results):
+        for item, batch in zip(subqueries, search_results):
             if isinstance(batch, Exception):
                 self.metrics["failed_searches"] += 1
                 self._trace(run_id, "web_search_failed", {"query": item["query"], "error": str(batch)})
-                collection_limitations.append(f"Web search failed for query '{item['query']}'; its results were excluded.")
+                limitations.append(f"Web search failed for query '{item['query']}'; its results were excluded.")
                 continue
             self._trace(run_id, "web_searched", {"query": item["query"], "results": len(batch)})
-            query_entities = item.get("entities", [])
-            if not query_entities:
-                query_entities = [entity for entity in plan.entities if entity.casefold() in item["query"].casefold()]
-            query_ids = [resolved[entity.casefold()] for entity in query_entities if entity.casefold() in resolved]
+            query_ids = self._subquery_entity_ids(item, plan, resolved)
             for hit in batch:
                 old = hits_by_url.get(hit.url)
                 ids = list(dict.fromkeys((old[1] if old else []) + query_ids))
                 hits_by_url[hit.url] = (hit, ids)
+
         self.metrics["fetches"] += len(hits_by_url)
         self.metrics["parallel_calls"] += 1
         documents = await asyncio.gather(*[
@@ -117,7 +227,7 @@ class AnalystAgent:
             if isinstance(document, Exception):
                 self.metrics["failed_fetches"] += 1
                 self._trace(run_id, "page_fetch_failed", {"url": hit.url, "error": str(document)})
-                collection_limitations.append(f"Page fetch failed for {hit.url}; it was excluded from evidence.")
+                limitations.append(f"Page fetch failed for {hit.url}; it was excluded from evidence.")
                 continue
             self._trace(run_id, "page_fetched", {"url": hit.url, "chars": len(document.text)})
             try:
@@ -125,17 +235,9 @@ class AnalystAgent:
             except Exception as exc:
                 self.metrics["failed_ingestions"] += 1
                 self._trace(run_id, "ingest_failed", {"url": hit.url, "error": str(exc)})
-                collection_limitations.append(f"Page content from {hit.url} could not be indexed for retrieval; it was excluded from evidence.")
+                limitations.append(f"Page content from {hit.url} could not be indexed for retrieval; it was excluded from evidence.")
                 continue
-        vector = await asyncio.to_thread(self.embedder.embed, [question])
-        filters, date_limitations = self._filters(entity_ids, plan.date_constraints)
-        evidence = await asyncio.to_thread(
-            self.index.hybrid_search, question, vector[0], filters, self.evidence_limit,
-        )
-        self._trace(run_id, "evidence_selected", {"count": len(evidence)})
-        answer = await asyncio.to_thread(self._synthesize, question, memories, evidence, [*collection_limitations, *date_limitations])
-        self.metrics["duration_ms"] = int((time.monotonic() - started) * 1000)
-        return answer
+        return limitations
 
     def _trace(self, run_id: str, event: str, payload: dict[str, Any]) -> None:
         if self.trace_writer is None:
