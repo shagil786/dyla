@@ -60,20 +60,46 @@ The brief stops reading if a clean checkout does not run.
 | **P0-3** | CI on a 3.11 + 3.12 matrix, asserting module imports, `dyla --help`, and `pytest` | **DONE** |
 
 Result: `pytest -q` → **210 passed, 1 skipped, 0 failed**. `dyla --help` lists all six commands.
+After P1 the suite stands at **251 passed, 1 skipped, 0 failed**.
 
-### P1 — Make the auditor mean something
+### P1 — Make the auditor mean something — **COMPLETE**
 
 An auditor that rejects everything scores the same as one that approves everything.
 
-| ID | Item | Why | Effort |
-|---|---|---|---|
-| **P1-1** | Replace `_TextComparator`'s whole-claim substring match with real support scoring: extract numbers, dates, named entities and units from the claim, require the material ones to appear in the source, and score partial overlap | Today a source that plainly supports a claim is marked unsupported. This is the root cause of #1 and #7 above. | M |
-| **P1-2** | Give the deterministic comparator a `contradicted` path — detect a claim's numeric/date/entity slot filled with a *different* value in the source (e.g. claim says ₹1,53,670 cr, source says ₹1,22,000 cr) | Without this the auditor cannot catch the exact failure it exists to catch. | M |
-| **P1-3** | Rewrite `tests/unit/test_auditor.py` fixtures to use real paraphrased prose | Current fixtures assert claim `"supported"` against document `"source"`. They pass under a matcher that is wrong, which is why the bug shipped. | S |
-| **P1-4** | Decide the default: promote `ModelComparator` to default and relabel `local` as an explicit offline stub, or keep `local` default once P1-1/P1-2 make it credible | `.env.example` ships `DYLA_AUDITOR_PROVIDER=local`, so the broken comparator is what a fresh checkout runs. | `DECIDE` |
-| **P1-5** | Fix the inverted `verified` condition in `analyst.py` and actually call `_was_previously_rejected` | The feedback loop is the brief's "closest thing to what we actually build". | S |
-| **P1-6** | Enforce the 120s ceiling with `asyncio.wait_for` and a budget that shrinks across stages, instead of a post-hoc note | The ceiling exists to force parallelism and expose sequential chains; observing a breach exposes nothing. | M |
-| **P1-7** | Resolve the orphaned `agent_runtime.py`: wire `AgentRuntime`/`BudgetLedger` into the real pipeline, or delete it and its 224 lines of tests | 185 lines implementing exactly the budget + deadline machinery P1-6 needs, imported by nothing. Shipping it disconnected while the spec claims both agents share it is worse than not having it. | `DECIDE` |
+| ID | Item | Status |
+|---|---|---|
+| **P1-1** | Replaced the whole-claim substring match with slot-based verification in `dyla/verification.py`: numeric facts (lakh/crore and million/billion), years, currency/percent kinds, content-word and entity topicality | **DONE** |
+| **P1-2** | `contradicted` path added — numeric conflict in on-topic context, plus antonym/negation polarity for non-numeric claims | **DONE** |
+| **P1-3** | `tests/unit/test_verification.py`, 28 tests on realistic paraphrased prose | **DONE** |
+| **P1-4** | Decision: `local` **stays the default**. It is now credible rather than a stub, and a deterministic default means a clean checkout audits without a second API key | **DONE** |
+| **P1-5** | Feedback loop fixed: `verdict_status` persisted, rejected claims named in the prompt *and* enforced by a post-synthesis filter, fingerprint matching catches paraphrase | **DONE** |
+| **P1-6** | Ceiling enforced via `asyncio.wait_for` on a shrinking budget, plus cooperative per-claim deadline checks inside the auditor | **DONE** |
+| **P1-7** | `agent_runtime.py` wired in — both stages run through `AgentRuntime`, each stage's model wrapped in `BudgetedModel` so the ledger is load-bearing | **DONE** |
+
+**Verdict discrimination, same claim, five sources:**
+
+| Source | Before | After |
+|---|---|---|
+| paraphrased support | unsupported | **supported** |
+| rounded restatement (1.54 lakh crore) | unsupported | **supported** |
+| different figure (₹1,22,000 cr) | unsupported | **contradicted** |
+| on topic, omits the figure | unsupported | unsupported |
+| off topic | unsupported | **uncited** |
+
+**Four bugs the new tests caught during the work**, none of which the old suite could have found:
+
+1. The number regex split `2024` into `202` and `4` (the comma-group alternative used `*` and won greedily at three digits), so the bare-year guard never fired and years were compared against monetary amounts.
+2. Numeric tokens inside `content_words` dragged topicality below the floor, so on-topic sources were misfiled as `uncited` rather than `unsupported`.
+3. Checking the concatenation of all sources let one agreeing source mask another that disagreed — the verdict came back `supported` while the sources conflicted. Now checked per document.
+4. `asyncio.run` joins the default executor at shutdown, so a stage abandoned by `wait_for` still blocked the caller for its full duration. A 5s auditor overran a 0.6s ceiling by the whole 5s *despite the timeout firing*. Stages now run on daemon threads.
+
+**Honest limitations of the new auditor**, for the write-up:
+
+- Sentence segmentation is regex-based and mis-splits on abbreviations.
+- No co-reference resolution: "the company reported X" is matched by topical word overlap, not by knowing which company.
+- Polarity uses a fixed antonym/negation table and will miss paraphrased reversals.
+- A sentence discussing two entities can yield a false contradiction when the rival figure belongs to the other one.
+- A thread cannot be killed. Cooperative deadline checks bound the auditor between claims; a single wedged fetch is bounded only by its own clamped timeout.
 
 ### P2 — The deliverables that are actually graded
 
@@ -119,7 +145,7 @@ rather than four loosely."*
    model, embedding and You.com search providers. Without them the ceiling is a
    recorded-fixture harness — defensible, but it must be stated plainly in the
    write-up rather than presented as a live run.
-2. **P1-4** — is `local` a credible default auditor, or an offline stub?
-3. **P1-7** — wire in `agent_runtime.py`, or delete it?
-4. **Scope.** P0 is done. P1 + P2 is the honest-and-complete submission. P3-1 on
-   top is what moves it toward the brief's "Yes" pile.
+2. ~~**P1-4** — is `local` a credible default auditor, or an offline stub?~~
+   **Resolved:** it stays the default, now that it is credible.
+3. ~~**P1-7** — wire in `agent_runtime.py`, or delete it?~~ **Resolved:** wired in.
+4. **Scope.** P0 and P1 are done. P2 is next, then P3-1.
