@@ -123,6 +123,11 @@ class AnalystAgent:
         limitations = [f"Date constraint '{constraint}' was not applied because only year constraints are supported." for constraint in unsupported]
         after = datetime(years[0], 1, 1, tzinfo=UTC) if years else None
         before = datetime(years[-1] + 1, 1, 1, tzinfo=UTC) if years else None
+        if years:
+            limitations.append(
+                f"Date filter applied for {', '.join(str(year) for year in years)}; "
+                "sources without a published date were also considered."
+            )
         return SearchFilters(entity_ids=entity_ids or None, published_after=after, published_before=before), limitations
 
     def _synthesize(self, question: str, memories: list[MemoryRecord], evidence: list[Evidence], date_limitations: list[str]) -> AnalystAnswer:

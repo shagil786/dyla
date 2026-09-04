@@ -216,6 +216,12 @@ def test_analyst_reports_unsupported_non_year_date_constraint():
     assert any("date" in limitation.lower() for limitation in answer.limitations)
 
 
+def test_analyst_notes_undated_sources_when_year_filter_applied():
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}], entities=[], date_constraints=["2025"])
+    answer = asyncio.run(make_agent(FakeModel(), plan, FakeIndex()).run("Q", "run-undated"))
+    assert "Date filter applied for 2025; sources without a published date were also considered." in answer.limitations
+
+
 def test_analyst_preserves_query_entity_attribution_and_date_filters():
     class Resolver:
         def resolve(self, mention, context):

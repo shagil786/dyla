@@ -204,6 +204,55 @@ def test_vector_search_applies_metadata_filters_and_normalizes_evidence():
     assert client.queries[0]["limit"] == 5
 
 
+def test_date_filter_becomes_should_group_that_also_admits_undated_records():
+    client = FakeClient(collection_exists=True)
+    store = QdrantVectorStore(settings(), client=client)
+    filters = SearchFilters(
+        published_after=datetime(2025, 1, 1, tzinfo=UTC),
+        published_before=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    store.hybrid_search("evidence", [0.1, 0.2, 0.3], filters, 5)
+
+    dumped = client.queries[0]["query_filter"].model_dump(exclude_none=True)
+    after_condition = {"key": "published_at", "range": {"gte": datetime(2025, 1, 1, tzinfo=UTC)}}
+    before_condition = {"key": "published_at", "range": {"lte": datetime(2026, 1, 1, tzinfo=UTC)}}
+    null_condition = {"is_null": {"key": "published_at"}}
+    date_conditions = [after_condition, before_condition, null_condition]
+    assert dumped["must"] == [{
+        "should": date_conditions,
+        "min_should": {"conditions": date_conditions, "min_count": 1},
+    }]
+
+
+def test_entity_filter_stays_a_plain_must_condition_beside_date_should_group():
+    client = FakeClient(collection_exists=True)
+    store = QdrantVectorStore(settings(), client=client)
+    filters = SearchFilters(entity_ids=["entity-1"], published_after=datetime(2025, 1, 1, tzinfo=UTC))
+
+    store.hybrid_search("evidence", [0.1, 0.2, 0.3], filters, 5)
+
+    dumped = client.queries[0]["query_filter"].model_dump(exclude_none=True)
+    assert dumped["must"][0] == {"key": "entity_ids", "match": {"any": ["entity-1"]}}
+    assert dumped["must"][1]["should"][1] == {"is_null": {"key": "published_at"}}
+
+
+def test_search_without_date_filter_keeps_unchanged_filter_shape():
+    client = FakeClient(collection_exists=True)
+    store = QdrantVectorStore(settings(), client=client)
+    filters = SearchFilters(entity_ids=["entity-1"], source_ids=["source-1"])
+
+    store.hybrid_search("evidence", [0.1, 0.2, 0.3], filters, 5)
+
+    dumped = client.queries[0]["query_filter"].model_dump(exclude_none=True)
+    assert dumped == {
+        "must": [
+            {"key": "entity_ids", "match": {"any": ["entity-1"]}},
+            {"key": "source_id", "match": {"any": ["source-1"]}},
+        ],
+    }
+
+
 def test_factory_builds_qdrant_and_rejects_missing_configuration():
     client = FakeClient(collection_exists=True)
     store = build_vector_store(settings(), qdrant_client=client)

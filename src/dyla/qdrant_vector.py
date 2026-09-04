@@ -156,15 +156,24 @@ def _serialize_date(value: datetime | None) -> str | None:
 
 
 def _build_filter(filters: SearchFilters) -> models.Filter | None:
-    must: list[models.FieldCondition] = []
+    must: list[models.FieldCondition | models.Filter] = []
     if filters.entity_ids:
         must.append(models.FieldCondition(key="entity_ids", match=models.MatchAny(any=filters.entity_ids)))
     if filters.source_ids:
         must.append(models.FieldCondition(key="source_id", match=models.MatchAny(any=filters.source_ids)))
-    if filters.published_after:
-        must.append(models.FieldCondition(key="published_at", range=models.DatetimeRange(gte=filters.published_after)))
-    if filters.published_before:
-        must.append(models.FieldCondition(key="published_at", range=models.DatetimeRange(lte=filters.published_before)))
+    if filters.published_after or filters.published_before:
+        # Undated sources are "not provably outside the range": admit records whose
+        # published_at is null alongside records inside the requested date range.
+        date_conditions: list[models.FieldCondition | models.IsNullCondition] = []
+        if filters.published_after:
+            date_conditions.append(models.FieldCondition(key="published_at", range=models.DatetimeRange(gte=filters.published_after)))
+        if filters.published_before:
+            date_conditions.append(models.FieldCondition(key="published_at", range=models.DatetimeRange(lte=filters.published_before)))
+        null_condition = models.IsNullCondition(is_null=models.PayloadField(key="published_at"))
+        must.append(models.Filter(
+            should=[*date_conditions, null_condition],
+            min_should=models.MinShould(conditions=[*date_conditions, null_condition], min_count=1),
+        ))
     return models.Filter(must=must) if must else None
 
 
