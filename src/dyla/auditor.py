@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import TimeoutError as FutureTimeout, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import re
 from typing import Any, Literal
 
 from .domain import AnalystAnswer, AuditVerdict, AuditorVerdictModel, Citation, RunEvent
 from .models import ModelRequest
 from .ports import SearchProvider
+from .verification import verify_claim
 
 AuditStatus = Literal["supported", "unsupported", "contradicted", "uncited"]
 AuditRunStatus = Literal["complete", "partial", "failed"]
@@ -38,7 +39,7 @@ class AuditorAgent:
         if retries < 0 or timeout_seconds <= 0:
             raise ValueError("retries must be non-negative and timeout_seconds must be positive")
         self.fetcher = fetcher
-        self.comparator = comparator or _TextComparator()
+        self.comparator = comparator or _TextComparator(memory)
         self.memory = memory
         self.trace_writer = trace_writer
         self.retries = retries
@@ -47,12 +48,32 @@ class AuditorAgent:
                         "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0}
         self.audit_state = AuditState("complete", [])
 
-    def run(self, answer: AnalystAnswer, run_id: str) -> list[AuditVerdict]:
+    def run(
+        self, answer: AnalystAnswer, run_id: str, deadline: float | None = None
+    ) -> list[AuditVerdict]:
+        """Audit every claim, stopping early if ``deadline`` passes.
+
+        ``deadline`` is a ``time.monotonic()`` timestamp. Cooperative checking
+        between claims is what actually bounds this stage: the auditor is
+        synchronous and runs on a worker thread, and Python cannot kill a
+        thread, so an external timeout alone would abandon a thread that keeps
+        working. Stopping between claims returns the verdicts already earned and
+        reports the shortfall instead of silently truncating.
+        """
         self.audit_state = AuditState("complete", [])
         verdicts: list[AuditVerdict] = []
         issues: list[str] = []
         try:
-            for claim in answer.claims:
+            for index, claim in enumerate(answer.claims):
+                if deadline is not None and time.monotonic() >= deadline:
+                    remaining = len(answer.claims) - index
+                    message = (
+                        f"{run_id}: audit stopped at the wall-clock deadline with "
+                        f"{remaining} of {len(answer.claims)} claims unaudited"
+                    )
+                    issues.append(message)
+                    self._trace(run_id, "auditor_failed", {"error": message})
+                    break
                 if not claim.citations:
                     verdict = AuditVerdict(
                         claim_id=claim.id, status="uncited",
@@ -70,7 +91,7 @@ class AuditorAgent:
                 for citation in _unique_citations(claim.citations):
                     self.metrics["fetches"] += 1
                     try:
-                        document = self._fetch(citation.url)
+                        document = self._fetch(citation.url, deadline)
                     except Exception as exc:
                         failed = True
                         self._warning(run_id, claim.id, "source fetch failed")
@@ -93,7 +114,7 @@ class AuditorAgent:
                         citations_checked=checked,
                     )
                 else:
-                    status, explanation = self._compare(claim, documents)
+                    status, explanation = self._compare(claim, documents, deadline)
                     verdict = AuditVerdict(
                         claim_id=claim.id, status=status,
                         explanation=explanation, citations_checked=checked,
@@ -111,27 +132,37 @@ class AuditorAgent:
         self.audit_state = AuditState(run_status, issues)
         return verdicts
 
-    def _fetch(self, url: str) -> Any:
+    def _fetch(self, url: str, deadline: float | None = None) -> Any:
         last_error: Exception | None = None
         for _ in range(self.retries + 1):
             try:
+                timeout = self._budgeted_timeout(deadline)
                 pool = ThreadPoolExecutor(max_workers=1)
                 future = pool.submit(self.fetcher.fetch, url)
                 try:
-                    return future.result(timeout=self.timeout_seconds)
+                    return future.result(timeout=timeout)
                 finally:
                     pool.shutdown(wait=False, cancel_futures=True)
             except (Exception, FutureTimeout) as exc:
                 last_error = exc
         raise RuntimeError(f"fetch failed after {self.retries + 1} attempts") from last_error
 
-    def _compare(self, claim: Any, documents: dict[str, Any]) -> tuple[AuditStatus, str]:
+    def _budgeted_timeout(self, deadline: float | None) -> float:
+        """Never wait past the run deadline, and never wait a non-positive time."""
+        if deadline is None:
+            return self.timeout_seconds
+        return max(0.01, min(self.timeout_seconds, deadline - time.monotonic()))
+
+    def _compare(
+        self, claim: Any, documents: dict[str, Any], deadline: float | None = None
+    ) -> tuple[AuditStatus, str]:
+        timeout = self._budgeted_timeout(deadline)
         pool = ThreadPoolExecutor(max_workers=1)
         future = pool.submit(self.comparator.compare, claim, documents)
         try:
-            result = future.result(timeout=self.timeout_seconds)
+            result = future.result(timeout=timeout)
         except FutureTimeout as exc:
-            raise TimeoutError(f"comparator did not finish within {self.timeout_seconds}s") from exc
+            raise TimeoutError(f"comparator did not finish within {timeout:.2f}s") from exc
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
         if isinstance(result, AuditVerdict):
@@ -241,50 +272,50 @@ def _unique_citations(citations: list[Citation]) -> list[Citation]:
     return result
 
 
-class _TextComparator:
-    """Deterministic fallback comparator for deployments without a judge model.
+def _known_entity_names(memory: Any | None) -> frozenset[str]:
+    """Entity names the system has already researched.
 
-    Detects source disagreement: when claim text appears in only some fetched
-    sources rather than all, or when documents contain contradictory statements
-    about the same claim.
+    Used only to decide whether a *sentence-initial* capitalised word is a name.
+    Everything mid-sentence is checked regardless, so an auditor with no memory
+    attached is weaker at misattribution detection but never wrong in a new way.
+    """
+    getter = getattr(memory, "known_entity_names", None)
+    if getter is None:
+        return frozenset()
+    try:
+        return frozenset(getter())
+    except Exception:
+        return frozenset()
+
+
+class _TextComparator:
+    """Deterministic comparator used when no judge model is configured.
+
+    Delegates to :mod:`dyla.verification`, which decomposes a claim into
+    numeric/date facts plus content words and checks those against the source.
+    The previous implementation required the whole claim to appear verbatim as a
+    substring, so paraphrasing sources — that is, all real sources — were marked
+    unsupported and no claim could ever be marked contradicted.
     """
 
+    def __init__(self, memory: Any | None = None) -> None:
+        # Read from memory per comparison, never snapshotted. Snapshotting at
+        # construction looked equivalent and was not: the auditor is built
+        # before the first question runs, so the snapshot was always empty and
+        # entities discovered during the run were invisible to the
+        # misattribution check. That silently cost half its detection rate.
+        self.memory = memory
+
+    @property
+    def known_entities(self) -> frozenset[str]:
+        return _known_entity_names(self.memory)
+
     def compare(self, claim: Any, documents: dict[str, Any]) -> tuple[AuditStatus, str]:
-        claim_text = _normalize(claim.text)
-        normalized_texts: list[str] = []
-        for url, document in documents.items():
-            text = _normalize(getattr(document, "text", "") or "")
-            normalized_texts.append(text)
-        source_text = " ".join(normalized_texts)
-
-        claim_present_in_all = all(
-            claim_text in text for text in normalized_texts
+        texts = {
+            url: (getattr(document, "text", "") or "")
+            for url, document in documents.items()
+        }
+        result = verify_claim(
+            getattr(claim, "text", "") or "", texts, self.known_entities
         )
-        claim_present_in_any = any(
-            claim_text in text for text in normalized_texts
-        )
-
-        if not claim_present_in_any:
-            return "unsupported", "The claim text was not found in any independently fetched sources."
-
-        if claim_present_in_all:
-            return "supported", "The complete claim text appears in all independently fetched sources."
-
-        # Claim present in some but not all sources: partial support with disagreement
-        present_count = sum(1 for text in normalized_texts if claim_text in text)
-        total = len(normalized_texts)
-        if present_count > 1 and present_count < total:
-            return "unsupported", (
-                f"Source disagreement: claim found in {present_count}/{total} sources "
-                f"but not in all; the claim is not uniformly verified."
-            )
-
-        # Edge case: only one source has the claim, others don't contain it
-        return "unsupported", (
-            f"Source disagreement: claim found in only 1/{total} source(s); "
-            f"not enough independent verification."
-        )
-
-
-def _normalize(value: str) -> str:
-    return " ".join(re.findall(r"\w+", value.casefold()))
+        return result.status, result.explanation

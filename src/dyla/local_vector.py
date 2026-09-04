@@ -18,6 +18,16 @@ class LocalVectorStore:
                 self.vector_dimensions = len(vector)
             if len(vector) != self.vector_dimensions:
                 raise ValueError("vector dimension does not match index configuration")
+            existing = self._items.get(chunk.chunk_id)
+            if existing is not None:
+                # chunk_id is sha256(source_id:position:content_hash) and carries
+                # no entity information, so the same page ingested while
+                # researching a second entity would otherwise overwrite the
+                # first entity's attribution and silently un-tag it. Entity
+                # attribution accumulates; it is never replaced.
+                merged = list(dict.fromkeys([*existing[0].entity_ids, *chunk.entity_ids]))
+                if merged != list(chunk.entity_ids):
+                    chunk = chunk.model_copy(update={"entity_ids": merged})
             self._items[chunk.chunk_id] = (chunk, vector)
 
     def hybrid_search(self, query: str, vector, filters: SearchFilters, limit: int):

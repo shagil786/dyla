@@ -114,7 +114,17 @@ class MemoryStore:
             CREATE INDEX IF NOT EXISTS memory_records_text ON memory_records(text);
             """
         )
+        self._migrate()
         self.connection.commit()
+
+    def _migrate(self) -> None:
+        """Additive migrations for databases created by an earlier version."""
+        columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(memory_records)").fetchall()
+        }
+        if "verdict_status" not in columns:
+            self.connection.execute("ALTER TABLE memory_records ADD COLUMN verdict_status TEXT")
 
     @_synchronized
     def upsert_entity(self, canonical_name: str, entity_type: str) -> str:
@@ -168,6 +178,22 @@ class MemoryStore:
         return rows
 
     @_synchronized
+    def known_entity_names(self) -> list[str]:
+        """Canonical names of every entity the system has already researched."""
+        rows = self.connection.execute(
+            "SELECT canonical_name FROM entities ORDER BY canonical_name COLLATE NOCASE"
+        ).fetchall()
+        return [row["canonical_name"] for row in rows]
+
+    @_synchronized
+    def known_entities(self) -> list[tuple[str, str]]:
+        """(entity_id, canonical_name) for every entity already researched."""
+        rows = self.connection.execute(
+            "SELECT id, canonical_name FROM entities ORDER BY canonical_name COLLATE NOCASE"
+        ).fetchall()
+        return [(row["id"], row["canonical_name"]) for row in rows]
+
+    @_synchronized
     def entity_candidates(self) -> list[sqlite3.Row]:
         return self.connection.execute(
             """
@@ -193,6 +219,7 @@ class MemoryStore:
         source_ids: list[str] | None = None,
         verified: bool = False,
         record_id: str | None = None,
+        verdict_status: str | None = None,
     ) -> None:
         record_id = record_id or hashlib.sha256(
             f"{kind}\0{text}".encode()
@@ -200,13 +227,14 @@ class MemoryStore:
         self.connection.execute(
             """
             INSERT INTO memory_records
-              (id, kind, text, entity_ids_json, source_ids_json, verified)
-            VALUES (?, ?, ?, ?, ?, ?)
+              (id, kind, text, entity_ids_json, source_ids_json, verified, verdict_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               kind=excluded.kind, text=excluded.text,
               entity_ids_json=excluded.entity_ids_json,
               source_ids_json=excluded.source_ids_json,
-              verified=excluded.verified
+              verified=excluded.verified,
+              verdict_status=excluded.verdict_status
             """,
             (
                 record_id,
@@ -215,6 +243,7 @@ class MemoryStore:
                 json.dumps(entity_ids or []),
                 json.dumps(source_ids or []),
                 int(verified),
+                verdict_status,
             ),
         )
         self.connection.commit()
@@ -267,6 +296,9 @@ class MemoryStore:
                             entity_ids=json.loads(row["entity_ids_json"]),
                             source_ids=json.loads(row["source_ids_json"]),
                             verified=bool(row["verified"]),
+                            verdict_status=row["verdict_status"]
+                            if "verdict_status" in row.keys()
+                            else None,
                         ),
                     )
                 )
@@ -311,15 +343,17 @@ class MemoryStore:
             self.connection.execute(
                 """
                 INSERT INTO memory_records
-                  (id, kind, text, entity_ids_json, source_ids_json, verified)
-                VALUES (?, 'claim', ?, '[]', ?, ?)
+                  (id, kind, text, entity_ids_json, source_ids_json, verified, verdict_status)
+                VALUES (?, 'claim', ?, '[]', ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET text=excluded.text,
-                  source_ids_json=excluded.source_ids_json, verified=excluded.verified
+                  source_ids_json=excluded.source_ids_json, verified=excluded.verified,
+                  verdict_status=excluded.verdict_status
                 """,
                 (
                     claim.id,
                     claim.text,
                     json.dumps([citation.source_id for citation in claim.citations]),
                     int(verdict is not None and verdict.status == "supported"),
+                    verdict.status if verdict is not None else None,
                 ),
             )

@@ -2,6 +2,39 @@
 
 Dyla is a research agent that will collect and ground answers in evidence.
 
+## Reproduce the evaluation in one command
+
+No API keys, no configuration, ~0.3 seconds:
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/python scripts/run_suite.py
+```
+
+This runs the full eight-question suite against a recorded fixture corpus and
+writes:
+
+| Artifact | Contents |
+| --- | --- |
+| `runs/reuse/qNN-*.jsonl` | Full log per question: plan, every tool call, every result, every course correction |
+| `reports/evaluation.md` | Cost per question in tokens and rupees, plus the trend across the eight questions |
+| `reports/auditor-findings.md` | What the auditor caught, including a seeded-defect audit of the auditor itself |
+| `reports/run-summary.json` | Machine-readable totals |
+
+To reproduce the memory-transfer comparison, run the baseline too:
+
+```bash
+.venv/bin/python scripts/run_suite.py --no-reuse   # writes runs/no-reuse/ and reports/*-no-reuse.*
+```
+
+**Read [`docs/WRITEUP.md`](docs/WRITEUP.md) first.** It states up front that
+these results are a deterministic replay of recorded pages, not a live LLM run,
+and explains exactly which conclusions that does and does not support.
+
+To run against real providers instead, configure `.env` (see Setup) and pass
+`--live`.
+
 ## Setup
 
 1. Create a virtual environment and install the package with development dependencies:

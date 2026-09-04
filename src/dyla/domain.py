@@ -38,6 +38,12 @@ class AuditorVerdictModel(BaseModel):
     explanation: str
 
 
+class AuditReport(BaseModel):
+    """Wrapper so a list of verdicts can travel as an AgentResult payload."""
+
+    verdicts: list[AuditVerdict]
+
+
 class RunEvent(BaseModel):
     run_id: str
     timestamp: datetime
@@ -100,6 +106,10 @@ class MemoryRecord(BaseModel):
     entity_ids: list[str]
     source_ids: list[str]
     verified: bool
+    # The auditor's actual verdict, when this record came from an audited claim.
+    # `verified` alone is a bool and cannot distinguish "audited and rejected"
+    # from "never audited", which the analyst feedback loop needs to know.
+    verdict_status: str | None = None
 
 
 class Budget(BaseModel):
@@ -129,9 +139,14 @@ class ResearchPlan(BaseModel):
 class Metrics(BaseModel):
     input_tokens: int
     output_tokens: int
+    # Embeddings are billed too. Skipping a redundant fetch removes the whole
+    # ingest-and-embed cost for that page, which is where memory reuse shows up
+    # in the token column rather than only in the search/fetch counts.
+    embedding_tokens: int = 0
     estimated_cost: float
     duration_ms: int
     searches: int
     fetches: int
     memory_hits: int
     parallel_calls: int
+    searches_skipped: int = 0

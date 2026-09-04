@@ -66,7 +66,12 @@ def test_ask_runs_analyst_auditor_memory_trace_quality_in_order(tmp_path):
         trace_writer=FakeTrace(tmp_path, events), quality_gate=None,
     ).ask("question"))
 
-    assert events[:5] == ["analyst", "auditor", "memory", "trace", "trace"]
+    # Stages now run through AgentRuntime, which traces "started"/"completed"
+    # around each one, so the raw event list interleaves extra trace entries.
+    # Assert the relative order of the meaningful stages instead of an exact
+    # prefix; the richer tracing is the point, not a regression.
+    assert [item for item in events if item != "trace"] == ["analyst", "auditor", "memory"]
+    assert events.count("trace") >= 2
     assert result.answer.answer == "answer"
     assert result.quality.status == "incomplete"
     assert result.run_id
@@ -152,7 +157,13 @@ def test_reused_orchestrator_reports_metrics_per_run(tmp_path):
     first = asyncio.run(orchestrator.ask("first"))
     second = asyncio.run(orchestrator.ask("second"))
 
-    assert first.metrics == second.metrics
+    # duration_ms is wall-clock and is deliberately excluded: comparing it for
+    # exact equality only passed while both runs happened to round to 0 ms, so
+    # any added work in the run path broke it. The property under test is that
+    # counters are per-run rather than cumulative.
+    counters = lambda metrics: metrics.model_dump(exclude={"duration_ms"})
+    assert counters(first.metrics) == counters(second.metrics)
+    assert first.metrics.duration_ms >= 0
     assert first.metrics.input_tokens == 10
     assert first.metrics.searches == 1
     assert first.metrics.fetches == 2
@@ -208,3 +219,99 @@ def test_orchestrator_preserves_analyst_claims_when_audit_is_incomplete(tmp_path
 
     assert result.answer is answer
     assert result.quality.status == "unaudited"
+
+
+# ---------------------------------------------------------------------------
+# Wall-clock ceiling
+#
+# The previous implementation compared elapsed time against 120s *after* each
+# stage had already returned and appended a note. Nothing was cancelled, so the
+# ceiling measured overruns instead of preventing them. These tests assert the
+# run actually stops.
+# ---------------------------------------------------------------------------
+
+class SlowAnalyst(FakeAnalyst):
+    def __init__(self, events, delay):
+        super().__init__(events)
+        self.delay = delay
+        self.completed = False
+
+    async def run(self, question, run_id):
+        await asyncio.sleep(self.delay)
+        self.completed = True
+        return await super().run(question, run_id)
+
+
+class SlowAuditor(FakeAuditor):
+    def __init__(self, events, delay):
+        super().__init__(events)
+        self.delay = delay
+
+    def run(self, answer, run_id):
+        import time as _time
+        _time.sleep(self.delay)
+        return super().run(answer, run_id)
+
+
+def test_a_slow_analyst_is_cancelled_at_the_ceiling_not_merely_reported(tmp_path):
+    import time as _time
+
+    events = []
+    analyst = SlowAnalyst(events, delay=5.0)
+    started = _time.monotonic()
+    result = asyncio.run(RunOrchestrator(
+        analyst=analyst, auditor=FakeAuditor(events), memory=FakeMemory(events),
+        trace_writer=FakeTrace(tmp_path, events), quality_gate=None,
+        wall_clock_seconds=0.25,
+    ).ask("question"))
+    elapsed = _time.monotonic() - started
+
+    assert elapsed < 3.0, f"orchestrator waited {elapsed:.2f}s despite a 0.25s ceiling"
+    assert not analyst.completed, "the analyst coroutine was not cancelled"
+    assert "analyst" not in events
+    assert any("wall-clock" in issue for issue in result.quality.issues), result.quality.issues
+
+
+def test_the_analyst_answer_survives_an_auditor_that_overruns(tmp_path):
+    """A slow auditor must not destroy the work the analyst already did."""
+    events = []
+    result = asyncio.run(RunOrchestrator(
+        analyst=FakeAnalyst(events), auditor=SlowAuditor(events, delay=2.0),
+        memory=FakeMemory(events), trace_writer=FakeTrace(tmp_path, events),
+        quality_gate=None, wall_clock_seconds=0.3,
+    ).ask("question"))
+
+    assert result.answer.answer == "answer"
+    assert result.verdicts == []
+    assert result.quality.status in {"unaudited", "incomplete"}
+    assert any("wall-clock" in issue for issue in result.quality.issues), result.quality.issues
+
+
+def test_the_budget_shrinks_across_stages(tmp_path):
+    """Analyst and auditor share one ceiling; they cannot each consume the full one."""
+    import time as _time
+
+    events = []
+    started = _time.monotonic()
+    asyncio.run(RunOrchestrator(
+        analyst=SlowAnalyst(events, delay=0.4), auditor=SlowAuditor(events, delay=5.0),
+        memory=FakeMemory(events), trace_writer=FakeTrace(tmp_path, events),
+        quality_gate=None, wall_clock_seconds=0.6,
+    ).ask("question"))
+    elapsed = _time.monotonic() - started
+
+    # Analyst consumes 0.4s of the 0.6s ceiling, leaving the auditor ~0.2s of a
+    # 5s job. Without a shrinking budget the auditor would get a fresh 0.6s.
+    assert elapsed < 2.0, f"combined stages ran {elapsed:.2f}s against a 0.6s ceiling"
+
+
+def test_a_normal_run_is_unaffected_by_the_ceiling(tmp_path):
+    events = []
+    result = asyncio.run(RunOrchestrator(
+        analyst=FakeAnalyst(events), auditor=FakeAuditor(events), memory=FakeMemory(events),
+        trace_writer=FakeTrace(tmp_path, events), quality_gate=None,
+    ).ask("question"))
+
+    assert result.answer.answer == "answer"
+    assert len(result.verdicts) == 1
+    assert not any("wall-clock" in issue for issue in result.quality.issues)
