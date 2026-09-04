@@ -91,7 +91,7 @@ class AuditorAgent:
                 for citation in _unique_citations(claim.citations):
                     self.metrics["fetches"] += 1
                     try:
-                        document = self._fetch(citation.url, deadline)
+                        document = self._fetch(citation.url, run_id, deadline)
                     except Exception as exc:
                         failed = True
                         self._warning(run_id, claim.id, "source fetch failed")
@@ -132,20 +132,40 @@ class AuditorAgent:
         self.audit_state = AuditState(run_status, issues)
         return verdicts
 
-    def _fetch(self, url: str, deadline: float | None = None) -> Any:
+    def _fetch(self, url: str, run_id: str = "", deadline: float | None = None) -> Any:
+        """Fetch a cited source, retrying, and saying so in the trace.
+
+        Retries used to be entirely silent: each attempt overwrote last_error
+        and only the final failure surfaced. A source that succeeded on the
+        third try looked identical in the log to one that succeeded on the
+        first, which hides both flakiness and latency spent. Every failed
+        attempt now emits an event.
+        """
         last_error: Exception | None = None
-        for _ in range(self.retries + 1):
+        attempts = self.retries + 1
+        for attempt in range(1, attempts + 1):
             try:
                 timeout = self._budgeted_timeout(deadline)
                 pool = ThreadPoolExecutor(max_workers=1)
                 future = pool.submit(self.fetcher.fetch, url)
                 try:
-                    return future.result(timeout=timeout)
+                    result = future.result(timeout=timeout)
                 finally:
                     pool.shutdown(wait=False, cancel_futures=True)
+                if attempt > 1 and run_id:
+                    self._trace(run_id, "source_fetch_recovered", {
+                        "url": url, "attempt": attempt, "attempts_allowed": attempts,
+                    })
+                return result
             except (Exception, FutureTimeout) as exc:
                 last_error = exc
-        raise RuntimeError(f"fetch failed after {self.retries + 1} attempts") from last_error
+                if run_id:
+                    self._trace(run_id, "source_fetch_retried", {
+                        "url": url, "attempt": attempt, "attempts_allowed": attempts,
+                        "error": str(exc) or exc.__class__.__name__,
+                        "will_retry": attempt < attempts,
+                    })
+        raise RuntimeError(f"fetch failed after {attempts} attempts") from last_error
 
     def _budgeted_timeout(self, deadline: float | None) -> float:
         """Never wait past the run deadline, and never wait a non-positive time."""

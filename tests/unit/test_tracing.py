@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from datetime import UTC, datetime
 
 import pytest
@@ -95,3 +96,56 @@ def test_trace_writer_rejects_run_ids_that_escape_logs_directory(tmp_path):
     absolute_event = event.model_copy(update={"run_id": "/tmp/outside"})
     with pytest.raises(ValueError, match="safe filename"):
         TraceWriter(tmp_path).append(absolute_event)
+
+
+# --- redaction must not eat the deliverables -------------------------------
+
+
+def test_token_counts_are_not_mistaken_for_credentials(tmp_path):
+    """Regression: "model_tokens" was redacted as if it were a secret.
+
+    The credential pattern matched the substring "token", so every trace lost
+    the per-question token counts -- the exact figures the cost report and the
+    brief's rupee trend are built from. A redactor that eats the deliverable is
+    not being careful, it is being useless.
+    """
+    writer = TraceWriter(root=tmp_path)
+
+    writer.append(
+        RunEvent(
+            run_id="run-tokens", timestamp=datetime.now(UTC), component="analyst",
+            event="completed",
+            payload={
+                "model_tokens": 1234, "input_tokens": 900, "output_tokens": 334,
+                "embedding_tokens": 21, "max_tokens": 4096,
+            },
+            duration_ms=None, error=None,
+        )
+    )
+
+    record = json.loads(Path(tmp_path, "logs", "run-tokens.jsonl").read_text().strip())
+    assert record["payload"] == {
+        "model_tokens": 1234, "input_tokens": 900, "output_tokens": 334,
+        "embedding_tokens": 21, "max_tokens": 4096,
+    }
+
+
+def test_real_credentials_are_still_redacted(tmp_path):
+    """The exemption above must not open a hole for singular credential keys."""
+    writer = TraceWriter(root=tmp_path)
+
+    writer.append(
+        RunEvent(
+            run_id="run-secrets", timestamp=datetime.now(UTC), component="analyst",
+            event="started",
+            payload={
+                "access_token": "sk-live-abcdef", "api_key": "secret-value",
+                "token": "bearer-xyz", "authorization": "Bearer abc",
+                "client_secret": "hunter2",
+            },
+            duration_ms=None, error=None,
+        )
+    )
+
+    payload = json.loads(Path(tmp_path, "logs", "run-secrets.jsonl").read_text().strip())["payload"]
+    assert set(payload.values()) == {"[REDACTED]"}, payload

@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 import json
 import threading
 import time
@@ -349,17 +350,24 @@ def test_analyst_traces_memory_searches_fetches_and_evidence_for_successful_run(
 
     assert answer.answer == "Answer"
     events = _read_trace(tmp_path, "run-trace-success")
-    assert [(event["component"], event["event"]) for event in events] == [
-        ("analyst", "memory_retrieved"),
-        ("analyst", "web_searched"),
-        ("analyst", "web_searched"),
-        ("analyst", "page_fetched"),
-        ("analyst", "page_fetched"),
-        ("analyst", "evidence_selected"),
+    # Assert the shape of the story the log tells, not a frozen list. Pinning
+    # the exact event sequence has broken this suite every time a new event was
+    # added, which punishes exactly the improvement the brief asks for.
+    names = [event["event"] for event in events]
+    assert names.index("memory_retrieved") < names.index("plan_created") < names.index("web_searched"), (
+        "a reader must see memory consulted and a plan formed before any search"
+    )
+    assert names.index("page_fetched") < names.index("evidence_selected")
+    assert names.count("web_searched") == 2
+    assert names.count("page_fetched") == 2
+    assert {event["component"] for event in events} == {"analyst"}
+
+    by_event = {event["event"]: event["payload"] for event in events}
+    assert by_event["memory_retrieved"] == {"count": 1}
+    assert [event["payload"] for event in events if event["event"] == "web_searched"] == [
+        {"query": "Q one", "results": 1},
+        {"query": "Q two", "results": 1},
     ]
-    assert events[0]["payload"] == {"count": 1}
-    assert events[1]["payload"] == {"query": "Q one", "results": 1}
-    assert events[2]["payload"] == {"query": "Q two", "results": 1}
     assert sorted(
         (event["payload"] for event in events if event["event"] == "page_fetched"),
         key=lambda item: item["url"],
@@ -367,7 +375,8 @@ def test_analyst_traces_memory_searches_fetches_and_evidence_for_successful_run(
         {"url": "https://example.com/1", "chars": len("evidence")},
         {"url": "https://example.com/2", "chars": len("evidence")},
     ]
-    assert events[-1]["payload"] == {"count": 1}
+    assert by_event["plan_created"]["subqueries"] == ["Q one", "Q two"]
+    assert by_event["evidence_selected"]["count"] == 1
     assert {event["run_id"] for event in events} == {"run-trace-success"}
 
 
@@ -394,7 +403,11 @@ def test_analyst_traces_page_fetch_failure_and_still_succeeds(tmp_path):
     assert failures[0]["payload"]["url"] == fail_url
     assert "malformed contents response" in failures[0]["payload"]["error"]
     assert [event["payload"]["url"] for event in fetched] == ["https://example.com/2"]
-    assert events[-1]["event"] == "evidence_selected"
+    # The failure must not abort the run: evidence selection still happens after
+    # it. Asserted by order rather than by "is the last event", so adding events
+    # to the end of the run does not fail a test about fetch failures.
+    names = [event["event"] for event in events]
+    assert names.index("page_fetch_failed") < names.index("evidence_selected")
 
 
 def test_analyst_without_trace_writer_emits_no_events(tmp_path, monkeypatch):
@@ -859,3 +872,127 @@ def test_content_attribution_degrades_quietly_when_memory_cannot_answer():
     agent.memory = Broken()
 
     assert agent._entity_ids_from_content("Infosys") == []
+
+
+# --- course corrections must be legible in the trace -----------------------
+# The brief asks for "where it changed course after something failed". Each of
+# these rejections is the analyst overruling its own model, and each used to be
+# visible only as prose inside the answer's limitations.
+
+
+def _trace_events(tmp_path, run_id, name):
+    return [
+        event for event in _read_trace(tmp_path, run_id) if event["event"] == name
+    ]
+
+
+def test_a_claim_with_no_citations_is_traced_as_a_rejection(tmp_path):
+    class Uncited:
+        def complete(self, request):
+            return SimpleNamespace(
+                parsed=AnalystAnswer(
+                    answer="Answer",
+                    claims=[Claim(id="c1", text="Acme is profitable.", citations=[])],
+                ),
+                input_tokens=1, output_tokens=1, estimated_cost=0.0,
+            )
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=Uncited(), resolver=FakeResolver(), memory=FakeMemory(),
+                         searcher=FakeSearcher(), fetcher=FakeFetcher(), index=FakeIndex(),
+                         embedder=FakeEmbedder(), planner=controlled_planner(plan),
+                         trace_writer=TraceWriter(tmp_path))
+
+    asyncio.run(agent.run("Q", "run-uncited"))
+
+    rejections = _trace_events(tmp_path, "run-uncited", "claim_rejected")
+    assert [event["payload"]["reason"] for event in rejections] == ["no_citations"]
+    assert rejections[0]["payload"]["claim_id"] == "c1"
+
+
+def test_a_citation_that_was_never_retrieved_is_traced_as_a_rejection(tmp_path):
+    """The model citing a page the run never fetched is a fabrication risk."""
+
+    class Fabricator:
+        def complete(self, request):
+            return SimpleNamespace(
+                parsed=AnalystAnswer(
+                    answer="Answer",
+                    claims=[Claim(
+                        id="c1", text="Acme is profitable.",
+                        citations=[Citation(url="https://not-fetched.example/x",
+                                            source_id="ghost", chunk_id=None, title="Ghost")],
+                    )],
+                ),
+                input_tokens=1, output_tokens=1, estimated_cost=0.0,
+            )
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=Fabricator(), resolver=FakeResolver(), memory=FakeMemory(),
+                         searcher=FakeSearcher(), fetcher=FakeFetcher(), index=FakeIndex(),
+                         embedder=FakeEmbedder(), planner=controlled_planner(plan),
+                         trace_writer=TraceWriter(tmp_path))
+
+    asyncio.run(agent.run("Q", "run-ghost"))
+
+    rejections = _trace_events(tmp_path, "run-ghost", "claim_rejected")
+    assert [event["payload"]["reason"] for event in rejections] == ["citation_not_in_evidence"]
+    assert rejections[0]["payload"]["unmapped_citations"] == ["https://not-fetched.example/x"]
+
+
+def test_declining_to_answer_is_traced_as_a_decision(tmp_path):
+    """"Not found" is a required behaviour, so it is recorded as a choice.
+
+    Inferring it from an empty claim list would make it indistinguishable from
+    a crash that happened to produce no claims.
+    """
+
+    class Uncited:
+        def complete(self, request):
+            return SimpleNamespace(
+                parsed=AnalystAnswer(
+                    answer="Answer",
+                    claims=[Claim(id="c1", text="Acme is profitable.", citations=[])],
+                ),
+                input_tokens=1, output_tokens=1, estimated_cost=0.0,
+            )
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=Uncited(), resolver=FakeResolver(), memory=FakeMemory(),
+                         searcher=FakeSearcher(), fetcher=FakeFetcher(), index=FakeIndex(),
+                         embedder=FakeEmbedder(), planner=controlled_planner(plan),
+                         trace_writer=TraceWriter(tmp_path))
+
+    answer = asyncio.run(agent.run("Q", "run-withheld"))
+
+    assert answer.answer == "Insufficient evidence."
+    withheld = _trace_events(tmp_path, "run-withheld", "answer_withheld")
+    assert withheld and withheld[0]["payload"]["reason"] == "no_claim_survived_validation"
+
+    synthesized = _trace_events(tmp_path, "run-withheld", "answer_synthesized")
+    assert synthesized[0]["payload"] == {
+        "claims_proposed": 1, "claims_kept": 0, "claims_rejected": 1, "bailed_out": True,
+    }
+
+
+def test_the_plan_is_traced_before_any_search_happens(tmp_path):
+    """"Plan before searching" is a stated requirement; the log must show it."""
+    plan = ResearchPlan(
+        original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q two"}],
+        entities=["Acme"], date_constraints=["2024"],
+    )
+    agent = AnalystAgent(model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(),
+                         searcher=FakeSearcher(), fetcher=FakeFetcher(), index=FakeIndex(),
+                         embedder=FakeEmbedder(), planner=controlled_planner(plan),
+                         trace_writer=TraceWriter(tmp_path))
+
+    asyncio.run(agent.run("Q", "run-plan"))
+
+    events = _read_trace(tmp_path, "run-plan")
+    names = [event["event"] for event in events]
+    assert names.index("plan_created") < names.index("web_searched")
+
+    payload = next(e["payload"] for e in events if e["event"] == "plan_created")
+    assert payload["subqueries"] == ["Q one", "Q two"]
+    assert payload["entities"] == ["Acme"]
+    assert payload["date_constraints"] == ["2024"]

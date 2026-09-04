@@ -111,7 +111,7 @@ The brief: *"Your run logs matter as much as your answers here."*
 | **P2-2** | ✅ **DONE.** Commit run logs and reports | `runs/<mode>/qNN-*.jsonl` (readable copies) and `reports/` are tracked. `logs/` stays ignored as the scratch directory a run writes into. | S |
 | **P2-3** | ✅ **DONE.** Real pricing | `dyla.pricing` holds published per-1M-token prices with check dates and a USD/INR rate. Unknown models report `unpriced` with remediation, never `0`. | S |
 | **P2-4** | ✅ **DONE.** Report what the auditor caught | `reports/auditor-findings.md`. Because the extractive offline model cannot hallucinate, real verdicts alone prove nothing, so `dyla.findings` also plants known-bad claims and measures detection: **19/20**, up from 15/20 before misattribution checking. | M |
-| **P2-5** | Promote planner subqueries, search failures, retries and bail-outs to first-class trace events | The brief wants "where it changed course after something failed" legible in the trace. | S |
+| **P2-5** | ✅ **DONE.** Promote the plan, retries and bail-outs to first-class trace events | New events: `plan_created`, `claim_rejected` (4 stable reason codes), `answer_synthesized`, `answer_withheld`, `source_fetch_retried`, `source_fetch_recovered`. `evidence_selected` now names its sources and its reuse provenance. Fixed two things found while doing it: the redactor was scrubbing every token count out of the log (`model_tokens` matched the credential pattern), and per-stage `completed` reported only ledger totals, so a stage that spent 426 tokens logged `model_tokens: 0`. Guarded by `tests/integration/test_trace_completeness.py`. | S |
 | **P2-6** | ✅ **DONE** — `docs/WRITEUP.md`. **The write-up.** Why the architecture is shaped this way; what was tried, measured and rejected; named weaknesses | The brief says it carries more weight than most candidates assume. Part 1 of this document is a first draft of the "named weaknesses" section. | L |
 
 ### P3 — "Take it further" (the brief says solve *one* properly)
@@ -149,11 +149,22 @@ rather than four loosely."*
    **Resolved:** it stays the default, now that it is credible.
 3. ~~**P1-7** — wire in `agent_runtime.py`, or delete it?~~ **Resolved:** wired in.
 4. **Scope.** P0, P1, P2 and P3-1 are done (P3-1 partially — see its row).
-   Remaining: **P2-5** (first-class trace events for planner subqueries and
-   bail-outs), **P3-3** (adversarial analyst), and P4.
+   Remaining: **P3-3** (adversarial analyst, needs a live model) and P4.
 
-5. **Known unfixed defect.** The entity-attribution merge in
-   `LocalVectorStore.upsert()` has not been applied to the Qdrant or Azure
-   adapters, which carry the same latent overwrite bug. They need the same
-   read-merge-write and cannot be tested here without credentials. Disclosed in
-   `docs/WRITEUP.md` §3.
+5. ✅ **Qdrant entity-overwrite bug FIXED.** `QdrantVectorStore.upsert()` now
+   reads the stored `entity_ids` for each point and unions them before writing.
+   Qdrant replaces a point's payload wholesale, so re-ingesting a page under a
+   different entity used to erase its attribution — **live, not latent, for any
+   Qdrant deployment.** Covered by five tests using a fake client (no
+   credentials needed), verified to fail when the merge is removed. The read is
+   non-fatal on error: losing attribution is recoverable on a later run, losing
+   the ingestion is not.
+
+   ✅ **Azure was removed instead of fixed.** Nothing used it, it was the
+   *default* for three provider roles despite requiring credentials nobody had,
+   and its vector store carried the same overwrite bug. Deleted:
+   `azure_models.py`, `search.py` (that file was the Azure AI Search adapter
+   despite the generic name), their tests, 9 config settings and 4 factory
+   branches — about 830 lines. Defaults for every role are now `local`, so a
+   fresh checkout runs with no credentials. Azure endpoints that speak the
+   standard OpenAI API still work through the `compatible` adapter.

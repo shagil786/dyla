@@ -175,10 +175,23 @@ That single change took the saving from 19% to 38% of embedding tokens.
 
 ### The honest caveat
 
-The entity-merge fix is in `LocalVectorStore` only. **The Qdrant and Azure
-adapters have the same latent overwrite bug** and need the same read-merge-write.
-They are untested here because they need credentials. This is a known, unfixed
-defect and it is in the backlog, not hidden in it.
+The entity-merge fix originally landed in `LocalVectorStore` only. **Qdrant has
+since been fixed too** — and it mattered more there: Qdrant replaces a point's
+payload wholesale on upsert, so for anyone actually running Qdrant this was
+live data corruption, not a latent risk. The fix reads the stored `entity_ids`
+and unions them before writing, and the read is deliberately non-fatal: losing
+attribution is recoverable on a later run, losing the ingestion is not. Five
+tests cover it with a fake client, and I checked they fail when the merge is
+removed rather than assuming they would.
+
+**Azure AI Search had the bug too, and was deleted rather than fixed.** It was
+unused, it was the *default* for three of the five provider roles despite
+needing credentials nobody had, and shipping a knowingly-broken adapter to
+support a provider no one runs is worse than not shipping one. That removal
+also fixed a quieter problem: a fresh checkout used to default to Azure, so the
+configuration a new reader got was one that could not possibly work. Every role
+now defaults to `local`, which is the configuration the tests actually
+exercise.
 
 ---
 
@@ -318,8 +331,30 @@ a per-question verdict trend across the last 16 full-suite runs.
 | Content-based entity attribution | Q6, Q7 went 1 search → 0; embedding savings 19% → 38% |
 | `embedding_tokens` added to cost fields | Measured savings went from a flat 0% to 13.5% — the saving had been real all along and invisible |
 | Misattribution check | Seeded-defect detection 75% → 95% |
+| Plan, rejections and retries traced | The four ways the analyst overrules its own model became machine-readable instead of prose buried in `limitations` |
+| Redactor exemption for token counts | Every token count had been replaced with `[REDACTED]` in every trace |
 
-That seventh row is worth pausing on. For one full measurement cycle the reuse
+Two rows are worth pausing on.
+
+**The redactor was eating the deliverable.** The credential filter matched the
+substring `token`, so `model_tokens` — and any other `*_tokens` field routed
+through it — was written to every trace as `[REDACTED]`. The cost report is
+built from those numbers. A redactor careful enough to destroy the thing it was
+protecting is not being careful. Credentials are singular (`access_token`);
+counts are plural and suffixed, and that is what the exemption keys on.
+
+**Adding trace events silently failed the entire suite.** The trace validator
+holds an allowlist of event names, and an unrecognised event is treated as a
+corrupt trace. Adding four events took the suite from 7/8 to **0/8** — with
+every unit test still green, because no unit test ran a question end to end and
+then validated the resulting trace. `tests/integration/test_trace_completeness.py`
+now does, and I checked it fails when an event is removed from the allowlist
+rather than assuming it would. The first version of that guard only exercised
+the happy path, so deleting `claim_rejected` from the allowlist left it green —
+a guard that only covers the path where nothing goes wrong does not cover the
+events that exist for when something does.
+
+That row about `embedding_tokens` is worth pausing on too. For one full measurement cycle the reuse
 feature *appeared* to save nothing, and the reason was that the cost report did
 not count the token type reuse actually saves. **The metric, not the feature,
 was broken.** If I had trusted the report I would have reverted working code.
@@ -334,7 +369,10 @@ Ranked by how much they would bother me in review.
    every artifact header.
 2. **The auditor has no scope reasoning** (4.2) and currently fails Q1 because
    of it.
-3. **Qdrant and Azure adapters still have the entity-overwrite bug** (§3).
+3. **Removing Azure is a breaking change** for anyone who was using those
+   adapters. Nobody here was, and the alternative was carrying ~830 lines of
+   knowingly-broken, untestable, credential-gated code — but it is a break and
+   it belongs on this list rather than in a footnote.
 4. **Extra credit not achieved** — 27.8%, not 50% (§3).
 5. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
    pre-registers Zerodha, Infosys, Wipro and Zepto, because entity resolution is

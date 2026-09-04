@@ -87,13 +87,32 @@ class QdrantVectorStore:
         assert vectors is not None
         if len(vectors) != len(chunks):
             raise ValueError("vector count did not match chunk count")
+        # Entity attribution has to survive re-ingestion.
+        #
+        # chunk_id is sha256(source_id:position:content_hash) -- a pure content
+        # hash carrying no entity information -- and Qdrant's upsert replaces a
+        # point's payload wholesale. So re-fetching a page while researching a
+        # *different* entity used to overwrite entity_ids with whatever the
+        # current question happened to name, silently erasing the attribution
+        # that made the page reusable. No error, no failing test: memory reuse
+        # just quietly stopped engaging for that entity.
+        #
+        # The same bug was fixed in LocalVectorStore by merging on write. Here
+        # the merge needs a read first, because the authority lives server-side.
+        existing = self._existing_entity_ids([qdrant_point_id(chunk.chunk_id) for chunk in chunks])
         points = []
         for chunk, vector in zip(chunks, vectors):
             if len(vector) != self.vector_dimensions:
                 raise ValueError("vector dimension does not match index configuration")
             payload = chunk.model_dump()
             payload["published_at"] = _serialize_date(chunk.published_at)
-            points.append(models.PointStruct(id=qdrant_point_id(chunk.chunk_id), vector=vector, payload=payload))
+            point_id = qdrant_point_id(chunk.chunk_id)
+            prior = existing.get(point_id)
+            if prior:
+                payload["entity_ids"] = list(
+                    dict.fromkeys([*prior, *(payload.get("entity_ids") or [])])
+                )
+            points.append(models.PointStruct(id=point_id, vector=vector, payload=payload))
         if not points:
             self._upsert_points(points)
             return
@@ -108,6 +127,38 @@ class QdrantVectorStore:
             batch.append(point)
             batch_bytes += point_bytes
         self._upsert_points(batch)
+
+    def _existing_entity_ids(self, point_ids: list[str]) -> dict[str, list[str]]:
+        """Read the entity_ids already stored for these points, if any.
+
+        Failure here is deliberately non-fatal. A read-before-write that raises
+        would turn a transient Qdrant blip into a failed ingestion, which is a
+        worse outcome than the attribution loss it prevents: the page can be
+        re-tagged on a later run, but a dropped ingestion loses the evidence
+        entirely. A degraded merge is logged by its absence, not by an
+        exception.
+        """
+        if not point_ids:
+            return {}
+        retrieve = getattr(self.client, "retrieve", None)
+        if retrieve is None:
+            return {}
+        try:
+            records = retrieve(
+                collection_name=self.collection_name,
+                ids=point_ids,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception:
+            return {}
+        found: dict[str, list[str]] = {}
+        for record in records or []:
+            payload = getattr(record, "payload", None) or {}
+            entity_ids = payload.get("entity_ids") or []
+            if isinstance(entity_ids, (list, tuple)):
+                found[str(getattr(record, "id", ""))] = [str(value) for value in entity_ids]
+        return found
 
     def _upsert_points(self, points: list[models.PointStruct]) -> None:
         try:

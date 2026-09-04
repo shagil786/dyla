@@ -5,13 +5,11 @@ import inspect
 from dataclasses import dataclass
 from typing import Any
 import httpx
-from .azure_models import AzureChatModel, AzureEmbeddingModel
 from .compatible import CompatibleEmbeddingProvider, CompatibleModelProvider, LocalModelProvider
 from .config import Settings
 from .local_vector import LocalVectorStore
 from .ports import SearchProvider
 from .qdrant_vector import QdrantVectorStore
-from .search import SearchIndex
 from .web import Resolver, YouResearchProvider
 
 
@@ -45,8 +43,6 @@ def build_model_provider(settings: Settings, *, transport: httpx.BaseTransport |
         return load_plugin(settings.dyla_model_provider, settings, transport=transport)
     if provider == "compatible":
         return CompatibleModelProvider(settings.model_base_url or "", settings.model_api_key or "", settings.model_name or "", transport=transport, extra_payload=settings.model_extra_payload)
-    if provider == "azure":
-        return AzureChatModel(settings, transport=transport)
     if provider == "local":
         return LocalModelProvider()
     raise ValueError(f"unsupported model provider: {settings.dyla_model_provider}")
@@ -62,8 +58,6 @@ def build_auditor_provider(settings: Settings, *, transport: httpx.BaseTransport
     if provider == "compatible":
         model = CompatibleModelProvider(settings.auditor_base_url or settings.model_base_url or "", settings.auditor_api_key or settings.model_api_key or "", settings.auditor_model or settings.model_name or "", transport=transport, extra_payload=settings.auditor_extra_payload)
         return ModelComparator(model)
-    if provider == "azure":
-        return ModelComparator(AzureChatModel(settings, transport=transport, model_name=settings.auditor_model))
     raise ValueError(f"unsupported auditor provider: {settings.dyla_auditor_provider}")
 
 
@@ -80,8 +74,6 @@ def build_embedding_provider(settings: Settings, *, transport: httpx.BaseTranspo
             batch_size=settings.embedding_batch_size,
             cache_path=cache_path,
         )
-    if provider == "azure":
-        return AzureEmbeddingModel(settings, transport=transport, cache_path=cache_path)
     if provider == "local":
         from .compatible import LocalEmbeddingProvider
         return LocalEmbeddingProvider()
@@ -94,10 +86,6 @@ def build_vector_store(settings: Settings, *, embedder=None, transport: httpx.Ba
         return load_plugin(settings.dyla_vector_store, settings, embedder=embedder, transport=transport)
     if provider == "local":
         return LocalVectorStore(vector_dimensions=None, embedder=embedder)
-    if provider == "azure":
-        if not settings.azure_search_endpoint or not settings.azure_search_api_key or not settings.azure_search_index:
-            raise ValueError("Azure vector store requires Azure Search endpoint, API key, and index")
-        return SearchIndex(settings, embedder=embedder, transport=transport)
     if provider == "qdrant":
         return QdrantVectorStore(settings, embedder=embedder, client=qdrant_client)
     if provider == "faiss":

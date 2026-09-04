@@ -104,6 +104,20 @@ class AnalystAgent:
             if result.status == "resolved" and result.entity_id:
                 resolved[entity.casefold()] = result.entity_id
         entity_ids = list(dict.fromkeys(resolved.values()))
+        # The plan is the first thing the brief asks to see in a run log, and it
+        # was the one thing missing: the planner traced its own query expansion,
+        # but nothing recorded the entities, what they resolved to, or the date
+        # constraints the plan would be executed under.
+        self._trace(run_id, "plan_created", {
+            "subqueries": [item.get("query") for item in plan.subqueries],
+            "entities": list(plan.entities),
+            "resolved_entities": {name: entity_id for name, entity_id in resolved.items()},
+            "unresolved_entities": [
+                entity for entity in plan.entities if entity.casefold() not in resolved
+            ],
+            "date_constraints": list(plan.date_constraints),
+            "reuse_enabled": self.reuse_enabled,
+        })
         if entity_ids:
             entity_memory = []
             for entity in plan.entities:
@@ -146,8 +160,16 @@ class AnalystAgent:
             evidence = await asyncio.to_thread(
                 self.index.hybrid_search, question, vector[0], filters, self.evidence_limit,
             )
-        self._trace(run_id, "evidence_selected", {"count": len(evidence)})
-        answer = await asyncio.to_thread(self._synthesize, question, memories, evidence, [*collection_limitations, *date_limitations])
+        self._trace(run_id, "evidence_selected", {
+            "count": len(evidence),
+            "source_ids": list(dict.fromkeys(
+                getattr(item, "source_id", None) for item in evidence
+            )),
+            "urls": list(dict.fromkeys(getattr(item, "url", None) for item in evidence)),
+            "searches_skipped_by_reuse": len(reuse["skipped"]),
+            "queries_run_against_web": len(reuse["to_run"]),
+        })
+        answer = await asyncio.to_thread(self._synthesize, question, memories, evidence, [*collection_limitations, *date_limitations], run_id)
         self.metrics["duration_ms"] = int((time.monotonic() - started) * 1000)
         return answer
 
@@ -342,7 +364,7 @@ class AnalystAgent:
             )
         return SearchFilters(entity_ids=entity_ids or None, published_after=after, published_before=before), limitations
 
-    def _synthesize(self, question: str, memories: list[MemoryRecord], evidence: list[Evidence], date_limitations: list[str]) -> AnalystAnswer:
+    def _synthesize(self, question: str, memories: list[MemoryRecord], evidence: list[Evidence], date_limitations: list[str], run_id: str = "") -> AnalystAnswer:
         if not evidence:
             return AnalystAnswer(answer="Insufficient evidence.", claims=[], limitations=["No retrieved evidence was available.", *date_limitations])
         evidence_context = "\n\n".join(
@@ -394,16 +416,45 @@ class AnalystAgent:
         evidence_keys: set[tuple[str, str, str | None]] = {(item.url, item.source_id, item.chunk_id) for item in evidence}
         valid_claims = []
         limitations = list(answer.limitations)
+        # Every rejection below is a course correction -- the analyst overruling
+        # its own model -- and none of them used to appear in the trace. They
+        # were folded into the answer's limitations text, where a reader has to
+        # infer what happened from prose. Each now emits a machine-readable
+        # event with a stable reason code, because "where it changed course
+        # after something failed" is the part of the log the brief asks for by
+        # name.
         for claim in answer.claims:
             if not claim.citations:
                 limitations.append(f"Claim {claim.id} was rejected because it had no citations.")
+                self._trace(run_id, "claim_rejected", {
+                    "claim_id": claim.id, "reason": "no_citations",
+                    "detail": "The model asserted a claim without citing anything.",
+                    "claim_text": claim.text,
+                })
                 continue
             mapped = [citation for citation in claim.citations if self._citation_maps(citation, evidence_keys)]
             if len(mapped) != len(claim.citations):
                 limitations.append(f"Claim {claim.id} was rejected because a citation did not map to retrieved evidence.")
+                self._trace(run_id, "claim_rejected", {
+                    "claim_id": claim.id, "reason": "citation_not_in_evidence",
+                    "detail": "A cited source was never retrieved during this run, so the "
+                              "citation cannot be trusted to support the claim.",
+                    "claim_text": claim.text,
+                    "unmapped_citations": [
+                        citation.url for citation in claim.citations
+                        if not self._citation_maps(citation, evidence_keys)
+                    ],
+                })
                 continue
             if claim.confidence.casefold() in {"low", "medium", "weak"} and len({citation.source_id for citation in mapped}) < 2:
                 limitations.append(f"Claim {claim.id} was rejected for lacking independent evidence.")
+                self._trace(run_id, "claim_rejected", {
+                    "claim_id": claim.id, "reason": "insufficient_corroboration",
+                    "detail": "A claim the model was not confident about rested on a single source.",
+                    "claim_text": claim.text,
+                    "confidence": claim.confidence,
+                    "distinct_sources": len({citation.source_id for citation in mapped}),
+                })
                 continue
             if _restates_rejected_claim(claim.text, rejected_before):
                 # The prompt above asks the model not to restate these. Asking is
@@ -414,9 +465,28 @@ class AnalystAgent:
                     "assertion unsupported by its cited sources."
                 )
                 self.metrics["claims_blocked_by_audit_feedback"] += 1
+                self._trace(run_id, "claim_rejected", {
+                    "claim_id": claim.id, "reason": "blocked_by_audit_feedback",
+                    "detail": "An earlier audit found this same assertion unsupported by its "
+                              "cited sources, and the model restated it anyway.",
+                    "claim_text": claim.text,
+                })
                 continue
             valid_claims.append(claim)
+        self._trace(run_id, "answer_synthesized", {
+            "claims_proposed": len(answer.claims),
+            "claims_kept": len(valid_claims),
+            "claims_rejected": len(answer.claims) - len(valid_claims),
+            "bailed_out": not answer.claims or not valid_claims,
+        })
         if not answer.claims or not valid_claims:
+            # Saying "not found" rather than guessing is a required behaviour,
+            # so it is traced as a decision rather than inferred from an empty
+            # claim list.
+            self._trace(run_id, "answer_withheld", {
+                "reason": "no_claim_survived_validation" if answer.claims else "model_proposed_no_claims",
+                "detail": "Answering was declined rather than guessing.",
+            })
             return AnalystAnswer(answer="Insufficient evidence.", claims=[], limitations=list(dict.fromkeys([*limitations, *date_limitations])))
         return AnalystAnswer(answer=answer.answer, claims=valid_claims, limitations=list(dict.fromkeys([*limitations, *date_limitations])))
 

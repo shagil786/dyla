@@ -9,10 +9,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Service settings for model, web-provider, and vector-store adapters."""
 
-    dyla_model_provider: str = "azure"
+    # Defaults are the dependency-free adapters. They used to be "azure",
+    # which meant a fresh checkout pointed at a provider that needed
+    # credentials nobody had -- and, once Azure was removed, at nothing at all.
+    # "local" is what the offline suite runs, so the default configuration is
+    # now the one that is actually exercised by the tests.
+    dyla_model_provider: str = "local"
     dyla_auditor_provider: str = "local"
-    dyla_embedding_provider: str = "azure"
-    dyla_vector_store: str = "azure"
+    dyla_embedding_provider: str = "local"
+    dyla_vector_store: str = "local"
     dyla_web_provider: str = "unconfigured"
     model_base_url: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_MODEL_BASE_URL", "MODEL_BASE_URL"))
     model_api_key: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_MODEL_API_KEY", "MODEL_API_KEY"))
@@ -28,15 +33,6 @@ class Settings(BaseSettings):
     embedding_api_key: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_API_KEY", "EMBEDDING_API_KEY"))
     embedding_model: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_MODEL", "EMBEDDING_MODEL"))
     embedding_batch_size: int = Field(default=256, validation_alias=AliasChoices("DYLA_EMBEDDING_BATCH_SIZE"))
-    azure_openai_endpoint: str | None = None
-    azure_openai_api_key: str | None = None
-    azure_openai_api_version: str | None = None
-    azure_openai_chat_deployment: str | None = None
-    azure_openai_embedding_deployment: str | None = None
-    azure_search_endpoint: str | None = None
-    azure_search_api_key: str | None = None
-    azure_search_index: str | None = None
-    azure_search_vector_dimensions: int = 1536
     qdrant_url: str | None = None
     qdrant_api_key: str | None = None
     qdrant_collection: str = "dyla-evidence"
@@ -65,9 +61,7 @@ class Settings(BaseSettings):
         if provider == "you" and not self.you_api_key:
             raise ValueError("YOU_API_KEY is required when DYLA_WEB_PROVIDER=you")
         if self.dyla_model_provider.casefold() == "compatible" and not all((self.model_base_url, self.model_api_key, self.model_name)):
-            # Direct construction of legacy Azure settings remains supported for adapters/tests.
-            if not all((self.azure_openai_endpoint, self.azure_openai_api_key, self.azure_openai_chat_deployment)):
-                raise ValueError("compatible model provider requires model base URL, API key, and model")
+            raise ValueError("compatible model provider requires model base URL, API key, and model")
         if self.dyla_embedding_provider.casefold() == "compatible" and not all((self.embedding_base_url, self.embedding_api_key, self.embedding_model)):
             raise ValueError("compatible embedding provider requires embedding base URL, API key, and model")
         if self.qdrant_upsert_batch_size < 1:

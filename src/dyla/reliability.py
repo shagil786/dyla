@@ -68,12 +68,27 @@ class QualityGate:
         if not trace_path.is_file() or trace_path.stat().st_size == 0:
             issues.add("research trace was not saved")
             return
+        # An allowlist, so a typo'd or injected event name is caught rather than
+        # silently accepted. The cost is that improving the trace requires
+        # updating this set -- adding four events without it turned every
+        # question in the suite "incomplete", because an unrecognised event is
+        # treated as a corrupt trace. Keep it in sync when adding events.
         valid_events = {
-            "started", "completed", "failed", "query_expanded", "source_fetched",
-            "source_fetch_failed", "claim_audited", "auditor_failed", "memory_saved",
-            "quality_completed", "memory_retrieved", "web_searched", "web_search_failed",
-            "page_fetched", "page_fetch_failed", "ingest_failed", "evidence_selected",
-            "memory_reuse_evaluated", "reuse_probe_failed", "reuse_insufficient",
+            # lifecycle
+            "started", "completed", "failed",
+            # planning
+            "query_expanded", "plan_created",
+            # tool calls
+            "web_searched", "web_search_failed", "page_fetched", "page_fetch_failed",
+            "ingest_failed", "source_fetched", "source_fetch_failed",
+            "source_fetch_retried", "source_fetch_recovered",
+            # memory
+            "memory_retrieved", "memory_saved", "memory_reuse_evaluated",
+            "reuse_probe_failed", "reuse_insufficient",
+            # results and course corrections
+            "evidence_selected", "claim_audited", "claim_rejected",
+            "answer_synthesized", "answer_withheld", "auditor_failed",
+            "quality_completed",
         }
         try:
             for line_number, line in enumerate(trace_path.read_text(encoding="utf-8").splitlines(), 1):

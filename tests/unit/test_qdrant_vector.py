@@ -273,3 +273,101 @@ def test_qdrant_errors_redact_api_key():
 
     assert "fake-qdrant-key" not in str(error.value)
     assert "[REDACTED]" in str(error.value)
+
+
+# --- entity attribution must survive re-ingestion --------------------------
+# chunk_id is a pure content hash, and Qdrant's upsert replaces a point's
+# payload wholesale. Re-fetching a page while researching a different entity
+# therefore used to erase the attribution that made it reusable -- silently,
+# with no error and no failing test. This is the same bug that was fixed in
+# LocalVectorStore; it is live in Qdrant deployments.
+
+
+class RecordingClient(FakeClient):
+    """FakeClient that remembers payloads so a re-upsert can be inspected."""
+
+    def __init__(self, stored=None, **kwargs):
+        super().__init__(collection_exists=True, **kwargs)
+        self.stored = stored or {}
+        self.retrieve_calls = []
+
+    def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):
+        self.retrieve_calls.append(list(ids))
+        return [
+            type("Record", (), {"id": point_id, "payload": self.stored[point_id]})()
+            for point_id in ids
+            if point_id in self.stored
+        ]
+
+
+def _upserted_payloads(client):
+    return [
+        point.payload
+        for call in client.upserts
+        for point in call["points"]
+    ]
+
+
+def test_re_ingesting_a_page_unions_entity_ids_instead_of_replacing_them():
+    point_id = qdrant_point_id("chunk-1")
+    client = RecordingClient(stored={point_id: {"entity_ids": ["entity-infosys"]}})
+    store = QdrantVectorStore(settings(), client=client)
+
+    # The same page, re-fetched while researching a different company.
+    refetched = chunk().model_copy(update={"entity_ids": ["entity-wipro"]})
+    store.upsert([refetched], vectors=[[0.1] * 3])
+
+    payload = _upserted_payloads(client)[0]
+    assert sorted(payload["entity_ids"]) == ["entity-infosys", "entity-wipro"], (
+        "the earlier attribution was erased; this page is no longer reusable "
+        "for the entity that originally found it"
+    )
+
+
+def test_a_first_time_ingestion_keeps_its_own_entity_ids():
+    """The merge must not invent or drop attribution when there is no prior."""
+    client = RecordingClient(stored={})
+    store = QdrantVectorStore(settings(), client=client)
+
+    store.upsert([chunk()], vectors=[[0.1] * 3])
+
+    assert _upserted_payloads(client)[0]["entity_ids"] == ["entity-1"]
+
+
+def test_a_failed_read_does_not_fail_the_ingestion():
+    """A transient read blip must not cost us the evidence.
+
+    Losing attribution is recoverable on a later run; losing the ingestion
+    loses the page entirely. The merge degrades, it does not throw.
+    """
+
+    class BlipClient(RecordingClient):
+        def retrieve(self, **kwargs):
+            raise RuntimeError("qdrant unavailable")
+
+    client = BlipClient(stored={})
+    store = QdrantVectorStore(settings(), client=client)
+
+    store.upsert([chunk()], vectors=[[0.1] * 3])
+
+    assert _upserted_payloads(client)[0]["entity_ids"] == ["entity-1"]
+
+
+def test_the_merge_does_not_duplicate_an_entity_already_present():
+    point_id = qdrant_point_id("chunk-1")
+    client = RecordingClient(stored={point_id: {"entity_ids": ["entity-1"]}})
+    store = QdrantVectorStore(settings(), client=client)
+
+    store.upsert([chunk()], vectors=[[0.1] * 3])
+
+    assert _upserted_payloads(client)[0]["entity_ids"] == ["entity-1"]
+
+
+def test_a_client_without_retrieve_still_works():
+    """Older clients and hand-rolled fakes must not break ingestion."""
+    client = FakeClient(collection_exists=True)
+    store = QdrantVectorStore(settings(), client=client)
+
+    store.upsert([chunk()], vectors=[[0.1] * 3])
+
+    assert _upserted_payloads(client)[0]["entity_ids"] == ["entity-1"]

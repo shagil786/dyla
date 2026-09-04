@@ -8,6 +8,18 @@ from typing import Any
 from dyla.domain import RunEvent
 
 _SENSITIVE_KEY = re.compile(r"(?:api_key|authorization|token|secret)", re.IGNORECASE)
+# Keys whose name contains a sensitive substring but which hold a *count*, not a
+# credential. "model_tokens" matched the credential pattern and was redacted out
+# of every trace -- destroying the per-question token counts the run report is
+# built from. Credentials are singular ("access_token"); token counts are plural
+# and suffixed, so that is what this exempts.
+_TOKEN_COUNT_KEY = re.compile(r"(?:^|_)tokens$", re.IGNORECASE)
+
+
+def _is_sensitive_key(key: str) -> bool:
+    if _TOKEN_COUNT_KEY.search(key):
+        return False
+    return bool(_SENSITIVE_KEY.search(key))
 _SENSITIVE_TEXT = re.compile(
     r"(\b(?:api_key|authorization|token|secret)\b\s*[=:]\s*)([^\s,;\"']+)",
     re.IGNORECASE,
@@ -26,7 +38,7 @@ def _redact(value: Any) -> Any:
     if isinstance(value, dict):
         return {
             _sanitize_string(str(key)):
-            _REDACTED if _SENSITIVE_KEY.search(str(key)) else _redact(item)
+            _REDACTED if _is_sensitive_key(str(key)) else _redact(item)
             for key, item in value.items()
         }
     if isinstance(value, list):
