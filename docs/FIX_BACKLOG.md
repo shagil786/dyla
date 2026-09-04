@@ -107,18 +107,18 @@ The brief: *"Your run logs matter as much as your answers here."*
 
 | ID | Item | Why | Effort |
 |---|---|---|---|
-| **P2-1** | Run the eight-question suite live, end to end | Currently exercised only through mocked unit tests. The suite design is good; it has never been executed. | M |
-| **P2-2** | Commit `logs/` and `reports/` (un-ignore, or add a `reports/committed/` path) | Both are gitignored and absent. The brief's gate requires logs to be in the repo. | S |
-| **P2-3** | Replace `RUPEES_PER_ADAPTER_UNIT = 0.8` with real per-1K-token pricing for the configured model | "Cost per question in tokens and rupees" needs an actual price, not an internal unit × a placeholder. | S |
-| **P2-4** | Run the auditor over the analyst's answers and write up **what it caught**, including false negatives | Explicitly requested. Requires P1-1 to produce meaningful verdicts. | M |
+| **P2-1** | ✅ **DONE.** Run the eight-question suite end to end | Runs via `scripts/run_suite.py` against the recorded corpus in `dyla.offline`. Not a live LLM run — no keys were available — and every artifact says so. | M |
+| **P2-2** | ✅ **DONE.** Commit run logs and reports | `runs/<mode>/qNN-*.jsonl` (readable copies) and `reports/` are tracked. `logs/` stays ignored as the scratch directory a run writes into. | S |
+| **P2-3** | ✅ **DONE.** Real pricing | `dyla.pricing` holds published per-1M-token prices with check dates and a USD/INR rate. Unknown models report `unpriced` with remediation, never `0`. | S |
+| **P2-4** | ✅ **DONE.** Report what the auditor caught | `reports/auditor-findings.md`. Because the extractive offline model cannot hallucinate, real verdicts alone prove nothing, so `dyla.findings` also plants known-bad claims and measures detection: **19/20**, up from 15/20 before misattribution checking. | M |
 | **P2-5** | Promote planner subqueries, search failures, retries and bail-outs to first-class trace events | The brief wants "where it changed course after something failed" legible in the trace. | S |
-| **P2-6** | **The write-up.** Why the architecture is shaped this way; what was tried, measured and rejected; named weaknesses | The brief says it carries more weight than most candidates assume. Part 1 of this document is a first draft of the "named weaknesses" section. | L |
+| **P2-6** | ✅ **DONE** — `docs/WRITEUP.md`. **The write-up.** Why the architecture is shaped this way; what was tried, measured and rejected; named weaknesses | The brief says it carries more weight than most candidates assume. Part 1 of this document is a first draft of the "named weaknesses" section. | L |
 
 ### P3 — "Take it further" (the brief says solve *one* properly)
 
 | ID | Item | Notes |
 |---|---|---|
-| **P3-1** | **Cost falls by half with accuracy held.** Make `memory_hits` actually suppress redundant search/fetch: before dispatching a subquery, check whether resolved entities already have verified claims covering it, and skip the web round-trip | This is the strongest candidate. It is the one the brief describes most concretely, memory infrastructure already exists, and "memory that transfers to an unseen question" is exactly what Q5–Q8 were designed to demonstrate. Today `memory_hits` is counted but changes no behaviour. |
+| **P3-1** | ⚠️ **PARTIAL — 27.8%, not 50%.** Measured and reported as a shortfall in `docs/WRITEUP.md` §3, not rounded up. Searches fall 56% (9→4) and four of eight questions do zero searches; total tokens fall 13.5% over all eight and 27.8% over the four that can reuse anything. Memory removes the search step, not the grounding step. **Cost falls by half with accuracy held.** Make `memory_hits` actually suppress redundant search/fetch: before dispatching a subquery, check whether resolved entities already have verified claims covering it, and skip the web round-trip | This is the strongest candidate. It is the one the brief describes most concretely, memory infrastructure already exists, and "memory that transfers to an unseen question" is exactly what Q5–Q8 were designed to demonstrate. Today `memory_hits` is counted but changes no behaviour. |
 | **P3-2** | Source conflict auto-resolution — pick a number and justify it, rather than reporting both | Needs recency, primary-vs-secondary and publisher weighting. Depends on P1-1. |
 | **P3-3** | Adversarial analyst — tell it an auditor will check every claim, measure whether citation quality improves or whether it starts citing authoritative-looking sources that don't support the claim | Cheap to run once P2-1 works: same suite, two prompts, diff the verdict distribution. Reporting a *negative* result here is fully acceptable and still scores. |
 | **P3-4** | Auditor findings feed back automatically into the next run | P1-5 is the prerequisite; this is its honest, completed form. |
@@ -148,4 +148,12 @@ rather than four loosely."*
 2. ~~**P1-4** — is `local` a credible default auditor, or an offline stub?~~
    **Resolved:** it stays the default, now that it is credible.
 3. ~~**P1-7** — wire in `agent_runtime.py`, or delete it?~~ **Resolved:** wired in.
-4. **Scope.** P0 and P1 are done. P2 is next, then P3-1.
+4. **Scope.** P0, P1, P2 and P3-1 are done (P3-1 partially — see its row).
+   Remaining: **P2-5** (first-class trace events for planner subqueries and
+   bail-outs), **P3-3** (adversarial analyst), and P4.
+
+5. **Known unfixed defect.** The entity-attribution merge in
+   `LocalVectorStore.upsert()` has not been applied to the Qdrant or Azure
+   adapters, which carry the same latent overwrite bug. They need the same
+   read-merge-write and cannot be tested here without credentials. Disclosed in
+   `docs/WRITEUP.md` §3.
