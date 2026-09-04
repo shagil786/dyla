@@ -1,10 +1,13 @@
 import asyncio
+import json
 import threading
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 from dyla.analyst import AnalystAgent
 from dyla.domain import AnalystAnswer, Citation, Claim, Evidence, MemoryRecord, ResearchPlan, SearchHit
+from dyla.tracing import TraceWriter
 
 
 class FakeResolver:
@@ -317,3 +320,78 @@ def test_analyst_adds_no_limitations_when_everything_succeeds():
     assert answer.limitations == []
     assert agent.metrics["failed_searches"] == 0
     assert agent.metrics["failed_fetches"] == 0
+
+
+def _read_trace(root, run_id):
+    path = Path(root) / "logs" / f"{run_id}.jsonl"
+    assert path.exists(), f"expected trace file at {path}"
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_analyst_traces_memory_searches_fetches_and_evidence_for_successful_run(tmp_path):
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q two"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(), searcher=FakeSearcher(),
+                         fetcher=FakeFetcher(), index=FakeIndex(), embedder=FakeEmbedder(),
+                         planner=controlled_planner(plan), trace_writer=TraceWriter(tmp_path))
+    answer = asyncio.run(agent.run("Q", "run-trace-success"))
+
+    assert answer.answer == "Answer"
+    events = _read_trace(tmp_path, "run-trace-success")
+    assert [(event["component"], event["event"]) for event in events] == [
+        ("analyst", "memory_retrieved"),
+        ("analyst", "web_searched"),
+        ("analyst", "web_searched"),
+        ("analyst", "page_fetched"),
+        ("analyst", "page_fetched"),
+        ("analyst", "evidence_selected"),
+    ]
+    assert events[0]["payload"] == {"count": 1}
+    assert events[1]["payload"] == {"query": "Q one", "results": 1}
+    assert events[2]["payload"] == {"query": "Q two", "results": 1}
+    assert sorted(
+        (event["payload"] for event in events if event["event"] == "page_fetched"),
+        key=lambda item: item["url"],
+    ) == [
+        {"url": "https://example.com/1", "chars": len("evidence")},
+        {"url": "https://example.com/2", "chars": len("evidence")},
+    ]
+    assert events[-1]["payload"] == {"count": 1}
+    assert {event["run_id"] for event in events} == {"run-trace-success"}
+
+
+def test_analyst_traces_page_fetch_failure_and_still_succeeds(tmp_path):
+    fail_url = "https://example.com/1"
+
+    class FlakyFetcher:
+        def fetch(self, url):
+            if url == fail_url:
+                raise ValueError("malformed contents response")
+            return type("Document", (), {"source_id": url, "url": url, "title": "Source", "text": "evidence", "published_at": None})()
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q two"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(), searcher=FakeSearcher(),
+                         fetcher=FlakyFetcher(), index=FakeIndex(), embedder=FakeEmbedder(),
+                         planner=controlled_planner(plan), trace_writer=TraceWriter(tmp_path))
+    answer = asyncio.run(agent.run("Q", "run-trace-fetch-fail"))
+
+    assert answer.answer == "Answer"
+    events = _read_trace(tmp_path, "run-trace-fetch-fail")
+    failures = [event for event in events if event["event"] == "page_fetch_failed"]
+    fetched = [event for event in events if event["event"] == "page_fetched"]
+    assert len(failures) == 1
+    assert failures[0]["payload"]["url"] == fail_url
+    assert "malformed contents response" in failures[0]["payload"]["error"]
+    assert [event["payload"]["url"] for event in fetched] == ["https://example.com/2"]
+    assert events[-1]["event"] == "evidence_selected"
+
+
+def test_analyst_without_trace_writer_emits_no_events(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}, {"query": "Q two"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(), searcher=FakeSearcher(),
+                         fetcher=FakeFetcher(), index=FakeIndex(), embedder=FakeEmbedder(),
+                         planner=controlled_planner(plan), trace_writer=None)
+    answer = asyncio.run(agent.run("Q", "run-trace-none"))
+
+    assert answer.answer == "Answer"
+    assert not (tmp_path / "logs").exists()

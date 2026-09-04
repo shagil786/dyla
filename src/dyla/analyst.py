@@ -7,7 +7,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from .domain import AnalystAnswer, Citation, Evidence, MemoryRecord, SearchFilters
+from .domain import AnalystAnswer, Citation, Evidence, MemoryRecord, RunEvent, SearchFilters
 from .ingest import ingest_document
 from .models import ModelRequest
 from .ports import SearchProvider
@@ -36,6 +36,7 @@ class AnalystAgent:
             if self.trace_writer is not None:
                 self.planner.trace_writer = self.trace_writer
         memories = await asyncio.to_thread(self.memory.search_memory, question, 10)
+        self._trace(run_id, "memory_retrieved", {"count": len(memories)})
         self.metrics["memory_hits"] += len(memories)
         plan = await asyncio.to_thread(self.planner.expand, question, memories)
         resolved: dict[str, str] = {}
@@ -63,8 +64,10 @@ class AnalystAgent:
         for item, batch in zip(plan.subqueries, search_results):
             if isinstance(batch, Exception):
                 self.metrics["failed_searches"] += 1
+                self._trace(run_id, "web_search_failed", {"query": item["query"], "error": str(batch)})
                 collection_limitations.append(f"Web search failed for query '{item['query']}'; its results were excluded.")
                 continue
+            self._trace(run_id, "web_searched", {"query": item["query"], "results": len(batch)})
             query_entities = item.get("entities", [])
             if not query_entities:
                 query_entities = [entity for entity in plan.entities if entity.casefold() in item["query"].casefold()]
@@ -81,17 +84,31 @@ class AnalystAgent:
         for document, (hit, ids) in zip(documents, hits_by_url.values()):
             if isinstance(document, Exception):
                 self.metrics["failed_fetches"] += 1
+                self._trace(run_id, "page_fetch_failed", {"url": hit.url, "error": str(document)})
                 collection_limitations.append(f"Page fetch failed for {hit.url}; it was excluded from evidence.")
                 continue
+            self._trace(run_id, "page_fetched", {"url": hit.url, "chars": len(document.text)})
             await asyncio.to_thread(ingest_document, document, self.embedder, self.index, entity_ids=ids)
         vector = await asyncio.to_thread(self.embedder.embed, [question])
         filters, date_limitations = self._filters(entity_ids, plan.date_constraints)
         evidence = await asyncio.to_thread(
             self.index.hybrid_search, question, vector[0], filters, self.evidence_limit,
         )
+        self._trace(run_id, "evidence_selected", {"count": len(evidence)})
         answer = await asyncio.to_thread(self._synthesize, question, memories, evidence, [*collection_limitations, *date_limitations])
         self.metrics["duration_ms"] = int((time.monotonic() - started) * 1000)
         return answer
+
+    def _trace(self, run_id: str, event: str, payload: dict[str, Any]) -> None:
+        if self.trace_writer is None:
+            return
+        try:
+            self.trace_writer.append(RunEvent(
+                run_id=run_id, timestamp=datetime.now(UTC), component="analyst",
+                event=event, payload=payload, duration_ms=None, error=None,
+            ))
+        except Exception:
+            pass
 
     @staticmethod
     def _filters(entity_ids: list[str], constraints: list[str]) -> tuple[SearchFilters, list[str]]:
