@@ -54,6 +54,16 @@ RUPEES_PER_ADAPTER_UNIT = 0.8  # Conversion rate; adjust based on actual adapter
 HISTORY_CAP = 50
 
 
+def _md_escape(value: Any) -> str:
+    """Escape Markdown table cell content.
+
+    Defined as a helper rather than inlined into f-strings: a backslash inside an
+    f-string expression is PEP 701 syntax and only parses on Python 3.12+, which
+    silently broke every CLI entry point on the declared floor of Python 3.11.
+    """
+    return str(value).replace("|", "\\|")
+
+
 def _metric_value(metrics: Any, field: str) -> int | float:
     if not isinstance(metrics, dict):
         return 0
@@ -85,7 +95,7 @@ def _md_cost_table(cost: dict[str, Any]) -> list[str]:
         "|---|---|---|---|---|---|---|---|---|",
     ]
     for index, row in enumerate(cost["questions"], start=1):
-        question = str(row["question"]).replace("|", "\\|")
+        question = _md_escape(row["question"])
         lines.append(
             f"| {index} | {question} | {row['status']} | {row['input_tokens']} | {row['output_tokens']}"
             f" | {row['estimated_cost']} | {row['duration_ms']} | {row['memory_hits']} | {row['cost_in_rupees']} |"
@@ -126,7 +136,7 @@ def _verdict_detail(value: Any) -> list[dict[str, Any]]:
 
 
 def _md_verdict_detail(item: dict[str, Any], index: int) -> list[str]:
-    lines = [f"### {index}. {item['question'].replace('|', '\\|')} — {item['status']}"]
+    lines = [f"### {index}. {_md_escape(item['question'])} — {item['status']}"]
     run_id = item.get("run_id")
     if run_id:
         lines.append(f"Run: `{run_id}`")
@@ -138,7 +148,7 @@ def _md_verdict_detail(item: dict[str, Any], index: int) -> list[str]:
     for verdict in verdicts:
         urls = "; ".join(url for url in verdict.get("urls", [])) or "—"
         lines.append(
-            f"| {verdict['claim_id'].replace('|', '\\|')} | {verdict['status']} | {urls.replace('|', '\\|')} |"
+            f"| {_md_escape(verdict['claim_id'])} | {verdict['status']} | {_md_escape(urls)} |"
         )
     lines.append("")
     return lines
@@ -313,7 +323,7 @@ def _md_trend_table(history: list[dict[str, Any]]) -> list[str]:
                     passed_runs += 1
         rate = f"{passed_runs}/{total_runs}" if total_runs else "—"
         lines.append(
-            f"| {index} | {question.replace('|', '\\|')} | {rate} | " + " | ".join(cells) + " |"
+            f"| {index} | {_md_escape(question)} | {rate} | " + " | ".join(cells) + " |"
         )
     lines.append("")
     return lines
