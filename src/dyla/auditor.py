@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import TimeoutError as FutureTimeout, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -47,12 +48,32 @@ class AuditorAgent:
                         "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0}
         self.audit_state = AuditState("complete", [])
 
-    def run(self, answer: AnalystAnswer, run_id: str) -> list[AuditVerdict]:
+    def run(
+        self, answer: AnalystAnswer, run_id: str, deadline: float | None = None
+    ) -> list[AuditVerdict]:
+        """Audit every claim, stopping early if ``deadline`` passes.
+
+        ``deadline`` is a ``time.monotonic()`` timestamp. Cooperative checking
+        between claims is what actually bounds this stage: the auditor is
+        synchronous and runs on a worker thread, and Python cannot kill a
+        thread, so an external timeout alone would abandon a thread that keeps
+        working. Stopping between claims returns the verdicts already earned and
+        reports the shortfall instead of silently truncating.
+        """
         self.audit_state = AuditState("complete", [])
         verdicts: list[AuditVerdict] = []
         issues: list[str] = []
         try:
-            for claim in answer.claims:
+            for index, claim in enumerate(answer.claims):
+                if deadline is not None and time.monotonic() >= deadline:
+                    remaining = len(answer.claims) - index
+                    message = (
+                        f"{run_id}: audit stopped at the wall-clock deadline with "
+                        f"{remaining} of {len(answer.claims)} claims unaudited"
+                    )
+                    issues.append(message)
+                    self._trace(run_id, "auditor_failed", {"error": message})
+                    break
                 if not claim.citations:
                     verdict = AuditVerdict(
                         claim_id=claim.id, status="uncited",
@@ -70,7 +91,7 @@ class AuditorAgent:
                 for citation in _unique_citations(claim.citations):
                     self.metrics["fetches"] += 1
                     try:
-                        document = self._fetch(citation.url)
+                        document = self._fetch(citation.url, deadline)
                     except Exception as exc:
                         failed = True
                         self._warning(run_id, claim.id, "source fetch failed")
@@ -93,7 +114,7 @@ class AuditorAgent:
                         citations_checked=checked,
                     )
                 else:
-                    status, explanation = self._compare(claim, documents)
+                    status, explanation = self._compare(claim, documents, deadline)
                     verdict = AuditVerdict(
                         claim_id=claim.id, status=status,
                         explanation=explanation, citations_checked=checked,
@@ -111,27 +132,37 @@ class AuditorAgent:
         self.audit_state = AuditState(run_status, issues)
         return verdicts
 
-    def _fetch(self, url: str) -> Any:
+    def _fetch(self, url: str, deadline: float | None = None) -> Any:
         last_error: Exception | None = None
         for _ in range(self.retries + 1):
             try:
+                timeout = self._budgeted_timeout(deadline)
                 pool = ThreadPoolExecutor(max_workers=1)
                 future = pool.submit(self.fetcher.fetch, url)
                 try:
-                    return future.result(timeout=self.timeout_seconds)
+                    return future.result(timeout=timeout)
                 finally:
                     pool.shutdown(wait=False, cancel_futures=True)
             except (Exception, FutureTimeout) as exc:
                 last_error = exc
         raise RuntimeError(f"fetch failed after {self.retries + 1} attempts") from last_error
 
-    def _compare(self, claim: Any, documents: dict[str, Any]) -> tuple[AuditStatus, str]:
+    def _budgeted_timeout(self, deadline: float | None) -> float:
+        """Never wait past the run deadline, and never wait a non-positive time."""
+        if deadline is None:
+            return self.timeout_seconds
+        return max(0.01, min(self.timeout_seconds, deadline - time.monotonic()))
+
+    def _compare(
+        self, claim: Any, documents: dict[str, Any], deadline: float | None = None
+    ) -> tuple[AuditStatus, str]:
+        timeout = self._budgeted_timeout(deadline)
         pool = ThreadPoolExecutor(max_workers=1)
         future = pool.submit(self.comparator.compare, claim, documents)
         try:
-            result = future.result(timeout=self.timeout_seconds)
+            result = future.result(timeout=timeout)
         except FutureTimeout as exc:
-            raise TimeoutError(f"comparator did not finish within {self.timeout_seconds}s") from exc
+            raise TimeoutError(f"comparator did not finish within {timeout:.2f}s") from exc
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
         if isinstance(result, AuditVerdict):

@@ -38,6 +38,12 @@ class AuditorVerdictModel(BaseModel):
     explanation: str
 
 
+class AuditReport(BaseModel):
+    """Wrapper so a list of verdicts can travel as an AgentResult payload."""
+
+    verdicts: list[AuditVerdict]
+
+
 class RunEvent(BaseModel):
     run_id: str
     timestamp: datetime
