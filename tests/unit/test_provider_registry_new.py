@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from dyla.compatible import CompatibleEmbeddingProvider, CompatibleModelProvider, normalize_base_url
 from dyla.config import Settings, load_settings
 from dyla.domain import AnalystAnswer, Citation, Claim
-from dyla.models import ModelRequest
+from dyla.models import ModelCallError, ModelRequest
 from dyla.provider_factory import build_auditor_provider, build_model_provider, build_provider_bundle, load_plugin
 
 
@@ -161,6 +161,95 @@ def test_compatible_embedding_combines_cache_hits_and_results_with_model_namespa
     second.close()
 
     assert [call["input"] for call in calls] == [["1"], ["0", "2"], ["1"]]
+
+
+def test_compatible_embedding_splits_failed_batch_and_returns_all_vectors():
+    requests = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        requests.append(payload["input"])
+        if len(payload["input"]) >= 3:
+            return httpx.Response(503, json={"object": "error", "message": "image inputs require VLM serving to be enabled on this server"})
+        return httpx.Response(
+            200,
+            json={"data": [{"index": index, "embedding": [float(text)]} for index, text in enumerate(payload["input"])]},
+        )
+
+    provider = CompatibleEmbeddingProvider(
+        "https://host.example/v1", "fake-embed-key", "embed",
+        transport=httpx.MockTransport(handler), batch_size=4, max_retries=0,
+    )
+    texts = ["0", "1", "2", "3"]
+
+    assert provider.embed(texts) == [[0.0], [1.0], [2.0], [3.0]]
+    # the 4-item batch 503s once, then both 2-item halves succeed independently
+    assert requests == [["0", "1", "2", "3"], ["0", "1"], ["2", "3"]]
+
+
+def test_compatible_embedding_single_item_batch_failure_still_raises():
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content)["input"])
+        return httpx.Response(503, json={"object": "error", "message": "image inputs require VLM serving to be enabled on this server"})
+
+    provider = CompatibleEmbeddingProvider(
+        "https://host.example/v1", "fake-embed-key", "embed", transport=httpx.MockTransport(handler), max_retries=0,
+    )
+
+    with pytest.raises(ModelCallError, match="retry exhaustion"):
+        provider.embed(["one"])
+
+    assert requests == [["one"]]
+
+
+def test_compatible_embedding_split_keeps_cache_hits_and_index_mapping(tmp_path):
+    calls = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        calls.append(payload["input"])
+        if len(payload["input"]) > 1:
+            return httpx.Response(503, json={"object": "error", "message": "image inputs require VLM serving to be enabled on this server"})
+        return httpx.Response(
+            200,
+            json={"data": [{"index": index, "embedding": [float(text)]} for index, text in enumerate(payload["input"])]},
+        )
+
+    provider = CompatibleEmbeddingProvider(
+        "https://host.example/v1", "fake-embed-key", "embed",
+        transport=httpx.MockTransport(handler), cache_path=tmp_path / "embeddings.db", max_retries=0,
+    )
+    provider.embed(["1"])  # populate cache
+    provider.embed(["3"])
+    try:
+        assert provider.embed(["1", "2", "3", "4"]) == [[1.0], [2.0], [3.0], [4.0]]
+    finally:
+        provider.close()
+
+    # cached "1"/"3" are never re-sent; the missing ["2", "4"] batch splits after the 503
+    assert calls == [["1"], ["3"], ["2", "4"], ["2"], ["4"]]
+
+
+def test_compatible_embedding_success_path_sends_exactly_one_request():
+    requests = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        requests.append(payload["input"])
+        return httpx.Response(
+            200,
+            json={"data": [{"index": index, "embedding": [float(text)]} for index, text in enumerate(payload["input"])]},
+        )
+
+    provider = CompatibleEmbeddingProvider(
+        "https://host.example/v1", "fake-embed-key", "embed", transport=httpx.MockTransport(handler), max_retries=0,
+    )
+    texts = ["0", "1", "2"]
+
+    assert provider.embed(texts) == [[0.0], [1.0], [2.0]]
+    assert requests == [texts]
 
 
 def test_compatible_model_posts_base_payload_without_extra_keys():

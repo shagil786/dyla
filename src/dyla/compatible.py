@@ -278,24 +278,34 @@ class CompatibleEmbeddingProvider:
             else:
                 result[index] = cached
         for start in range(0, len(missing), self.batch_size):
-            batch = missing[start : start + self.batch_size]
+            self._embed_batch(missing[start : start + self.batch_size], result)
+        return [vector for vector in result if vector is not None]
+
+    def _embed_batch(self, batch: list[tuple[int, str, str]], result: list[list[float] | None]) -> None:
+        try:
             data, _, _ = self._client.post(
                 "embeddings",
                 {"input": [text for _, text, _ in batch], "model": self.model},
                 operation="embedding",
                 model=self.model,
             )
-            try:
-                values = sorted(data["data"], key=lambda item: item["index"])
-                if len(values) != len(batch):
-                    raise ValueError("response vector count did not match requested input count")
-                for (index, _, key), item in zip(batch, values):
-                    vector = [float(value) for value in item["embedding"]]
-                    result[index] = vector
-                    self._write_cache(key, vector)
-            except (KeyError, IndexError, TypeError, ValueError) as exc:
-                self._client._fail("embedding", self.model, 0, None, f"malformed embedding response: {exc}", time.monotonic())
-        return [vector for vector in result if vector is not None]
+        except ModelCallError:
+            if len(batch) == 1:
+                raise
+            middle = len(batch) // 2
+            self._embed_batch(batch[:middle], result)
+            self._embed_batch(batch[middle:], result)
+            return
+        try:
+            values = sorted(data["data"], key=lambda item: item["index"])
+            if len(values) != len(batch):
+                raise ValueError("response vector count did not match requested input count")
+            for (index, _, key), item in zip(batch, values):
+                vector = [float(value) for value in item["embedding"]]
+                result[index] = vector
+                self._write_cache(key, vector)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            self._client._fail("embedding", self.model, 0, None, f"malformed embedding response: {exc}", time.monotonic())
 
     def _cache_key(self, text: str) -> str:
         content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
