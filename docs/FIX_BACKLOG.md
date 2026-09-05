@@ -131,7 +131,7 @@ rather than four loosely."*
 
 | ID | Item |
 |---|---|
-| P4-1 | `cli._build_memory` accepts `settings`, does `del settings`, hardcodes `dyla.db` in CWD — DB location unconfigurable and CWD-dependent |
+| P4-1 | ✅ **FIXED.** `cli._build_memory` accepts `settings`, does `del settings`, hardcodes `dyla.db` in CWD — DB location unconfigurable and CWD-dependent | New `DYLA_MEMORY_DB_PATH` (default `dyla.db`) threads through `_build_memory` and `_build_analyst`'s embedding cache; parent directories are created so a fixed path like `~/.dyla/memory.db` works, and two invocations from different CWDs now reach the same memory. Tests: config alias, CLI wiring, cross-CWD sharing. |
 | P4-2 | Cross-check only triggers on self-reported `low`/`medium`/`weak` confidence; a model that labels everything `high` bypasses corroboration entirely |
 | P4-3 | Design spec documents `dyla audit runs/run-001.json # audit a saved answer`; the command only greps an existing trace and never re-audits |
 | P4-4 | `memory_records_text` indexes a free-text column no query can use; `search_memory` full-scans and scores in Python |

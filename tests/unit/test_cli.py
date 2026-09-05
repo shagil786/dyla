@@ -52,6 +52,77 @@ def test_analyst_command_runs_only_the_analyst_stage(monkeypatch):
     assert [call[0] for call in calls] == ["analyst"]
 
 
+def test_build_memory_uses_the_configured_db_path(monkeypatch, tmp_path):
+    from dyla.cli import _build_memory
+
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "shared" / "memory.db"
+    settings = SimpleNamespace(memory_db_path=str(target))
+
+    store = _build_memory(settings)
+
+    assert store.database == str(target)
+    # The point of the setting: a second build from a *different* cwd reaches
+    # the same database instead of silently creating another dyla.db.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(exist_ok=True)
+    monkeypatch.chdir(elsewhere)
+    second = _build_memory(settings)
+    assert second.database == str(target)
+    second.upsert_entity("Zerodha", "company")
+    assert "Zerodha" in store.known_entity_names()
+
+
+def test_build_analyst_threads_the_db_path_into_memory_and_embedding_cache(monkeypatch, tmp_path):
+    import dyla.cli as cli
+
+    target = tmp_path / "memory.db"
+
+    class StubMemory:
+        database = str(target)
+
+    seen = {}
+
+    def fake_memory(settings):
+        seen["memory"] = settings.memory_db_path
+        return StubMemory()
+
+    def fake_embedding(settings, cache_path=None):
+        seen["cache_path"] = cache_path
+        return object()
+
+    def fake_search(settings):
+        return object()
+
+    def fake_model(settings):
+        return object()
+
+    def fake_vector(settings, embedder):
+        return object()
+
+    class FakeResolver:
+        def __init__(self, memory):
+            pass
+
+    class FakeTraceWriter:
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(cli, "_build_memory", fake_memory)
+    monkeypatch.setattr(cli, "build_embedding_provider", fake_embedding)
+    monkeypatch.setattr(cli, "build_search_provider", fake_search)
+    monkeypatch.setattr(cli, "build_model_provider", fake_model)
+    monkeypatch.setattr(cli, "build_vector_store", fake_vector)
+    monkeypatch.setattr(cli, "EntityResolver", FakeResolver)
+    monkeypatch.setattr(cli, "TraceWriter", FakeTraceWriter)
+    settings = SimpleNamespace(memory_db_path=str(target))
+
+    analyst = cli._build_analyst(settings)
+
+    assert seen == {"memory": str(target), "cache_path": str(target)}
+    assert analyst.memory.database == str(target)
+
+
 def test_build_orchestrator_wires_configured_auditor_timeout_and_retries(monkeypatch):
     class Analyst:
         fetcher = object()
