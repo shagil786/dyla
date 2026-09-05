@@ -45,12 +45,25 @@ and explains exactly which conclusions that does and does not support.
 To run against real providers instead, configure `.env` (see Setup) and pass
 `--live`.
 
-**`--live` has never been executed.** The environment this was built in has no
-general outbound internet — it reaches the Python package index and nothing
-else, with TLS handshakes to every other host closed (measured in
-`docs/WRITEUP.md` §0). So live mode needs *network egress as well as*
-credentials, and the code path is verified by unit tests against mocked
-transports rather than by a real run. Treat it as untested end to end.
+**`--live` has now been executed — once, for a single question, by the
+project owner on their own machine.** `dyla ask "Who is the current CEO of
+Microsoft?"` returned *Satya Nadella* with one citation and one supported
+verdict, having really called You.com search, fetched Wikipedia and
+microsoft.com, embedded through NVIDIA nemotron-3-embed-1b and written to
+Qdrant Cloud. The trace is a normal run log.
+
+Scope that precisely, because it is a single data point:
+
+- **One question, not the suite.** `scripts/run_suite.py --live` has still
+  never been run, so there are no live cost, recall or auditor numbers. Every
+  measurement in this repo remains an offline-fixture measurement.
+- **It found a real bug.** Live mode ignored `--no-reuse`: `_build_orchestrator`
+  never took a reuse flag, so a live baseline would have run *with* memory
+  reuse and been compared against itself, reporting a fabricated ~0% saving in
+  the one table the cost argument depends on. Fixed and pinned by a test. That
+  is what one real execution bought, and it is an argument for running the rest.
+- **The environment this was built in still has no egress** (§0), so live mode
+  is not reproducible from here and is not part of the gate.
 
 ## Setup
 

@@ -132,7 +132,7 @@ def main() -> int:
         from dyla.config import load_settings
 
         settings = load_settings()
-        orchestrator = _build_orchestrator(settings)
+        orchestrator = _build_orchestrator(settings, reuse=not args.no_reuse)
         model_name = settings.model_name
         provider = None
     else:

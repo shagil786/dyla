@@ -31,6 +31,32 @@ authenticate against a host this sandbox cannot reach, and **the missing
 ingredient is network egress, not a credential**. Both are needed; only one was
 named before.
 
+**Update: live mode has since been run once, off this machine.** The project
+owner executed `dyla ask "Who is the current CEO of Microsoft?"` in an
+environment with both keys and egress. It returned *Satya Nadella* with one
+citation and one supported verdict, against real You.com search, a real
+Wikipedia and microsoft.com fetch, NVIDIA `nemotron-3-embed-1b` embeddings and
+Qdrant Cloud. The plumbing described in this section is therefore no longer
+only *argued* to be real — it has carried one real question end to end.
+
+Three qualifications, because one question is one question:
+
+- **The suite has still never run live.** There are no live cost, recall or
+  auditor-accuracy numbers, and every measurement below remains an
+  offline-fixture measurement. Nothing in §2, §3 or §4 changes.
+- **It immediately found a bug that only live mode could expose.**
+  `_build_orchestrator` took no reuse flag, so `run_suite.py --live --no-reuse`
+  would have built a reuse-enabled analyst, written the result to
+  `evaluation-no-reuse.*` and compared it against an identical configuration —
+  reporting a fabricated saving near zero in the one table §3 is built on. The
+  offline builder had always threaded `reuse` through; the live one silently
+  did not, and no test covered the live path because the live path had never
+  been run. Fixed, with a regression test.
+- **That bug is the argument for the rest.** The single most valuable thing one
+  live execution produced was not the answer; it was the discovery that a
+  documented flag did nothing. Anything still unexercised should be assumed to
+  contain something similar.
+
 This matters for reading §4: the analyst's own cross-check and the auditor's
 independent re-fetch both do real HTTP through the same `PageFetcher` in live
 mode. They are exercised here against the fixture provider, which implements
