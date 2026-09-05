@@ -12,7 +12,7 @@
         "output_tokens": 95,
         "embedding_tokens": 273,
         "estimated_cost": 0.0,
-        "duration_ms": 27,
+        "duration_ms": 30,
         "memory_hits": 0,
         "searches": 1,
         "fetches": 8,
@@ -31,7 +31,7 @@
         "output_tokens": 77,
         "embedding_tokens": 300,
         "estimated_cost": 0.0,
-        "duration_ms": 20,
+        "duration_ms": 24,
         "memory_hits": 0,
         "searches": 1,
         "fetches": 9,
@@ -50,7 +50,7 @@
         "output_tokens": 72,
         "embedding_tokens": 302,
         "estimated_cost": 0.0,
-        "duration_ms": 23,
+        "duration_ms": 24,
         "memory_hits": 3,
         "searches": 2,
         "fetches": 9,
@@ -69,7 +69,7 @@
         "output_tokens": 102,
         "embedding_tokens": 320,
         "estimated_cost": 0.0,
-        "duration_ms": 20,
+        "duration_ms": 22,
         "memory_hits": 1,
         "searches": 1,
         "fetches": 8,
@@ -88,7 +88,7 @@
         "output_tokens": 87,
         "embedding_tokens": 174,
         "estimated_cost": 0.0,
-        "duration_ms": 20,
+        "duration_ms": 23,
         "memory_hits": 7,
         "searches": 3,
         "fetches": 7,
@@ -107,7 +107,7 @@
         "output_tokens": 104,
         "embedding_tokens": 281,
         "estimated_cost": 0.0,
-        "duration_ms": 23,
+        "duration_ms": 25,
         "memory_hits": 10,
         "searches": 4,
         "fetches": 7,
@@ -126,7 +126,7 @@
         "output_tokens": 75,
         "embedding_tokens": 226,
         "estimated_cost": 0.0,
-        "duration_ms": 19,
+        "duration_ms": 25,
         "memory_hits": 9,
         "searches": 2,
         "fetches": 7,
@@ -145,7 +145,7 @@
         "output_tokens": 98,
         "embedding_tokens": 289,
         "estimated_cost": 0.0,
-        "duration_ms": 23,
+        "duration_ms": 29,
         "memory_hits": 26,
         "searches": 4,
         "fetches": 8,
@@ -163,7 +163,7 @@
       "output_tokens": 710,
       "embedding_tokens": 2165,
       "estimated_cost": 0.0,
-      "duration_ms": 175,
+      "duration_ms": 202,
       "memory_hits": 56,
       "searches": 18,
       "fetches": 63,
@@ -195,13 +195,13 @@
     {
       "question": "What is the current goods and services tax (GST) rate applied to restaurant services in India?",
       "status": "complete",
-      "run_id": "baf0be68ab564e3386781ba7c647e9ef",
+      "run_id": "2744ecfd54e04cb58a80d79d4b8d68be",
       "metrics": {
         "input_tokens": 552,
         "output_tokens": 95,
         "embedding_tokens": 273,
         "estimated_cost": 0.0,
-        "duration_ms": 27,
+        "duration_ms": 30,
         "searches": 1,
         "fetches": 8,
         "memory_hits": 0,
@@ -250,13 +250,13 @@
     {
       "question": "Who is the current chief executive officer of Zerodha, and in which year did they take the role?",
       "status": "complete",
-      "run_id": "496de43d6e3a4e30b4d908ed1fec2906",
+      "run_id": "5b6848aa09b04c65926af6e33c8e173f",
       "metrics": {
         "input_tokens": 627,
         "output_tokens": 77,
         "embedding_tokens": 300,
         "estimated_cost": 0.0,
-        "duration_ms": 20,
+        "duration_ms": 24,
         "searches": 1,
         "fetches": 9,
         "memory_hits": 0,
@@ -305,13 +305,13 @@
     {
       "question": "List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each.",
       "status": "complete",
-      "run_id": "90d7a0d75a844c1faba35637d17c9169",
+      "run_id": "bf36f01414f6426c813f9abba379fd77",
       "metrics": {
         "input_tokens": 1026,
         "output_tokens": 72,
         "embedding_tokens": 302,
         "estimated_cost": 0.0,
-        "duration_ms": 23,
+        "duration_ms": 24,
         "searches": 2,
         "fetches": 9,
         "memory_hits": 3,
@@ -360,13 +360,13 @@
     {
       "question": "Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors?",
       "status": "complete",
-      "run_id": "884eee11b40a4e6c887386c7bc45b1c4",
+      "run_id": "d1626c8083f348938ae8b0343f119f78",
       "metrics": {
         "input_tokens": 770,
         "output_tokens": 102,
         "embedding_tokens": 320,
         "estimated_cost": 0.0,
-        "duration_ms": 20,
+        "duration_ms": 22,
         "searches": 1,
         "fetches": 8,
         "memory_hits": 1,
@@ -406,13 +406,13 @@
     {
       "question": "Who is the chief technology officer of Zerodha, and what is their academic background?",
       "status": "complete",
-      "run_id": "23449d96cde64cfaa755624176cd5bbd",
+      "run_id": "d74e86693f994dbd983164ea440880ab",
       "metrics": {
         "input_tokens": 710,
         "output_tokens": 87,
         "embedding_tokens": 174,
         "estimated_cost": 0.0,
-        "duration_ms": 20,
+        "duration_ms": 23,
         "searches": 3,
         "fetches": 7,
         "memory_hits": 7,
@@ -461,13 +461,13 @@
     {
       "question": "Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure.",
       "status": "complete",
-      "run_id": "2bd8c4e8b65a444980108e40738ad2c1",
+      "run_id": "7ee213edf6ec4a1998822f1a2329a2f7",
       "metrics": {
         "input_tokens": 748,
         "output_tokens": 104,
         "embedding_tokens": 281,
         "estimated_cost": 0.0,
-        "duration_ms": 23,
+        "duration_ms": 25,
         "searches": 4,
         "fetches": 7,
         "memory_hits": 10,
@@ -498,13 +498,13 @@
     {
       "question": "How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round?",
       "status": "complete",
-      "run_id": "d422e43ec9c341d780e2ad25834ef768",
+      "run_id": "c33f6653e0d74bcb8daa4a6aacf506ae",
       "metrics": {
         "input_tokens": 598,
         "output_tokens": 75,
         "embedding_tokens": 226,
         "estimated_cost": 0.0,
-        "duration_ms": 19,
+        "duration_ms": 25,
         "searches": 2,
         "fetches": 7,
         "memory_hits": 9,
@@ -544,13 +544,13 @@
     {
       "question": "State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each.",
       "status": "complete",
-      "run_id": "35b0945318d040c38ef8602369bc08d4",
+      "run_id": "5537bfaaa53947f1a21140dfc20347be",
       "metrics": {
         "input_tokens": 1081,
         "output_tokens": 98,
         "embedding_tokens": 289,
         "estimated_cost": 0.0,
-        "duration_ms": 23,
+        "duration_ms": 29,
         "searches": 4,
         "fetches": 8,
         "memory_hits": 26,
@@ -668,7 +668,7 @@
   },
   "history": [
     {
-      "timestamp": "2026-09-05T23:00:48.372311+00:00",
+      "timestamp": "2026-09-05T23:14:29.889583+00:00",
       "passed": 8,
       "total": 8,
       "questions": [
@@ -677,56 +677,56 @@
           "status": "complete",
           "supported": 4,
           "total": 4,
-          "run_id": "baf0be68ab564e3386781ba7c647e9ef"
+          "run_id": "2744ecfd54e04cb58a80d79d4b8d68be"
         },
         {
           "question": "Who is the current chief executive officer of Zerodha, and in which year did they take the role?",
           "status": "complete",
           "supported": 4,
           "total": 4,
-          "run_id": "496de43d6e3a4e30b4d908ed1fec2906"
+          "run_id": "5b6848aa09b04c65926af6e33c8e173f"
         },
         {
           "question": "List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each.",
           "status": "complete",
           "supported": 4,
           "total": 4,
-          "run_id": "90d7a0d75a844c1faba35637d17c9169"
+          "run_id": "bf36f01414f6426c813f9abba379fd77"
         },
         {
           "question": "Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors?",
           "status": "complete",
           "supported": 3,
           "total": 3,
-          "run_id": "884eee11b40a4e6c887386c7bc45b1c4"
+          "run_id": "d1626c8083f348938ae8b0343f119f78"
         },
         {
           "question": "Who is the chief technology officer of Zerodha, and what is their academic background?",
           "status": "complete",
           "supported": 4,
           "total": 4,
-          "run_id": "23449d96cde64cfaa755624176cd5bbd"
+          "run_id": "d74e86693f994dbd983164ea440880ab"
         },
         {
           "question": "Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure.",
           "status": "complete",
           "supported": 2,
           "total": 2,
-          "run_id": "2bd8c4e8b65a444980108e40738ad2c1"
+          "run_id": "7ee213edf6ec4a1998822f1a2329a2f7"
         },
         {
           "question": "How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round?",
           "status": "complete",
           "supported": 3,
           "total": 3,
-          "run_id": "d422e43ec9c341d780e2ad25834ef768"
+          "run_id": "c33f6653e0d74bcb8daa4a6aacf506ae"
         },
         {
           "question": "State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each.",
           "status": "complete",
           "supported": 3,
           "total": 3,
-          "run_id": "35b0945318d040c38ef8602369bc08d4"
+          "run_id": "5537bfaaa53947f1a21140dfc20347be"
         }
       ]
     }

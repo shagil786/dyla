@@ -54,9 +54,14 @@ Qdrant Cloud. The trace is a normal run log.
 
 Scope that precisely, because it is a single data point:
 
-- **One question, not the suite.** `scripts/run_suite.py --live` has still
-  never been run, so there are no live cost, recall or auditor numbers. Every
-  measurement in this repo remains an offline-fixture measurement.
+- **The suite has now run live once, and scored 4/8 questions and 15/20 on the
+  seeded-defect audit** (against 8/8 and 20/20 offline). One cause is fixed: a
+  claim missing its `citations` field failed validation for the *entire*
+  answer, so good cited claims were discarded — a parser failure reported as a
+  research failure (WRITEUP §4.12). The other reported causes, evidence
+  selection quality and the audit drop, are named but **not** fixed, and the
+  4/8 has not been re-measured since. Every number in this repo is still an
+  offline-fixture measurement.
 - **It found a real bug.** Live mode ignored `--no-reuse`: `_build_orchestrator`
   never took a reuse flag, so a live baseline would have run *with* memory
   reuse and been compared against itself, reporting a fabricated ~0% saving in

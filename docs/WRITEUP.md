@@ -1139,6 +1139,62 @@ The honest limit: this proves the wiring end to end against a planted verdict.
 It does not prove the loop improves answers on a corpus where the auditor
 rejects claims organically, because this corpus never does.
 
+### 4.12 What the first live suite run exposed
+
+The owner ran the suite live (NVIDIA Nemotron + You.com + Qdrant Cloud) and it
+scored **4/8 questions and 15/20 on the seeded-defect audit**, against 8/8 and
+20/20 offline. I have no egress, so I cannot reproduce that run; what follows
+is one defect I could isolate from the reported symptom and reproduce locally,
+plus an honest note on what I could not.
+
+**The parser threw away good answers.** `Claim.citations` is required with no
+default, so a response where *one* claim omits the field fails
+`model_validate` for the whole object, the adapter raises, and the question
+fails outright. Reproduced exactly:
+
+```
+claims.1.citations  Field required
+```
+
+Three perfectly cited claims discarded because of a fourth. **That is a parser
+failure being reported as a research failure**, and on the strictest reading it
+is the worst kind of bug this project can have: the system said "I could not
+answer" when it had the answer.
+
+The fix salvages the well-formed claims — and the *interesting* part is what it
+deliberately does not do. The obvious repair is to give `citations` a default of
+`[]` in the schema. That parses identically and is much worse: an uncited
+assertion becomes a **valid** claim object, and manufacturing provenance is the
+one thing this system exists to prevent. Instead the salvage recovers the claim
+*with an empty citation list*, which routes it into the analyst's existing
+`no_citations` gate, rejects it, and traces the rejection. Verified end to end:
+the good claim survives, the malformed one is rejected with
+`"Claim c2 was rejected because it had no citations."`
+
+Two constraints fell out of building it, both found by the existing suite
+rather than by me:
+
+- **Salvage must run last.** Attempting it inline with the validation loop
+  regressed the truncation repair: for a response cut off mid-claim the first
+  candidate is the raw truncated parse and a later one is the cleanly
+  drop-repaired version, so salvaging the first kept a half-written claim in
+  preference to the repair that correctly discards it. Two existing tests
+  caught this immediately. Salvage now runs only after every candidate has
+  failed outright.
+- **An unsalvageable response still raises.** Returning an empty answer would
+  read as "the model found nothing" rather than "the response could not be
+  parsed". Different failures, and conflating them is how a parsing bug hides.
+
+**What I have not fixed, and will not claim to have fixed.** The live report
+lists two other causes: evidence selection retrieving irrelevant sources, and
+the seeded audit dropping to 15/20. Both are plausible and neither is
+diagnosable from here — the seeded audit uses a real model as comparator live,
+where offline it uses `_TextComparator`, so 15/20 may be a comparator-quality
+result rather than a defect in the audit logic. Guessing at a fix for a failure
+I cannot reproduce would be worse than leaving it named. **The live suite
+numbers (4/8, 15/20) are not superseded by this fix**; they were measured
+before it and have not been re-measured since.
+
 ## 5. What changed between runs, and why
 
 Committed run history is in `reports/evaluation.json` (`history`), which renders
