@@ -160,17 +160,25 @@ def test_markdown_escape_handles_pipes_without_pep701_syntax():
 
 
 def test_the_quality_gate_cannot_see_an_answer_that_omits_claims(tmp_path):
-    """Pins a known blind spot rather than a behaviour: there is no recall metric.
+    """Pins the residual scope of the support-rate blind spot.
 
     Both answers below score identically -- 100% supported, status complete --
-    but the second asserts half as much. This is why the ``evidence_limit=3``
-    sweep in WRITEUP section 3 showed a 51.2% cost reduction with every
-    reported metric green while quietly dropping 4 of 28 claims.
+    but the second asserts half as much. ``dyla.recall`` now closes this for the
+    eight default questions, and the real instance it caught is Q8: four claims,
+    4/4 supported, and 0/4 of the profitability facts the question asked for.
 
-    If a claim-recall measure is ever added, this test should start failing and
-    be replaced by one asserting the two answers score differently. Until then
-    it exists so the gap is discoverable from the test suite and not only from
-    a paragraph in the write-up.
+    The gap this test pins is what recall scoring does *not* cover. The answer
+    key is hand-written against the default suite, so a custom
+    ``--questions-file`` -- which is what the questions below simulate -- still
+    gets a pure support-rate score with nothing measuring omission. Deliberate:
+    a fabricated key would be worse than a missing one. This test documents the
+    boundary, and should be revisited only if recall is ever generalised beyond
+    the fixture suite.
+
+    Note the earlier version of this docstring justified itself with the
+    ``evidence_limit=3`` sweep "quietly dropping 4 of 28 claims". That reading
+    was wrong: recall is flat across the sweep and the dropped claims were
+    duplicates. See WRITEUP section 3.
     """
     from dyla.domain import AnalystAnswer, AuditVerdict, Citation, Claim
 

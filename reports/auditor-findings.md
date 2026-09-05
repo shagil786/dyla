@@ -4,12 +4,12 @@ Run mode: **offline-fixtures / reuse=True**.
 
 ## 1. Verdicts on the analyst's own answers
 
-- Claims audited: **29** across 8 questions
+- Claims audited: **28** across 8 questions
 - Auditor objected to: **0**
 
 | Verdict | Claims |
 | --- | --- |
-| supported | 29 |
+| supported | 28 |
 | unsupported | 0 |
 | contradicted | 0 |
 | uncited | 0 |
@@ -23,7 +23,7 @@ Run mode: **offline-fixtures / reuse=True**.
 | 5 | Who is the chief technology officer of Zerodha, and what is their aca… | complete | 4 | 0 |
 | 6 | Compare the most recent full-year revenues of Infosys and Wipro in ru… | complete | 3 | 0 |
 | 7 | How did Zepto's valuation change across its funding rounds up to its … | complete | 3 | 0 |
-| 8 | State whether Zerodha, Infosys, Wipro, and Zepto are profitable accor… | complete | 4 | 0 |
+| 8 | State whether Zerodha, Infosys, Wipro, and Zepto are profitable accor… | complete | 3 | 0 |
 
 ### Every objection, in full
 

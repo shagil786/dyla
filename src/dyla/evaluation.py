@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .recall import render_recall_markdown, score_recall
 from .pricing import (
     counterfactual_model,
     price_counterfactual,
@@ -326,10 +327,16 @@ def run_evaluation(
 
     passed = sum(item["status"] in {"passed", "complete"} for item in results)
     cost = _cost_report(results, model=model_name)
+    # Recall is scored only for the default suite: the answer key is written
+    # against those eight questions and that fixture corpus, so scoring a
+    # custom --questions-file against it would invent a number.
+    recall = score_recall(results) if tuple(questions) == DEFAULT_QUESTIONS else None
     report: dict[str, Any] = {
         "total": len(results), "passed": passed, "failed": len(results) - passed,
         "cost_report": cost, "results": results,
     }
+    if recall is not None:
+        report["recall"] = recall.as_dict()
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     json_path = directory / "evaluation.json"
@@ -359,7 +366,10 @@ def run_evaluation(
     lines.extend(["", "## Verdict detail", ""])
     for index, item in enumerate(results, start=1):
         lines.extend(_md_verdict_detail(item, index))
-    lines.extend([*_md_cost_table(cost), "", *_md_trend(cost), "", *_md_history(history)])
+    lines.extend([*_md_cost_table(cost), "", *_md_trend(cost), ""])
+    if recall is not None:
+        lines.extend([*render_recall_markdown(recall), ""])
+    lines.extend(_md_history(history))
     (directory / "evaluation.md").write_text("\n".join(lines) + "\n")
     return report
 

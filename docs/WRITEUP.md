@@ -75,7 +75,13 @@ Questions 5–8 deliberately revisit entities from questions 2–4.
 | 7 | Zepto valuation across rounds | complete | **0** | 3 |
 | 8 | Profitability of all four companies | complete | **0** | 3 |
 
-8 of 8 pass. (Q1 used to fail on an auditor false positive — the scope bug
+8 of 8 pass — but "pass" means every asserted claim was supported, not that the
+question was fully answered. Measured separately, answer completeness is
+**13/21 (62%)**, with Q8 returning nothing about profitability for a
+profitability question. §3 has the table. Read the two numbers together; the
+pass rate alone overstates this suite considerably.
+
+(Q1 used to fail on an auditor false positive — the scope bug
 dissected in section 4.2. It is fixed, and the committed traces now show the
 fixed behaviour; the pre-fix trace is preserved in git history, not in the
 working tree.)
@@ -122,10 +128,10 @@ Total tokens per question (input + output + **embedding**), reuse vs baseline:
 | 4 | 1200 | 1200 | — | 1→1 | 8→8 | ₹0.0172 |
 | 5 | 981 | 828 | −16% | 3→**0** | 7→4 | ₹0.0151 |
 | 6 | 1132 | 686 | −39% | 4→**0** | 8→3 | ₹0.0133 |
-| 7 | 1032 | 534 | −48% | 2→**0** | 8→3 | ₹0.0115 |
-| 8 | 1916 | 1290 | −33% | 4→**0** | 8→3 | ₹0.0227 |
-| **All 8** | **9612** | **7889** | **−17.9%** | 19→6 (−68%) | 65→47 (−28%) |
-| **Q5–8 only** | **5061** | **3338** | **−34.0%** | 13→0 (−100%) | 31→13 (−58%) |
+| 7 | 924 | 534 | −42% | 2→**0** | 8→3 | ₹0.0115 |
+| 8 | 1522 | 1290 | −15% | 4→**0** | 8→3 | ₹0.0227 |
+| **All 8** | **9110** | **7889** | **−13.4%** | 19→6 (−68%) | 65→47 (−28%) |
+| **Q5–8 only** | **4559** | **3338** | **−26.8%** | 13→0 (−100%) | 31→13 (−58%) |
 
 The trend is flat for the first four questions and then steps down, which is
 what transferable memory should look like: nothing to transfer until something
@@ -144,8 +150,17 @@ on. Memory that actually remembers costs a little more to consult and saves a
 little less in net terms. That is the honest direction for a memory feature to
 move the numbers: the old saving was measured against a memory that forgot.
 
-**Second move (12.7% → 17.9%, 24.1% → 34.0%): the prompt stopped growing with
+**Second move (12.7% → 13.4%, 24.1% → 26.8%): the prompt stopped growing with
 memory.** See §3.
+
+A correction to the baseline itself, which moved these figures again. The
+`--no-reuse` run wrote its results to `evaluation.json` — the *reuse* filename —
+so `evaluation-no-reuse.*` was only ever produced by copying by hand afterwards,
+and the committed copy had gone stale. Every baseline number I quoted before
+this was from that stale file (9612 total, 5061 for Q5–8). `run_suite.py` now
+renames the baseline output itself, so the two files cannot drift again. The
+true baseline is 9110 / 4559, which makes the saving *smaller* than I had been
+reporting.
 
 ### 2.2 Q8, and the cost of remembering everything
 
@@ -168,7 +183,7 @@ interaction. It is the same failure mode as the three bugs in §3, and the same
 thing found it — running all eight questions in order and reading the numbers
 per question rather than in aggregate.
 
-The fix is in §3. Q8 is now −33% against baseline, and its projected cost fell
+The fix is in §3. Q8 is now −15% against baseline, and its projected cost fell
 from **2.24× Q1 to 1.79× Q1**. It is still the most expensive question, which
 is correct: it is a four-entity question and should cost more than a
 one-entity question.
@@ -231,10 +246,11 @@ harness. Both halves of that need saying together.
 
 **I did not achieve it as specified, and I am not going to round up to it.**
 
-Target: 50% reduction in cost per question. Measured: **17.9% across all eight
-questions, 34.0% across the four that could reuse anything.** Searches fell 68%.
+Target: 50% reduction in cost per question. Measured: **13.4% across all eight
+questions, 26.8% across the four that could reuse anything.** Searches fell 68%.
 
-Those figures were 12.7% and 24.1% before this session. What moved them is
+Those figures were 12.7% and 24.1% before this session, measured against a
+baseline file that had gone stale (see §2.1). What moved them is
 described in "the prompt budget" below, and it is worth reading as a method
 rather than a number: the gain came from noticing that the feature was
 *spending* on the question where it should have saved most.
@@ -249,7 +265,7 @@ qualify:
 - Q2, Q3, Q4 are the *first* questions about their entities. There is nothing
   to transfer to them by construction.
 
-So the honest denominator is Q5–Q8, where the reduction is 34.0%.
+So the honest denominator is Q5–Q8, where the reduction is 26.8%.
 
 ### Why not 50%: the arithmetic, not a vibe
 
@@ -260,64 +276,113 @@ Q5–Q8, by token type:
 | Token type | Baseline | With memory | Removed | Share of what remains |
 |---|---|---|---|---|
 | Embedding | 970 | 117 | **−87.9%** | 3.5% |
-| Input (prompt) | 3,635 | 2,823 | −22.3% | **84.6%** |
+| Input (prompt) | 3,133 | 2,823 | −9.9% | **84.6%** |
 | Output | 456 | 398 | −12.7% | 11.9% |
-| **Total** | **5,061** | **3,338** | **−34.0%** | |
+| **Total** | **4,559** | **3,338** | **−26.8%** | |
 
 Embedding tokens are the thing memory is *designed* to eliminate, and they are
 essentially gone — 87.9% removed, down to 3.5% of what is left. That part
 worked. The problem is that it was never the big number.
 
 The binding constraint is arithmetic and worth stating precisely. A 50% cut
-means getting Q5–Q8 to **2,530** tokens. Input alone is **2,823** — already
-55.8% of the baseline on its own. So even if embedding went to *exactly zero*
+means getting Q5–Q8 to **2,280** tokens. Input alone is **2,823** — already
+61.9% of the baseline on its own. So even if embedding went to *exactly zero*
 and output never changed, the target would still be missed. **50% is
 unreachable without cutting the evidence block itself**, which is the prompt.
 No amount of memory cleverness gets there, because memory's savings live almost
 entirely in a category that is now 3.5% of the total.
 
-### The measurement that would have let me claim 50%, and why I am not
+### The `evidence_limit` sweep, and a conclusion I got wrong
 
-The evidence block is `evidence_limit` items. I swept it:
+The evidence block is `evidence_limit` items. I swept it, with a clean memory
+database and cleared bytecode per run (the first attempt at this table did
+neither, and reported figures that did not reproduce):
 
-| `evidence_limit` | Q5–8 tokens | vs baseline | Questions | Claims | Seeded defects |
-|---|---|---|---|---|---|
-| 3 | 2,471 | **−51.2%** | 8/8 | **24/24** | 20/20 |
-| 4 | 2,471 | **−51.2%** | 8/8 | **24/24** | 20/20 |
-| 5 | 2,471 | **−51.2%** | 8/8 | **24/24** | 20/20 |
-| **8 (shipped)** | 3,338 | −34.0% | 8/8 | **28/28** | 20/20 |
+| `evidence_limit` | Q5–8 tokens | vs baseline | Questions | Claims | Seeded defects | **Recall** |
+|---|---|---|---|---|---|---|
+| 3 | 2,471 | **−45.8%** | 8/8 | 24/24 | 20/20 | **13/21** |
+| 4 | 2,711 | −40.5% | 8/8 | 28/28 | 20/20 | **13/21** |
+| 5 | 3,023 | −33.7% | 8/8 | 29/29 | 20/20 | **13/21** |
+| 6 | 3,125 | −31.5% | 8/8 | 29/29 | 20/20 | **13/21** |
+| **8 (shipped)** | 3,338 | −26.8% | 8/8 | 28/28 | 20/20 | **13/21** |
 
-**−51.2% clears the brief's target.** Every question still completes, every
-claim is still supported, the auditor still catches every seeded defect. On
-the metrics this project reports, it looks strictly better.
+These percentages are against the corrected baseline (4,559 — see §2.1). Against
+the stale one I had been using, the cheapest row read **−51.2%**, and the
+previous revision of this document was built around that: it announced that the
+brief's 50% target was reachable and then explained at length why taking it
+would be dishonest, because claims fall from 28 to 24 and the quality gate is
+blind to the loss.
 
-It is not, and the "claims" column is where it shows. **28 claims become 24.**
-Q4, Q6 and Q7 each return one fewer claim. The suite passes because a
-three-claim answer with three supported claims scores exactly like a four-claim
-answer with four — the quality gate measures the *support rate* of what was
-asserted, and never asks whether something was left out.
+**Both halves of that were wrong.** The target was never reached — 45.8% is the
+best this sweep offers, and the 50% figure was an artifact of a stale baseline
+file. And the dishonesty argument does not hold either.
 
-So the cost fell because the agent answered less thoroughly, and the metric
-that should have caught that is structurally blind to it. A 100% support rate
-is trivially achievable by asserting one claim per question. Shipping
-`evidence_limit=3` and reporting "51.2% cost reduction, 8/8 passed, 24/24
-claims supported, no loss in correctness" would be true in every particular
-and misleading as a whole.
+**That reasoning was wrong, and the recall metric I built to prove it is what
+disproved it.** Recall is *flat at 13/21 across every setting from 3 to 8*. The
+claims lost at `evidence_limit=3` are duplicates and off-topic extras — Q4 drops
+a stray Infosys revenue claim from a quick-commerce question — not facts the
+question asked for. On this corpus the cheap setting is not less complete. It
+is merely less repetitive.
 
-The brief's phrasing is *"cost per question dropping by half **with no loss in
-correctness**"*. Dropping a third of a comparison question's claims is a loss
-of completeness, and completeness is part of correctness for questions of the
-form "compare X and Y" or "list every company that…". So: **the target is
-reachable on this harness and I did not take it.** `evidence_limit` stays at 8,
-the number stays 34.0%, and this table is the evidence for why.
+I have left `evidence_limit` at 8 anyway, and the reason is now different and
+weaker than the one I gave before: the claim-count drop is not evidence of harm,
+but a 21-fact key over 14 fixture pages is thin evidence of *no* harm either,
+and the extractive model makes context cheap in a way a real model would not.
+That is a judgement call about an unmeasured risk, not a finding. Reported as
+such.
 
-That also names a real gap in this project's own evaluation, which I would fix
-before trusting any future cost claim: **there is no recall metric.** Nothing
-measures whether an answer omitted something the sources supported. Every
-number in §2 is a precision-style measure. A cost optimisation that trades
-recall for tokens is invisible to all of them, and I only caught this one
-because I swept a parameter I expected to be neutral and read the claim counts
-rather than the pass rate.
+The honest summary of this sweep is that **it cost me a conclusion**. I asserted
+a causal story — "cost fell because the agent answered less thoroughly" — that
+sounded careful, matched the numbers I had, and was false. It survived a full
+turn and a commit message before the metric caught it.
+
+### The recall metric: what it did catch
+
+Building it was still the right call, because it found something worse than the
+thing it was built to check. Scored against a hand-written key of the facts each
+question demands (`src/dyla/recall.py`):
+
+| # | Question | Recall | Missing |
+|---|---|---|---|
+| 1 | GST on restaurants | 1/2 | the 18% rate for hotel restaurants |
+| 2 | Zerodha CEO | 2/2 | — |
+| 3 | Bengaluru exporters | 3/3 | — |
+| 4 | Quick-commerce rounds | 2/2 | — |
+| 5 | Zerodha CTO | 2/2 | — |
+| 6 | Infosys vs Wipro revenue | 2/2 | — |
+| 7 | Zepto valuation trajectory | 1/4 | all three valuations (1.4bn, 3.6bn, 5bn) |
+| 8 | Profitability of four companies | **0/4** | all four profitability facts |
+| | **Total** | **13/21 (62%)** | |
+
+**Q8 asks whether four companies are profitable and returns zero claims about
+profitability.** It answers with revenue and funding figures instead, and scores
+**4/4 supported**. Q7 asks how a valuation changed across rounds and returns no
+valuation. The corpus supports every one of these facts — they are sitting in
+the fixture pages, unfetched or unselected.
+
+So the suite's headline quality number, *28/28 claims supported*, was measuring
+the wrong thing all along. Not by a little: on the hardest question in the suite
+it is 100% precision on 0% of what was asked. That is what a purely
+precision-shaped scoreboard buys you, and no amount of care in reading it would
+have surfaced this — the number has to exist.
+
+One thing the metric does vindicate: **recall is 13/21 in both the baseline and
+the memory-reuse run.** The 13.4% saving buys no loss of completeness. That is
+the claim §2 wanted to make and previously could not support with anything
+better than an unchanged pass rate.
+
+Recall is now computed on every run and written to `reports/evaluation.md` and
+`reports/evaluation.json`. **It is scored only for the default eight questions**,
+because the key is hand-written against them and the fixture corpus; a custom
+`--questions-file` reports no recall rather than a fabricated one.
+
+Two limits worth stating. The key encodes *my* judgement of what each question
+demands, so a reviewer may reasonably disagree with individual entries; it is
+external and legible in `ANSWER_KEY` precisely so that disagreement is possible.
+And it does not generalise to live runs, where the set of supportable facts is
+not enumerable. The tempting fix — infer expected facts from whatever the agent
+retrieved — is circular, and circularity is exactly what let an answer omitting
+all four profitability facts score 100%.
 
 The other route to 50% is to have memory serve the *answer* rather than the
 *retrieval* — answer from stored claims without re-reading sources. That is a
@@ -327,7 +392,7 @@ argue against building it for a system whose entire point is being auditable.
 Note that it is also the route the brief explicitly rules out: "caching an
 answer you have already seen does not count".
 
-### The prompt budget: 24.1% → 34.0%
+### The prompt budget: 24.1% → 26.8%
 
 The three bugs below explain how the saving got off the floor. This one
 explains why it was capped, and it is the most recent thing I found.
@@ -353,7 +418,7 @@ only what is *quoted to the model*. Dropped records are counted into a
 `memory_context_trimmed` trace event, so the saving reads as a decision with a
 number attached rather than a figure that improved for unstated reasons.
 
-Result: Q5–8 from −24.1% to −34.0%, Q8 from +3% to −33%, with 8/8 complete,
+Result: Q5–8 from −24.1% to −26.8%, Q8 from +3% to −15%, with 8/8 complete,
 28/28 claims supported and 20/20 seeded defects caught — unchanged.
 
 **And the part I want to be explicit about.** I swept the limit over 3, 4, 6, 8
@@ -869,8 +934,9 @@ a per-question verdict trend across the last 16 full-suite runs.
 | Provider-independence pins (P5-1) | 10 test functions / 16 collected cases: fresh-checkout local defaults, no-secret builds, any-URL `compatible` adapter, vendor names rejected |
 | Dead `add_memory` API removed (P5-6) | Zero production callers; `save_claim` is now the store's only writer and all fixtures seed through it. Same precedent as the Azure and P4-4 deletions |
 | Counterfactual rupee column (§2.4) | The rupee half of the brief's cost question had no answer at all — eight rows of `unpriced`. Real token counts are now projected onto `gpt-4o-mini` list rates in a separately-named column, with the measured column left empty rather than backfilled |
-| Memory context budgeted and relevance-filtered (§3) | Every retrieved record used to be pasted into the prompt, so prompt size grew with memory. On Q8 that made reuse a net *cost*: 1,534 input tokens vs a 1,485 baseline. Now ≤6 relevant records: Q5–8 savings 24.1% → **34.0%**, Q8 +3% → −33%, accuracy unchanged at 8/8, 28/28, 20/20 |
+| Memory context budgeted and relevance-filtered (§3) | Every retrieved record used to be pasted into the prompt, so prompt size grew with memory. On Q8 that made reuse a net *cost*: 1,534 input tokens vs a 1,485 baseline. Now ≤6 relevant records: Q5–8 savings 24.1% → **26.8%**, Q8 +3% → −15%, accuracy unchanged at 8/8, 28/28, 20/20 |
 | Source disagreement resolved instead of dropped (P3-2, §4.10) | A source stating a *different* figure and a source saying nothing used to be handled identically — both "no corroboration", claim dropped. A tier-1 summary could veto a tier-4 filing. Now adjudicated on authority-then-recency with a traced justification, and the standoff case stays reachable |
+| Answer-completeness (recall) metric added (§3) | Every prior quality number graded the claims that *were* made. The new key scores what was omitted: **13/21 (62%)**, with **Q8 at 0/4** — it answers a profitability question with revenue figures while scoring 4/4 supported. Also retracted a conclusion: the `evidence_limit` claim-count drop I had called "answering less thoroughly" is flat on recall, so that reasoning was wrong |
 | Cross-check scans all candidates before deciding (§4.10) | It used to `return` at the first corroborating source, so a contradicting source ranked below it was never read. A disagreement the agent never saw cannot be resolved |
 
 Two rows are worth pausing on.
@@ -944,41 +1010,52 @@ Ranked by how much they would bother me in review.
    adapters. Nobody here was, and the alternative was carrying ~830 lines of
    knowingly-broken, untestable, credential-gated code — but it is a break and
    it belongs on this list rather than in a footnote.
-5. **Extra credit not achieved** — 34.0%, not 50% (§3). The gap is now
+5. **Extra credit not achieved** — 26.8%, not 50% (§3). The gap is now
    arithmetic rather than mystery: input tokens are 84.6% of what remains and
-   2,823 of them alone exceed the 2,530 a 50% cut allows, so the target cannot
-   be reached without cutting the evidence block. **I can reach −51.2% by
-   setting `evidence_limit=3`, and I did not**, because it costs 4 of 28 claims
-   while every metric this project reports stays green. The full table is in
-   §3. Two smaller amounts were also measured and left: ~3 points from the
-   memory-budget sweep, for the same reason.
-6. **There is no recall metric, and that is the most serious gap in the
-   evaluation itself.** Every quality number here — 8/8 complete, 28/28
-   supported, 20/20 seeded defects — measures the *support rate of what was
-   asserted*. Nothing measures what was omitted. That makes the whole suite
-   blind to a cost optimisation that simply answers less, which is exactly the
-   failure mode a "make cost fall while accuracy holds" exercise invites. I
-   found the one instance above by accident, sweeping a parameter I expected to
-   be neutral. A claim-recall measure against a per-question answer key is the
-   fix, and it does not exist yet.
-7. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
+   2,823 of them alone exceed the 2,280 a 50% cut allows, so the target cannot
+   be reached without cutting the evidence block. The cheapest sweep setting
+   (`evidence_limit=3`) reaches **−45.8%**, still short. I previously reported
+   that same row as −51.2% and framed the shortfall as a deliberate refusal;
+   both statements were wrong — the 50% figure came from a stale baseline file
+   (§2.1), and the completeness loss I cited as the reason for refusing does
+   not exist (recall is flat at 13/21 across the sweep). What actually keeps
+   `evidence_limit` at 8 is an unmeasured risk, argued in §3, not a measured
+   harm. Two smaller amounts were also measured and left: ~3 points from the
+   memory-budget sweep.
+6. **Answer completeness is 62%, and that is now measured rather than
+   assumed.** `src/dyla/recall.py` scores each answer against a hand-written
+   key of the facts its question demands: **13 of 21, with Q8 at 0/4 and Q7 at
+   1/4**. Q8 asks whether four companies are profitable and returns four
+   revenue and funding claims, scoring 4/4 supported. The corpus contains every
+   missing fact. This is the largest single quality gap in the project and it
+   was invisible for the entire life of the repo, because every other number
+   grades the claims that were made rather than the ones that were not. The
+   metric exists now; **the underlying retrieval and synthesis defect it
+   exposes is not fixed.**
+7. **The recall key is mine, and it does not generalise.** 21 facts,
+   hand-written against eight questions and 14 fixture pages. A reviewer may
+   disagree with individual entries — it lives in `ANSWER_KEY` so that
+   disagreement is cheap. It cannot score a live run, where supportable facts
+   are not enumerable, and the obvious workaround (derive expectations from
+   what was retrieved) is circular in exactly the way that hid Q8.
+8. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
    pre-registers Zerodha, Infosys, Wipro and Zepto, because entity resolution is
    deterministic and does not invent entities from free text. Without it the
    resolver returns "unknown" and reuse can never engage. A real deployment
    accumulates these over time; doing it up front keeps the harness honest about
    what it measures rather than silently measuring nothing. But it *is* a
    thumb on the scale and it belongs in this list.
-8. **The cross-check's notion of corroboration is lexical** (§4.7). The old
+9. **The cross-check's notion of corroboration is lexical** (§4.7). The old
    high-confidence bypass is closed — the gate is now model-independent — but
    "independently states the figure" is decided by numeric-fact and overlap
    matching, and the offline corpus is single-source-per-fact, so the cross-check
    rejects genuine single-source claims it cannot confirm. Live search is the
    real test and remains unavailable.
-9. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
+10. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
    The scan is now documented as deliberate (the dead `memory_records_text`
    index was removed rather than kept as decoration); the replacement is FTS5
    or the embedding store when the corpus outgrows it.
-10. **The disagreement resolver fires exactly once on this corpus** (§4.10). One
+11. **The disagreement resolver fires exactly once on this corpus** (§4.10). One
    planted conflict, correctly resolved on authority. That demonstrates the
    mechanism; it does not validate the tier table, and a single positive is not
    a measurement. The two false-positive classes I found and fixed on the way
@@ -986,13 +1063,13 @@ Ranked by how much they would bother me in review.
    labelled disagreement set to score against. Its authority ordering is my
    judgement written down (`resolution.AUTHORITY_TIERS`) — legible and
    arguable, but not derived from anything.
-11. **The counterfactual column prices a harness, not a run** (§2.4). The
+12. **The counterfactual column prices a harness, not a run** (§2.4). The
    arithmetic is exact and the rates are real, but the token counts come from
    an extractive model that quotes rather than reasons. A live model would emit
    more output tokens and likely take more turns, so ₹0.1252 is a floor on a
    floor. It answers "show the trend in rupees"; it does not answer "what does
    this agent cost".
-12. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
+13. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
    overwrite (memory now holds all eight answers, not one) raised retrieval
    searches in *both* modes — Q3 plans 3 subqueries where it planned 1 —
    because the planner expands entity-prefixed subqueries from everything it

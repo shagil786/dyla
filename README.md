@@ -19,6 +19,7 @@ writes:
 | --- | --- |
 | `runs/reuse/qNN-*.jsonl` | Full log per question: plan, every tool call, every result, every course correction |
 | `reports/evaluation.md` | Cost per question in tokens and rupees, plus the trend across the eight questions. The measured rupee column reads `unpriced` for the offline model — no price is ever invented — alongside a separately-named **Projected ₹** column pricing the same real token counts at `gpt-4o-mini` list rates (override with `DYLA_COUNTERFACTUAL_MODEL`) |
+| `reports/evaluation.md` (recall section) | Answer completeness: what each answer *omitted*, scored against a hand-written key of the facts each question demands. Currently **13/21 (62%)** — see `src/dyla/recall.py` |
 | `reports/auditor-findings.md` | What the auditor caught, including a seeded-defect audit of the auditor itself |
 | `reports/run-summary.json` | Machine-readable totals |
 
@@ -28,8 +29,8 @@ To reproduce the memory-transfer comparison, run the baseline too:
 .venv/bin/python scripts/run_suite.py --no-reuse   # writes runs/no-reuse/ and reports/*-no-reuse.*
 ```
 
-Comparing the two gives the headline result: **−17.9% total tokens across all
-eight questions, −34.0% across the four that can reuse anything**, with 8/8
+Comparing the two gives the headline result: **−13.4% total tokens across all
+eight questions, −26.8% across the four that can reuse anything**, with 8/8
 questions complete, 28/28 claims supported and 20/20 seeded defects caught in
 both modes. `docs/WRITEUP.md` §3 explains the mechanism and why it is not 50%.
 

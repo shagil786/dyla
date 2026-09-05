@@ -166,6 +166,19 @@ def main() -> int:
     )
 
     label = "no-reuse" if args.no_reuse else "reuse"
+
+    # run_evaluation always writes evaluation.{json,md}. In baseline mode those
+    # are the *baseline's* numbers, so leaving them there overwrites the main
+    # report with the run it is supposed to be compared against -- and the
+    # committed evaluation-no-reuse.* were only ever produced by copying them
+    # by hand afterwards, which is why they silently went stale (they predated
+    # the recall metric entirely while README claimed this flag wrote them).
+    if args.no_reuse:
+        for suffix in ("json", "md"):
+            produced = root / args.out / f"evaluation.{suffix}"
+            if produced.exists():
+                produced.replace(root / args.out / f"evaluation-no-reuse.{suffix}")
+
     archive = archive_logs(root, per_question, label)
 
     # Probes audit read-only: the auditor still fetches sources and compares
