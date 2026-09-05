@@ -640,12 +640,32 @@ first write and refuses to start on a mismatch. Collections predating the stamp
 carry none and are left alone, because refusing to open every pre-existing
 collection is a worse failure than the one being prevented.
 
-**Neither fix has been exercised against real Qdrant Cloud.** They are covered
-by four tests against a fake client, and the mismatch path is the kind of thing
-a fake client models well (it is a comparison of two integers and two strings).
-The sentinel-point mechanism is not: whether a zero vector in a reserved point
-behaves acceptably in a real collection at scale is untested, and I would want
-one live run before trusting it.
+**Neither fix has been exercised against real Qdrant Cloud**, and the two
+halves deserve different levels of confidence. The dimension check is a
+comparison of two integers against a value the client reports; a fake client
+models that faithfully and I would be surprised if it behaved differently live.
+The sentinel point is a different matter, because it is the one part that
+*writes* something new into a real collection.
+
+Taking that caveat seriously turned up two things worth fixing rather than
+restating:
+
+- **It stored a zero vector.** Collections are created with `Distance.COSINE`,
+  whose denominator is `||a|| * ||b||`. A zero vector makes that zero, so cosine
+  against it is undefined, and an engine is entitled to reject the insert rather
+  than silently special-case it. Now a unit vector: still meaningless as
+  content, but well-formed for the metric the collection actually uses.
+- **The filter keeping it out of results was untested.** The sentinel is a real
+  point and a query can return it like any other; letting it through would
+  produce a junk citation or crash `_to_evidence`. The filter was written but no
+  test exercised `hybrid_search` at all, so it was one careless edit from
+  silently regressing. Now covered.
+
+What remains genuinely unknown is behaviour I cannot simulate: whether a real
+Qdrant Cloud instance accepts the reserved point exactly as this code writes it,
+and whether one extra point per collection interacts with anything at scale. One
+live run settles it. Until then the honest status is "designed carefully, tested
+against a fake, unproven on the wire".
 
 **Azure AI Search had the bug too, and was deleted rather than fixed.** It was
 unused, it was the *default* for three of the five provider roles despite

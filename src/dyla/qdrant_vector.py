@@ -18,6 +18,19 @@ from .domain import Evidence, EvidenceChunk, SearchFilters
 _QDRANT_POINT_NAMESPACE = UUID("b4f0d8f6-0d71-4ad0-bf3a-8dbf7e6f2b0e")
 
 
+def _sentinel_vector(dimensions: int) -> list[float]:
+    """A well-formed unit vector for the metadata point.
+
+    The value is irrelevant -- the point exists to carry a payload and is
+    filtered out of every search result -- but it has to be a vector the engine
+    will accept and can compute a cosine against.
+    """
+    vector = [0.0] * dimensions
+    if dimensions:
+        vector[0] = 1.0
+    return vector
+
+
 def qdrant_point_id(chunk_id: str) -> str:
     """Return the stable UUID used as Qdrant's point ID for a chunk."""
     return str(uuid5(_QDRANT_POINT_NAMESPACE, chunk_id))
@@ -203,7 +216,14 @@ class QdrantVectorStore:
                 collection_name=self.collection_name,
                 points=[models.PointStruct(
                     id=self._sentinel_id(),
-                    vector=[0.0] * self.vector_dimensions,
+                    # A unit vector, not a zero vector. The collection is
+                    # created with Distance.COSINE, whose denominator is
+                    # ||a||*||b||; a zero vector makes that zero, so cosine
+                    # against it is undefined and an engine is entitled to
+                    # reject the insert rather than silently special-case it.
+                    # Storing metadata must not depend on how a particular
+                    # Qdrant version handles a degenerate vector.
+                    vector=_sentinel_vector(self.vector_dimensions),
                     payload={"embedder_fingerprint": fingerprint, "dyla_meta": True},
                 )],
             )

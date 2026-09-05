@@ -477,3 +477,52 @@ def test_an_unstamped_collection_is_left_alone():
 
     store = QdrantVectorStore(_settings(), embedder=Embedder(), client=_DimClient(1536))
     assert store.vector_dimensions == 1536
+
+
+def test_the_metadata_sentinel_never_surfaces_as_evidence():
+    """The stamp is a real point, so a query can return it like any other.
+
+    It carries no evidence payload, so letting it through would either crash
+    _to_evidence or produce a junk citation. This asserts the filter, which was
+    previously written but untested -- the fake client in the other tests never
+    exercised hybrid_search at all.
+    """
+    from dyla.domain import SearchFilters
+    from dyla.qdrant_vector import QdrantVectorStore
+
+    real_payload = {
+        "chunk_id": "c1", "source_id": "s1", "url": "https://example.com/a",
+        "title": "A", "section": None, "text": "Zerodha is profitable.",
+        "position": 0, "entity_ids": ["e1"], "content_hash": "h1",
+        "published_at": None,
+    }
+
+    class Client(_DimClient):
+        def query_points(self, **kwargs):
+            return SimpleNamespace(points=[
+                SimpleNamespace(payload={"embedder_fingerprint": "abc", "dyla_meta": True},
+                                id="sentinel", score=1.0),
+                SimpleNamespace(payload=real_payload, id="c1", score=0.9),
+            ])
+
+    store = QdrantVectorStore(_settings(), embedder=None, client=Client(1536))
+    results = store.hybrid_search("q", [0.1] * 1536, SearchFilters(), limit=5)
+
+    assert len(results) == 1
+    assert results[0].source_id == "s1"
+
+def test_the_sentinel_vector_is_well_formed_for_cosine_distance():
+    """Collections use Distance.COSINE, whose denominator is ||a||*||b||.
+
+    A zero vector makes that zero, so cosine against it is undefined and a real
+    engine may reject the insert rather than special-case it. Storing metadata
+    must not depend on how a given Qdrant version treats a degenerate vector.
+    """
+    import math
+
+    from dyla.qdrant_vector import _sentinel_vector
+
+    for dimensions in (1536, 2048):
+        vector = _sentinel_vector(dimensions)
+        assert len(vector) == dimensions
+        assert math.isclose(math.sqrt(sum(x * x for x in vector)), 1.0)
