@@ -18,7 +18,7 @@
 ## Verdict detail
 
 ### 1. What is the current goods and services tax (GST) rate applied to restaurant services in India? — complete
-Run: `1134b17a600c4dbdb17fb4af2d647df5`
+Run: `430bd49301884451a67819802ee53056`
 
 | Claim | Verdict | Cited sources |
 |---|---|---|
@@ -28,7 +28,7 @@ Run: `1134b17a600c4dbdb17fb4af2d647df5`
 | c4 | supported | https://example.gov.in/cbic/gst-restaurant-rates |
 
 ### 2. Who is the current chief executive officer of Zerodha, and in which year did they take the role? — complete
-Run: `e3a8ce9e76d44c698c5422dde1e9e95f`
+Run: `3a87fc758b3f4ac4b76041b04fab6fba`
 
 | Claim | Verdict | Cited sources |
 |---|---|---|
@@ -38,7 +38,7 @@ Run: `e3a8ce9e76d44c698c5422dde1e9e95f`
 | c4 | supported | https://example.com/business-daily/zerodha-leadership |
 
 ### 3. List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each. — complete
-Run: `4ad43bb16012491e98c04959a42de4d0`
+Run: `090ba650807b4ddaa882b4d491c4686e`
 
 | Claim | Verdict | Cited sources |
 |---|---|---|
@@ -48,7 +48,7 @@ Run: `4ad43bb16012491e98c04959a42de4d0`
 | c4 | supported | https://example.com/exchange/wipro-annual-report-fy25 |
 
 ### 4. Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors? — complete
-Run: `26e68e3a19134bbf96ca074a61671ee6`
+Run: `e094dd843a9d429a9ee4fc0193733d2d`
 
 | Claim | Verdict | Cited sources |
 |---|---|---|
@@ -57,7 +57,7 @@ Run: `26e68e3a19134bbf96ca074a61671ee6`
 | c4 | supported | https://example.com/funding-wire/quick-commerce-2025-rounds |
 
 ### 5. Who is the chief technology officer of Zerodha, and what is their academic background? — complete
-Run: `defd46142f45416893d46b5f9b9fe4c0`
+Run: `b4923c08e5f34e73a31a9a099760a4fc`
 
 | Claim | Verdict | Cited sources |
 |---|---|---|
@@ -67,7 +67,7 @@ Run: `defd46142f45416893d46b5f9b9fe4c0`
 | c4 | supported | https://example.com/business-daily/zerodha-leadership |
 
 ### 6. Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure. — complete
-Run: `07b8089461114913ac78a26f8cf6ce85`
+Run: `18654e771f9a4297a9d3e62cd6d065f8`
 
 | Claim | Verdict | Cited sources |
 |---|---|---|
@@ -75,7 +75,7 @@ Run: `07b8089461114913ac78a26f8cf6ce85`
 | c4 | supported | https://example.com/exchange/infosys-annual-report-fy25 |
 
 ### 7. How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round? — complete
-Run: `1f7664917edd4ff9958a6f696876c91d`
+Run: `670ef08325f744b28e8f1022389c7a5c`
 
 | Claim | Verdict | Cited sources |
 |---|---|---|
@@ -84,7 +84,7 @@ Run: `1f7664917edd4ff9958a6f696876c91d`
 | c4 | supported | https://example.com/funding-wire/quick-commerce-2025-rounds |
 
 ### 8. State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each. — complete
-Run: `5fef24c3ab7f4953bf6773dfaf9c97fc`
+Run: `f77f05c8a16d403782fb21e32e25f9dc`
 
 | Claim | Verdict | Cited sources |
 |---|---|---|
@@ -96,15 +96,15 @@ Run: `5fef24c3ab7f4953bf6773dfaf9c97fc`
 
 | # | Question | Status | Input tok | Output tok | Embed tok | Searches | Fetches | Skipped | Duration (ms) | Cost (rupees) | Projected ₹ |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | What is the current goods and services tax (GST) rate applied to restaurant services in India? | complete | 552 | 95 | 273 | 1 | 8 | 0 | 30 | unpriced | 0.0132 |
+| 1 | What is the current goods and services tax (GST) rate applied to restaurant services in India? | complete | 552 | 95 | 273 | 1 | 8 | 0 | 24 | unpriced | 0.0132 |
 | 2 | Who is the current chief executive officer of Zerodha, and in which year did they take the role? | complete | 627 | 77 | 300 | 1 | 9 | 0 | 22 | unpriced | 0.0133 |
-| 3 | List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each. | complete | 1026 | 72 | 302 | 2 | 9 | 0 | 20 | unpriced | 0.0186 |
-| 4 | Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors? | complete | 770 | 102 | 320 | 1 | 8 | 0 | 21 | unpriced | 0.0167 |
-| 5 | Who is the chief technology officer of Zerodha, and what is their academic background? | complete | 710 | 87 | 174 | 3 | 7 | 0 | 19 | unpriced | 0.0150 |
-| 6 | Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure. | complete | 748 | 104 | 281 | 4 | 7 | 0 | 20 | unpriced | 0.0165 |
-| 7 | How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round? | complete | 598 | 75 | 226 | 2 | 7 | 0 | 19 | unpriced | 0.0127 |
-| 8 | State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each. | complete | 1081 | 98 | 289 | 4 | 8 | 0 | 24 | unpriced | 0.0209 |
-| | **Total** | | 6112 | 710 | 2165 | 18 | 63 | 0 | 175 | unpriced | 0.1269 |
+| 3 | List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each. | complete | 1026 | 72 | 302 | 2 | 9 | 0 | 25 | unpriced | 0.0186 |
+| 4 | Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors? | complete | 770 | 102 | 320 | 1 | 8 | 0 | 19 | unpriced | 0.0167 |
+| 5 | Who is the chief technology officer of Zerodha, and what is their academic background? | complete | 710 | 87 | 174 | 3 | 7 | 0 | 23 | unpriced | 0.0150 |
+| 6 | Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure. | complete | 748 | 104 | 281 | 4 | 7 | 0 | 23 | unpriced | 0.0165 |
+| 7 | How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round? | complete | 598 | 75 | 226 | 2 | 7 | 0 | 24 | unpriced | 0.0127 |
+| 8 | State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each. | complete | 1081 | 98 | 289 | 4 | 8 | 0 | 27 | unpriced | 0.0209 |
+| | **Total** | | 6112 | 710 | 2165 | 18 | 63 | 0 | 187 | unpriced | 0.1269 |
 
 **Cost (rupees) is unavailable.** No price known for model 'offline-extractive'. Set DYLA_PRICE_INPUT_PER_MTOK_USD and DYLA_PRICE_OUTPUT_PER_MTOK_USD (USD per 1M tokens), or add the model to dyla.pricing.KNOWN_MODEL_PRICING.
 
@@ -114,7 +114,7 @@ Run: `5fef24c3ab7f4953bf6773dfaf9c97fc`
 
 - Total tokens: 6822 (input 6112, output 710)
 - Total estimated_cost (adapter units): 0.0
-- Total duration: 175 ms
+- Total duration: 187 ms
 - Memory hits by question: [0, 0, 3, 1, 7, 10, 9, 26] (first-question baseline: 0; later questions total: 56)
 
 **Projected rupee trend on `gpt-4o-mini`** (a projection over real token counts, not a measured charge):
@@ -151,7 +151,7 @@ Most recent 1 full-suite runs recorded.
 
 Cell = supported/total claims audited; ✓ = passed, ✗ = not passed; — = question absent from that run.
 
-| # | Question | Pass rate | | 09-05 21:37 |
+| # | Question | Pass rate | | 09-05 21:56 |
 |---|---|---|---|
 | 1 | What is the current goods and services tax (GST) rate applied to restaurant services in India? | 1/1 | ✓ 4/4 |
 | 2 | Who is the current chief executive officer of Zerodha, and in which year did they take the role? | 1/1 | ✓ 4/4 |
@@ -164,13 +164,13 @@ Cell = supported/total claims audited; ✓ = passed, ✗ = not passed; — = que
 
 **Run details (newest first):**
 
-### 2026-09-05T21:37:03.918560+00:00 — 8/8 passed
-- **complete** — What is the current goods and services tax (GST) rate applied to restaurant services in India? · 4/4 claims supported · `1134b17a600c4dbdb17fb4af2d647df5`
-- **complete** — Who is the current chief executive officer of Zerodha, and in which year did they take the role? · 4/4 claims supported · `e3a8ce9e76d44c698c5422dde1e9e95f`
-- **complete** — List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each. · 4/4 claims supported · `4ad43bb16012491e98c04959a42de4d0`
-- **complete** — Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors? · 3/3 claims supported · `26e68e3a19134bbf96ca074a61671ee6`
-- **complete** — Who is the chief technology officer of Zerodha, and what is their academic background? · 4/4 claims supported · `defd46142f45416893d46b5f9b9fe4c0`
-- **complete** — Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure. · 2/2 claims supported · `07b8089461114913ac78a26f8cf6ce85`
-- **complete** — How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round? · 3/3 claims supported · `1f7664917edd4ff9958a6f696876c91d`
-- **complete** — State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each. · 3/3 claims supported · `5fef24c3ab7f4953bf6773dfaf9c97fc`
+### 2026-09-05T21:56:54.792023+00:00 — 8/8 passed
+- **complete** — What is the current goods and services tax (GST) rate applied to restaurant services in India? · 4/4 claims supported · `430bd49301884451a67819802ee53056`
+- **complete** — Who is the current chief executive officer of Zerodha, and in which year did they take the role? · 4/4 claims supported · `3a87fc758b3f4ac4b76041b04fab6fba`
+- **complete** — List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each. · 4/4 claims supported · `090ba650807b4ddaa882b4d491c4686e`
+- **complete** — Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors? · 3/3 claims supported · `e094dd843a9d429a9ee4fc0193733d2d`
+- **complete** — Who is the chief technology officer of Zerodha, and what is their academic background? · 4/4 claims supported · `b4923c08e5f34e73a31a9a099760a4fc`
+- **complete** — Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure. · 2/2 claims supported · `18654e771f9a4297a9d3e62cd6d065f8`
+- **complete** — How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round? · 3/3 claims supported · `670ef08325f744b28e8f1022389c7a5c`
+- **complete** — State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each. · 3/3 claims supported · `f77f05c8a16d403782fb21e32e25f9dc`
 

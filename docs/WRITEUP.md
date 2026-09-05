@@ -614,6 +614,39 @@ attribution is recoverable on a later run, losing the ingestion is not. Five
 tests cover it with a fake client, and I checked they fail when the merge is
 removed rather than assuming they would.
 
+**A second Qdrant bug, found by asking whether embedding-model changes are
+safe.** They were not. `ensure_collection` sized a *new* collection from
+`QDRANT_VECTOR_DIMENSIONS`, but on the path where the collection already exists
+it never compared the stored size against the configured one. Switching
+embedding models against a live Qdrant Cloud collection was therefore accepted
+silently at startup and failed later, at write time, with "vector dimension
+does not match index configuration" — a message that reads like a bug in this
+code rather than a configuration mismatch. This is not hypothetical for anyone
+running the shipped defaults: `.env.example` pins 1536, and the one real live
+run of this project used `nemotron-3-embed-1b`, which is 2048.
+
+The startup check now names both numbers and points at
+`DYLA_EMBEDDING_MODEL`. But the dimension check alone is a half-fix, and the
+half it misses is the dangerous one: **two different models can emit vectors of
+the same width into unrelated spaces.** Cosine similarity across them returns a
+perfectly plausible number that means nothing, memory reuse then serves
+confidently-scored nonsense, and *nothing downstream can detect it* — a float
+comes back and it looks like a distance. Note that
+`CompatibleEmbeddingProvider` already namespaces its own embedding *cache* on
+endpoint plus model for exactly this reason; the vector store had no
+equivalent, so the same swap that correctly invalidated the cache silently
+poisoned the index. The fix stamps that same fingerprint into the collection on
+first write and refuses to start on a mismatch. Collections predating the stamp
+carry none and are left alone, because refusing to open every pre-existing
+collection is a worse failure than the one being prevented.
+
+**Neither fix has been exercised against real Qdrant Cloud.** They are covered
+by four tests against a fake client, and the mismatch path is the kind of thing
+a fake client models well (it is a comparison of two integers and two strings).
+The sentinel-point mechanism is not: whether a zero vector in a reserved point
+behaves acceptably in a real collection at scale is untested, and I would want
+one live run before trusting it.
+
 **Azure AI Search had the bug too, and was deleted rather than fixed.** It was
 unused, it was the *default* for three of the five provider roles despite
 needing credentials nobody had, and shipping a knowingly-broken adapter to

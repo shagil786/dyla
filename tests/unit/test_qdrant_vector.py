@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -371,3 +372,108 @@ def test_a_client_without_retrieve_still_works():
     store.upsert([chunk()], vectors=[[0.1] * 3])
 
     assert _upserted_payloads(client)[0]["entity_ids"] == ["entity-1"]
+
+
+def _info(dim, payload_schema=None):
+    return SimpleNamespace(
+        payload_schema=payload_schema if payload_schema is not None else {"published_at": 1},
+        config=SimpleNamespace(params=SimpleNamespace(vectors=SimpleNamespace(size=dim))),
+    )
+
+
+class _DimClient:
+    def __init__(self, existing_dim, points=None):
+        self._info = _info(existing_dim)
+        self.points = points or []
+        self.upserted = []
+
+    def get_collection(self, collection_name):
+        return self._info
+
+    def create_collection(self, **kwargs):
+        raise AssertionError("existing collection must not be recreated")
+
+    def create_payload_index(self, **kwargs):
+        pass
+
+    def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):
+        return [p for p in self.points if str(getattr(p, "id", "")) in {str(i) for i in ids}]
+
+    def upsert(self, collection_name, points, wait=None):
+        self.upserted.extend(points)
+        self.points.extend(points)
+
+
+def _settings(dim=1536):
+    return SimpleNamespace(
+        qdrant_url="http://qdrant.invalid", qdrant_api_key="k",
+        qdrant_collection="dyla", qdrant_vector_dimensions=dim,
+        qdrant_upsert_batch_size=64, qdrant_upsert_batch_bytes=1_000_000,
+    )
+
+
+def test_reusing_a_collection_of_the_wrong_dimension_fails_at_startup():
+    """Regression: only the 404 path ever consulted QDRANT_VECTOR_DIMENSIONS.
+
+    An existing collection's configured size was never compared against the
+    current setting, so switching embedding models against live Qdrant Cloud
+    was accepted silently and then failed at write time with a message that
+    reads like an internal bug rather than a config mismatch.
+    """
+    from dyla.qdrant_vector import QdrantVectorStore
+
+    with pytest.raises(ValueError) as excinfo:
+        QdrantVectorStore(_settings(dim=2048), embedder=None, client=_DimClient(1536))
+
+    message = str(excinfo.value)
+    assert "1536" in message and "2048" in message
+    assert "DYLA_EMBEDDING_MODEL" in message
+
+
+def test_matching_dimensions_are_accepted():
+    from dyla.qdrant_vector import QdrantVectorStore
+
+    store = QdrantVectorStore(_settings(dim=1536), embedder=None, client=_DimClient(1536))
+    assert store.vector_dimensions == 1536
+
+
+def test_a_different_embedding_model_at_the_same_dimension_is_rejected():
+    """Dimension equality is necessary but not sufficient.
+
+    Two models can both emit 1536-dimensional vectors into unrelated spaces.
+    Cosine similarity across them returns a plausible number with no meaning,
+    which nothing downstream can detect -- so the embedder identity is stamped
+    into the collection and checked on startup.
+    """
+    from dyla.qdrant_vector import QdrantVectorStore
+
+    class Embedder:
+        model = "model-a"
+        _client = SimpleNamespace(base_url="https://api.example.com")
+
+        def embed(self, texts):
+            return [[0.0] * 1536 for _ in texts]
+
+    client = _DimClient(1536)
+    store = QdrantVectorStore(_settings(), embedder=Embedder(), client=client)
+    store._stamp_embedder()
+    assert client.upserted, "first write should record the embedder fingerprint"
+
+    class OtherEmbedder(Embedder):
+        model = "model-b"
+
+    with pytest.raises(ValueError) as excinfo:
+        QdrantVectorStore(_settings(), embedder=OtherEmbedder(), client=client)
+    assert "different embedding model" in str(excinfo.value)
+
+
+def test_an_unstamped_collection_is_left_alone():
+    """Collections built before the stamp existed must still open."""
+    from dyla.qdrant_vector import QdrantVectorStore
+
+    class Embedder:
+        model = "model-a"
+        _client = SimpleNamespace(base_url="https://api.example.com")
+
+    store = QdrantVectorStore(_settings(), embedder=Embedder(), client=_DimClient(1536))
+    assert store.vector_dimensions == 1536
