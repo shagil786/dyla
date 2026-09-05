@@ -42,8 +42,11 @@ from dyla.orchestrator import RunOrchestrator  # noqa: E402
 from dyla.tracing import TraceWriter  # noqa: E402
 
 
-def build_offline(root: Path, reuse: bool = True):
-    memory = MemoryStore(root / "dyla.db")
+def build_offline(root: Path, reuse: bool = True, db_path: Path | None = None):
+    # db_path lets an experiment run against its own database instead of the
+    # suite's dyla.db. Default is unchanged, so every existing caller behaves
+    # exactly as before.
+    memory = MemoryStore(db_path or (root / "dyla.db"))
     memory.initialize()
     provider = OfflineResearchProvider()
     embedder = OfflineEmbedder()

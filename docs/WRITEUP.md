@@ -1095,6 +1095,50 @@ the policy fires exactly once, so it is demonstrated, not validated at scale.
 
 ---
 
+### 4.11 The auditor -> analyst feedback loop, and why it reads zero
+
+The brief calls this "the closest thing on this page to what we actually
+build", so it deserves a number rather than a description.
+
+The loop is real: rejected claims are read back out of memory by verdict
+status, named in the next run's system prompt, and blocked if the model
+restates one anyway (`claims_blocked_by_audit_feedback`).
+
+**It has never fired in the evaluation suite, and I nearly reported that
+number without checking why.** The metric appears in all eight question
+traces, which is easy to misread as eight blocks. It is the key appearing in
+the `completed` payload with a value of **0**. Summed across every run in both
+modes: zero.
+
+That is not a broken feature, it is an unexercised one, and the distinction is
+the whole point. The fixture corpus is clean and the extractive model quotes
+verbatim, so all 29 claims are supported, nothing is ever *stored* with a
+rejected verdict, and the list the loop reads is always empty. The seeded-defect
+audit cannot feed it either — it runs `persist=False` on purpose, because
+planting lies in `dyla.db` for the next run would be a worse bug than the one
+being tested.
+
+Publishing `claims_blocked_by_audit_feedback: 0` in `reports/evaluation.md`
+would therefore be a true number that misleads: it reads as a dead feature. So
+the mechanism is measured where it can actually fire —
+`scripts/experiment_audit_feedback.py` records a rejected verdict, asks the
+same question again, and compares against a control:
+
+| | Control | After a recorded rejection |
+|---|---|---|
+| Warning present in prompt | no | **yes** |
+| Claim asserted in the answer | **yes** | no |
+| Claims blocked | 0 | **2** |
+
+Both halves are checked deliberately. A harness that asserted only the first
+row would pass while the analyst restated the claim anyway — the *block* is the
+feature, the warning is just the mechanism. Pinned by a test so it cannot rot
+into a script nobody runs.
+
+The honest limit: this proves the wiring end to end against a planted verdict.
+It does not prove the loop improves answers on a corpus where the auditor
+rejects claims organically, because this corpus never does.
+
 ## 5. What changed between runs, and why
 
 Committed run history is in `reports/evaluation.json` (`history`), which renders
@@ -1128,6 +1172,8 @@ a per-question verdict trend across the last 16 full-suite runs.
 | Counterfactual rupee column (§2.4) | The rupee half of the brief's cost question had no answer at all — eight rows of `unpriced`. Real token counts are now projected onto `gpt-4o-mini` list rates in a separately-named column, with the measured column left empty rather than backfilled |
 | Memory context budgeted and relevance-filtered (§3) | Every retrieved record used to be pasted into the prompt, so prompt size grew with memory. On Q8 that made reuse a net *cost*: 1,534 input tokens vs a 1,485 baseline. Now ≤6 relevant records: Q5–8 savings 24.1% → **25.0%**, Q8 +3% → −12%, accuracy unchanged at 8/8, 28/28, 20/20 |
 | Source disagreement resolved instead of dropped (P3-2, §4.10) | A source stating a *different* figure and a source saying nothing used to be handled identically — both "no corroboration", claim dropped. A tier-1 summary could veto a tier-4 filing. Now adjudicated on authority-then-recency with a traced justification, and the standoff case stays reachable |
+| Wall-clock trend added to `reports/evaluation.md` | The brief asks for an agent that gets "cheaper **and faster**". `duration_ms` was already in the per-question table, but only the cost trend was summarised, so half the sentence had no answer. The trend is now rendered and explicitly labelled as fixture-replay milliseconds, not live latency |
+| Auditor→analyst feedback loop measured (§4.11) | The loop was implemented and unit-tested but had **never fired in the suite** — the metric reads 0 in all eight traces because the clean corpus never stores a rejected verdict. Rather than publish a 0 that looks like a dead feature, `scripts/experiment_audit_feedback.py` drives it where it can fire: 2 restatements blocked against a control of 0 |
 | Answer-completeness (recall) metric added, and three defects it found fixed (§3, §3.1) | Every prior quality number graded the claims that *were* made. The new key scores what was omitted: it opened at **13/21**, with **Q8 at 0/4** — answering a profitability question with revenue figures while scoring 4/4 supported. Fixing the selector's coverage blindness, its exact-token matching, and an `on_topic` bug that let Infosys boilerplate veto a Zerodha claim took it to **15/21**. It also showed memory reuse costs one fact (§3.3), and retracted two of my own conclusions |
 | Cross-check scans all candidates before deciding (§4.10) | It used to `return` at the first corroborating source, so a contradicting source ranked below it was never read. A disagreement the agent never saw cannot be resolved |
 

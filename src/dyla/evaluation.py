@@ -257,8 +257,48 @@ def _md_trend(cost: dict[str, Any]) -> list[str]:
         f"- Total duration: {totals['duration_ms']} ms",
         f"- Memory hits by question: {hits}"
         f" (first-question baseline: {baseline}; later questions total: {sum(hits[1:])})",
+        *_md_duration_trend(cost),
         *_md_counterfactual_trend(cost),
     ]
+
+
+def _md_duration_trend(cost: dict[str, Any]) -> list[str]:
+    """The wall-clock half of "gets cheaper and faster".
+
+    The per-question table already carries ``duration_ms``; only the *trend*
+    was missing, and the brief asks for cheaper and faster rather than cheaper
+    alone.
+
+    Deliberately unspun. On the fixture harness these are sub-millisecond
+    replays of recorded pages, so the numbers are dominated by process noise
+    and say nothing about a live agent's latency. Stating that next to the
+    figures is the difference between reporting a measurement and implying a
+    result.
+    """
+    values = [int(row["duration_ms"]) for row in cost["questions"]]
+    if not values:
+        return []
+    first, last = values[0], values[-1]
+    delta = ((last - first) / first * 100) if first else 0.0
+    later = values[4:]
+    lines = [
+        "",
+        "**Wall-clock trend** (analyst plus auditor, per question):",
+        "",
+        f"- Per question: {', '.join(f'{value} ms' for value in values)}",
+        f"- First to last: {first} ms -> {last} ms ({delta:+.1f}%)",
+    ]
+    if later:
+        lines.append(
+            f"- Questions 5-8 (the memory-reusing half): {sum(later)} ms total, "
+            f"{sum(later) / len(later):.1f} ms mean"
+        )
+    lines.append(
+        "- These are fixture replays measured in milliseconds, not live latency. "
+        "The ordering is meaningful; the magnitudes are not evidence about a "
+        "networked run."
+    )
+    return lines
 
 
 def _md_counterfactual_trend(cost: dict[str, Any]) -> list[str]:

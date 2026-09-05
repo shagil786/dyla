@@ -1516,3 +1516,36 @@ def test_relevant_memory_is_still_quoted():
 
     assert "Memory: Acme opened 250 stores in Bengaluru." in model.prompt
     assert agent.metrics["memory_records_dropped"] == 0
+
+
+def test_audit_feedback_blocks_a_restated_claim_end_to_end(tmp_path):
+    """The feedback loop, measured rather than asserted.
+
+    ``claims_blocked_by_audit_feedback`` has never incremented in the
+    evaluation suite, because the fixture corpus is clean: all claims are
+    supported, nothing is stored with a rejected verdict, and the list the loop
+    reads is always empty. That makes the metric look dead in every report.
+
+    This drives it the only way it can fire -- record a rejection, then ask
+    again -- and asserts the part that matters. Checking only that the warning
+    reaches the prompt would pass while the analyst quietly restated the claim
+    anyway; the block is the feature.
+    """
+    import sys
+    from pathlib import Path
+
+    scripts = Path(__file__).resolve().parents[2] / "scripts"
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+
+    from experiment_audit_feedback import _run
+
+    control = _run(reject_first=False)
+    assert control["restated"] is True
+    assert control["blocked"] == 0
+    assert control["warned_in_prompt"] is False
+
+    treatment = _run(reject_first=True)
+    assert treatment["warned_in_prompt"] is True
+    assert treatment["restated"] is False
+    assert treatment["blocked"] >= 1
