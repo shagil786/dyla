@@ -499,7 +499,7 @@ only what is *quoted to the model*. Dropped records are counted into a
 number attached rather than a figure that improved for unstated reasons.
 
 Result: Q5–8 from −24.1% to −25.0%, Q8 from +3% to −12%, with 8/8 complete,
-28/28 claims supported and 20/20 seeded defects caught — unchanged.
+every asserted claim supported and 20/20 seeded defects caught — unchanged.
 
 **And the part I want to be explicit about.** I swept the limit over 3, 4, 6, 8
 and 12. Accuracy was *identical* at every setting; only cost moved (−36.9% at a

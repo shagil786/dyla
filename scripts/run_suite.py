@@ -160,24 +160,20 @@ def main() -> int:
         })
         return result
 
+    # Each mode owns its own report files. Two earlier attempts at this were
+    # both wrong: writing evaluation.{json,md} in *both* modes meant the
+    # baseline silently overwrote the main report, and renaming the file after
+    # the fact (the previous fix) meant running --no-reuse first -- the order
+    # the README gives -- left a reviewer with no evaluation.json at all, and
+    # also let the two modes append to each other's run history.
+    basename = "evaluation-no-reuse" if args.no_reuse else "evaluation"
     report = run_evaluation(
         questions=DEFAULT_QUESTIONS, runner=runner,
         output_dir=root / args.out, model_name=model_name,
+        basename=basename,
     )
 
     label = "no-reuse" if args.no_reuse else "reuse"
-
-    # run_evaluation always writes evaluation.{json,md}. In baseline mode those
-    # are the *baseline's* numbers, so leaving them there overwrites the main
-    # report with the run it is supposed to be compared against -- and the
-    # committed evaluation-no-reuse.* were only ever produced by copying them
-    # by hand afterwards, which is why they silently went stale (they predated
-    # the recall metric entirely while README claimed this flag wrote them).
-    if args.no_reuse:
-        for suffix in ("json", "md"):
-            produced = root / args.out / f"evaluation.{suffix}"
-            if produced.exists():
-                produced.replace(root / args.out / f"evaluation-no-reuse.{suffix}")
 
     archive = archive_logs(root, per_question, label)
 

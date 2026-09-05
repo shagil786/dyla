@@ -31,8 +31,12 @@ To reproduce the memory-transfer comparison, run the baseline too:
 
 Comparing the two gives the headline result: **−12.5% total tokens across all
 eight questions, −25.0% across the four that can reuse anything**, with 8/8
-questions complete, 28/28 claims supported and 20/20 seeded defects caught in
-both modes. `docs/WRITEUP.md` §3 explains the mechanism and why it is not 50%.
+questions complete and 20/20 seeded defects caught in both modes.
+
+It also costs one fact. Answer completeness is **16/21 in the baseline and
+15/21 with memory on**: reuse skips the searches that would have fetched one of
+Zepto's filings. The saving is real and so is the price; `docs/WRITEUP.md` §3
+explains the mechanism, §3.3 the trade, and why neither is 50%.
 
 **Read [`docs/WRITEUP.md`](docs/WRITEUP.md) first.** It states up front that
 these results are a deterministic replay of recorded pages, not a live LLM run,

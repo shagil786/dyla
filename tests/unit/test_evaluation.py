@@ -228,3 +228,37 @@ def test_the_quality_gate_cannot_see_an_answer_that_omits_claims(tmp_path):
         "the cheaper answer is cheaper precisely because it says less, and no "
         "reported metric penalises it"
     )
+
+
+def test_each_mode_writes_its_own_report_and_history(tmp_path):
+    """Regression: the baseline run used to destroy the main report.
+
+    README documents `run_suite.py` then `run_suite.py --no-reuse`. Under the
+    previous implementation the second command renamed evaluation.{json,md}
+    to evaluation-no-reuse.*, so a reviewer following the README in the *other*
+    order -- baseline first -- ended up with no evaluation.json at all. Found
+    by running the documented commands against a clean clone of the pushed
+    branch rather than against my own working tree, where the order I happened
+    to use hid it.
+
+    Separately, sharing one filename meant both modes appended to the same
+    run-history list, so the trend table mixed two different configurations.
+    """
+    metrics = Metrics(input_tokens=10, output_tokens=5, estimated_cost=0.0,
+                      duration_ms=1, searches=1, fetches=1, memory_hits=0,
+                      parallel_calls=1)
+
+    reuse = run_evaluation(questions=("Q",), runner=lambda q: _stub_result(q, metrics),
+                           output_dir=tmp_path, model_name="m")
+    baseline = run_evaluation(questions=("Q",), runner=lambda q: _stub_result(q, metrics),
+                              output_dir=tmp_path, model_name="m",
+                              basename="evaluation-no-reuse")
+
+    assert (tmp_path / "evaluation.json").exists()
+    assert (tmp_path / "evaluation.md").exists()
+    assert (tmp_path / "evaluation-no-reuse.json").exists()
+    assert (tmp_path / "evaluation-no-reuse.md").exists()
+
+    # Each report keeps its own history rather than appending to the other's.
+    assert len(reuse["history"]) == 1
+    assert len(baseline["history"]) == 1

@@ -297,6 +297,7 @@ def run_evaluation(
     runner: Callable[[str], Any] | None = None,
     output_dir: str | Path = "reports",
     model_name: str | None = None,
+    basename: str = "evaluation",
 ) -> dict[str, Any]:
     """Run the configured question suite and write stable JSON and Markdown reports."""
     if runner is None:
@@ -339,7 +340,7 @@ def run_evaluation(
         report["recall"] = recall.as_dict()
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
-    json_path = directory / "evaluation.json"
+    json_path = directory / f"{basename}.json"
     history = _load_history(json_path)
     history.append({
         "timestamp": datetime.now(UTC).isoformat(),
@@ -359,7 +360,7 @@ def run_evaluation(
     if len(history) > HISTORY_CAP:
         history = history[-HISTORY_CAP:]
     report["history"] = history
-    (directory / "evaluation.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
+    json_path.write_text(json.dumps(report, indent=2, default=str) + "\n")
     lines = ["# Evaluation", "", f"- Total: {report['total']}", f"- Passed: {report['passed']}", f"- Failed: {report['failed']}", "", "## Questions", ""]
     for item in results:
         lines.append(f"- **{item['status']}** — {item['question']}")
@@ -370,7 +371,7 @@ def run_evaluation(
     if recall is not None:
         lines.extend([*render_recall_markdown(recall), ""])
     lines.extend(_md_history(history))
-    (directory / "evaluation.md").write_text("\n".join(lines) + "\n")
+    (directory / f"{basename}.md").write_text("\n".join(lines) + "\n")
     return report
 
 
