@@ -1,0 +1,9 @@
+{
+  "experiment": "P3-3 adversarial analyst",
+  "model": "OfflineModel (extractive stand-in, no API key)",
+  "reuse_enabled": false,
+  "byte_identical_questions": 8,
+  "total_questions": 8,
+  "note": "OfflineModel derives its answer from the Question: line and the supplied evidence blocks; the system message is inert. Identical outputs are therefore the expected negative result, not evidence about model honesty. P3-3 needs a live model (see tests/unit/test_offline.py).",
+  "differences": []
+}

@@ -390,6 +390,29 @@ single-source-per-fact, so this is the honest upper bound of what the cross-chec
 can confirm offline; a live run would be the real test, and that remains
 unavailable (Section 0).
 
+### 4.8 The adversarial-analyst experiment (P3-3) — a negative result, honestly bounded
+
+The brief's "take it further" asks what happens when the analyst is told an
+auditor will check every claim: does citation quality improve, or does it
+start citing authoritative-looking sources that don't support the claim? The
+experiment is cheap to run — same suite, two system prompts, diff the verdict
+distribution — so it was run, and the offline result is exactly nothing:
+**all eight questions byte-identical** (answers, claims, citations, verdicts)
+in both reuse and no-reuse modes (`runlogs/P3-3-result-*.txt`,
+`scripts/experiment_adversarial_analyst.py`).
+
+That nothing is the *expected* negative result, and claiming it as evidence
+about model honesty would be dishonest. `OfflineModel` is an extractive
+stand-in: it answers by quoting supplied evidence sentences verbatim, recovers
+the question and evidence blocks by marker, and never reads the system
+message. An extractive model structurally cannot hallucinate a citation, so it
+also cannot *choose* better ones under threat — the system prompt is inert to
+it by construction. The invariance is pinned in `tests/unit/test_offline.py`
+so the harness cannot silently start pretending otherwise. P3-3 therefore
+remains a live-key experiment: the recorded-fixture harness can demonstrate
+plumbing (claims are rejected, traces record why) but not model honesty, and
+no live key was available (Section 0).
+
 ---
 
 ## 5. What changed between runs, and why
@@ -413,6 +436,9 @@ a per-question verdict trend across the last 16 full-suite runs.
 | Real-run trace tests for the two silent reason codes | `insufficient_corroboration` had no trace-level assertion at all and `blocked_by_audit_feedback` was metric-only; both are now driven through genuine two-run traces and their emitted `reason` strings asserted |
 | `DYLA_MEMORY_DB_PATH` (P4-1) | Memory location was hardcoded to `dyla.db` in the CWD and unconfigurable; the path now threads from settings through the CLI memory store and embedding cache, so two invocations from different working directories reach the same memory |
 | Cross-check not keyed on self-reported confidence (P4-2, §4.7) | A model that labels every claim "high" used to bypass corroboration entirely; the cross-check now gates on properties the model does not control and re-fetches an independent source |
+| Adversarial-analyst experiment (P3-3, §4.8) | Measured negative result: baseline and audit-threat prompts produce byte-identical outputs offline, as they must — the extractive stand-in never reads the system message. Needs a live key to mean anything |
+| Dead `memory_records_text` index removed (P4-4) | Search never used it; the linear scan is now documented as deliberate |
+| Spec text aligned with the shipped CLI (P4-3/P4-5) | `dyla audit` documented as reading saved traces (never re-auditing); spec examples match the real `runs/<mode>/qNN-*.jsonl` artifacts |
 
 Two rows are worth pausing on.
 

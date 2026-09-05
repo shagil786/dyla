@@ -120,7 +120,7 @@ The brief: *"Your run logs matter as much as your answers here."*
 |---|---|---|
 | **P3-1** | ⚠️ **PARTIAL — 27.8%, not 50%.** Measured and reported as a shortfall in `docs/WRITEUP.md` §3, not rounded up. Searches fall 56% (9→4) and four of eight questions do zero searches; total tokens fall 13.5% over all eight and 27.8% over the four that can reuse anything. Memory removes the search step, not the grounding step. **Cost falls by half with accuracy held.** Make `memory_hits` actually suppress redundant search/fetch: before dispatching a subquery, check whether resolved entities already have verified claims covering it, and skip the web round-trip | This is the strongest candidate. It is the one the brief describes most concretely, memory infrastructure already exists, and "memory that transfers to an unseen question" is exactly what Q5–Q8 were designed to demonstrate. Today `memory_hits` is counted but changes no behaviour. |
 | **P3-2** | Source conflict auto-resolution — pick a number and justify it, rather than reporting both | Needs recency, primary-vs-secondary and publisher weighting. Depends on P1-1. |
-| **P3-3** | Adversarial analyst — tell it an auditor will check every claim, measure whether citation quality improves or whether it starts citing authoritative-looking sources that don't support the claim | Cheap to run once P2-1 works: same suite, two prompts, diff the verdict distribution. Reporting a *negative* result here is fully acceptable and still scores. |
+| **P3-3** | ✅ **DONE — negative result, measured and pinned.** Adversarial analyst — tell it an auditor will check every claim, measure whether citation quality improves or whether it starts citing authoritative-looking sources that don't support the claim. `scripts/experiment_adversarial_analyst.py` runs the full suite twice (baseline vs an audit-threat system prompt) and diffs answers, claims, citations and verdicts: **8/8 questions byte-identical** in reuse and no-reuse modes (`runlogs/P3-3-result-*.txt`). That is the expected offline result: `OfflineModel` is extractive — it recovers the `Question:` line and evidence blocks by marker and ignores the system message, so it structurally cannot change its citations under threat. The invariance is pinned by `tests/unit/test_offline.py`. Offline, the experiment cannot demonstrate model honesty either way; the real run needs a live key, which remains unavailable (see WRITEUP §4.8). |
 | **P3-4** | Auditor findings feed back automatically into the next run | P1-5 is the prerequisite; this is its honest, completed form. |
 
 **Recommendation:** commit to **P3-1** and treat P3-3 as a bonus, since P3-3 is
@@ -148,8 +148,11 @@ rather than four loosely."*
 2. ~~**P1-4** — is `local` a credible default auditor, or an offline stub?~~
    **Resolved:** it stays the default, now that it is credible.
 3. ~~**P1-7** — wire in `agent_runtime.py`, or delete it?~~ **Resolved:** wired in.
-4. **Scope.** P0, P1, P2 and P3-1 are done (P3-1 partially — see its row).
-   Remaining: **P3-3** (adversarial analyst, needs a live model) and P4.
+4. **Scope.** P0, P1, P2, P3-1 (partial — see its row), P3-3 (negative result,
+   measured and pinned) and all of P4 are done. The only open item is **P3-2**
+   (source conflict auto-resolution), which depends on recency/authority
+   weighting work that is out of scope; a live-key run is the standing
+   prerequisite for P3-3's real experiment and P2's live mode.
 
 5. ✅ **Qdrant entity-overwrite bug FIXED.** `QdrantVectorStore.upsert()` now
    reads the stored `entity_ids` for each point and unions them before writing.
