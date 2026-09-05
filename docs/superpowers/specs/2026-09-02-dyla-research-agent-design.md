@@ -22,14 +22,20 @@ This command runs the analyst, auditor, memory update, trace persistence, and fi
 Supporting commands:
 
 ```bash
-dyla analyst "..."                  # analyst-only debugging
-dyla audit runs/run-001.json           # audit a saved answer
-dyla evaluate                          # run the eight-question suite
-dyla memory list                       # inspect accumulated memory
-dyla replay runs/run-001.json         # replay without new web/model calls
+dyla analyst "..."                    # analyst-only debugging
+dyla audit runs/reuse/q01-*.jsonl     # show the claim_audited verdicts already recorded in a past run's trace
+dyla evaluate                         # run the eight-question suite
+dyla memory list                      # inspect accumulated memory
+dyla replay runs/reuse/q01-*.jsonl    # replay without new web/model calls
 ```
 
-The final output preserves the original analyst answer and visibly reports audit findings. The auditor never silently rewrites the answer.
+`dyla audit` reads a saved trace and prints the `claim_audited` events it
+contains; it never re-runs the auditor. Re-auditing a past answer is a
+deliberate non-goal: verdicts are meaningful only against the sources a claim
+cited at run time, which may have changed since, and the run record already
+preserves the auditor's work. The final output preserves the original analyst
+answer and visibly reports audit findings. The auditor never silently rewrites
+the answer.
 
 ## Architecture
 

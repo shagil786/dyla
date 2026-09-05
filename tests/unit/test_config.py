@@ -55,6 +55,30 @@ def test_load_settings_reads_unprefixed_auditor_aliases(monkeypatch, tmp_path):
     assert settings.auditor_retries == 0
 
 
+def test_memory_db_path_defaults_to_dyla_db(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    for var in ("DYLA_MEMORY_DB_PATH", "MEMORY_DB_PATH"):
+        monkeypatch.delenv(var, raising=False)
+    set_required_env(monkeypatch)
+
+    settings = load_settings()
+
+    assert settings.memory_db_path == "dyla.db"
+
+
+def test_load_settings_reads_memory_db_path_from_env(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    for var in ("DYLA_MEMORY_DB_PATH", "MEMORY_DB_PATH"):
+        monkeypatch.delenv(var, raising=False)
+    set_required_env(monkeypatch)
+    target = str(tmp_path / "shared" / "memory.db")
+    monkeypatch.setenv("DYLA_MEMORY_DB_PATH", target)
+
+    settings = load_settings()
+
+    assert settings.memory_db_path == target
+
+
 @pytest.mark.parametrize("value", ["0", "-2.5"])
 def test_load_settings_rejects_non_positive_auditor_timeout(monkeypatch, tmp_path, value):
     monkeypatch.chdir(tmp_path)

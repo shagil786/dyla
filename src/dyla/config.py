@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     auditor_extra_payload: dict[str, Any] | None = Field(default=None, validation_alias=AliasChoices("DYLA_AUDITOR_EXTRA_PAYLOAD", "AUDITOR_EXTRA_PAYLOAD"))
     auditor_timeout_seconds: float = Field(default=10.0, validation_alias=AliasChoices("DYLA_AUDITOR_TIMEOUT_SECONDS", "AUDITOR_TIMEOUT_SECONDS"))
     auditor_retries: int = Field(default=2, validation_alias=AliasChoices("DYLA_AUDITOR_RETRIES", "AUDITOR_RETRIES"))
+    # Where the durable memory database lives. The CLI used to hardcode dyla.db
+    # relative to the current working directory, so two invocations from
+    # different directories silently used different memories and "memory
+    # transfer" between runs only worked when every run happened in the same
+    # cwd. An absolute path (or one anchored to a fixed home) makes memory
+    # genuinely shared.
+    memory_db_path: str = Field(default="dyla.db", validation_alias=AliasChoices("DYLA_MEMORY_DB_PATH", "MEMORY_DB_PATH"))
     embedding_base_url: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_BASE_URL", "EMBEDDING_BASE_URL"))
     embedding_api_key: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_API_KEY", "EMBEDDING_API_KEY"))
     embedding_model: str | None = Field(default=None, validation_alias=AliasChoices("DYLA_EMBEDDING_MODEL", "EMBEDDING_MODEL"))

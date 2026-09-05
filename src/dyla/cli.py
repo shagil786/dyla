@@ -31,8 +31,12 @@ app.add_typer(memory_app, name="memory")
 
 
 def _build_memory(settings: Settings) -> MemoryStore:
-    del settings
-    store = MemoryStore()
+    path = Path(settings.memory_db_path).expanduser()
+    # A configured path may point somewhere that does not exist yet (a shared
+    # location such as ~/.dyla/memory.db). sqlite cannot create the database in
+    # a missing directory, so make it. The default relative path is unaffected.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    store = MemoryStore(path)
     store.initialize()
     return store
 
@@ -41,7 +45,7 @@ def _build_analyst(settings: Settings) -> AnalystAgent:
     memory = _build_memory(settings)
     provider = build_search_provider(settings)
     model = build_model_provider(settings)
-    embedder = build_embedding_provider(settings, cache_path="dyla.db")
+    embedder = build_embedding_provider(settings, cache_path=settings.memory_db_path)
     index = build_vector_store(settings, embedder=embedder)
     return AnalystAgent(
         model=model, resolver=EntityResolver(memory), memory=memory,

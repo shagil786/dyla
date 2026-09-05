@@ -18,8 +18,10 @@ from dyla.verification import (
     MATCH_TOLERANCE,
     NumericFact,
     content_words,
+    corroborates,
     extract_numbers,
     extract_years,
+    on_topic,
     verify_claim,
 )
 
@@ -122,6 +124,70 @@ def test_off_topic_source_is_uncited_not_unsupported():
     assert result.status == "uncited", result.explanation
 
 
+# --------------------------------------------------------------------------
+# corroborates(): the independent cross-check question
+# --------------------------------------------------------------------------
+
+def test_corroborates_when_an_independent_source_states_the_figure():
+    source = (
+        "Infosys Limited reported consolidated revenue of Rs 1,53,670 crore for the "
+        "financial year 2024 according to its annual report."
+    )
+    assert corroborates(CLAIM_REVENUE, source)
+
+
+def test_corroborates_a_rounded_restatement_within_tolerance():
+    source = "Infosys posted revenue of 1.54 lakh crore rupees for FY2024."
+    assert corroborates(CLAIM_REVENUE, source)
+
+
+def test_does_not_corroborate_when_the_source_is_on_topic_but_states_a_different_figure():
+    source = (
+        "Infosys Limited reported consolidated revenue of Rs 1,22,000 crore for the "
+        "financial year 2024, the company said in its annual report."
+    )
+    assert not corroborates(CLAIM_REVENUE, source)
+
+
+def test_does_not_corroborate_when_the_figure_belongs_to_another_subject():
+    source = "The Nifty index closed at 24,500 points while gold traded near 72,000 rupees."
+    assert not corroborates(CLAIM_REVENUE, source)
+
+
+def test_a_multi_figure_claim_is_corroborated_by_either_figure():
+    """A comparison claim needs one page per company; either confirms it."""
+    claim = "Infosys reported revenue of 1,53,670 crore rupees in FY2024 while Wipro reported 89,088 crore rupees."
+    infosys_page = "Infosys Limited reported consolidated revenue of 1,53,670 crore rupees for FY2024."
+    wipro_page = "Wipro Limited reported consolidated revenue of 89,088 crore rupees for FY2024."
+    assert corroborates(claim, infosys_page)
+    assert corroborates(claim, wipro_page)
+
+
+def test_year_only_claims_are_corroborated_by_the_year():
+    claim = "Nithin Kamath has served as chief executive officer of Zerodha since 2010."
+    source = "Zerodha was founded in 2010 by Nithin Kamath, who remains chief executive officer."
+    assert corroborates(claim, source)
+    no_year = "Zerodha is the largest retail broker in India by active clients."
+    assert not corroborates(claim, no_year)
+
+
+def test_figureless_claims_need_an_actual_restatement_to_corroborate():
+    claim = "Nithin Kamath is the chief executive officer of Zerodha."
+    restated = (
+        "Nithin Kamath, the chief executive officer of Zerodha, addressed the "
+        "brokerage's annual results call."
+    )
+    assert corroborates(claim, restated)
+    adjacent = "Zerodha is a Bengaluru-based brokerage founded by the Kamath brothers."
+    assert not corroborates(claim, adjacent)
+
+
+def test_on_topic_and_corroborates_agree_on_the_relevance_gate():
+    claim = "Infosys reported revenue of 1,53,670 crore rupees in FY2024."
+    assert on_topic(claim, "Infosys Limited published its annual report for FY2024.")
+    assert not on_topic(claim, "The Bengaluru metro opened a new extension on Saturday.")
+
+
 def test_rounding_band_between_thresholds_is_unsupported_not_contradicted():
     """A 3% difference sits between MATCH (1%) and CONFLICT (5%).
 
@@ -166,6 +232,71 @@ def test_negation_reversal_is_contradicted():
     claim = "Zerodha is profitable according to its latest annual filing."
     source = "Zerodha is not profitable according to its latest annual filing, the company disclosed."
     result = verify_claim(claim, {"https://example.com/x": source})
+    assert result.status == "contradicted", result.explanation
+
+
+def test_negation_shared_with_the_source_cancels_instead_of_hiding_a_real_flip():
+    """The seeded 'negated_claim' mutation this check exists to catch.
+
+    The mutated claim carries TWO negation words — 'not taxed' and 'without
+    input tax credit' — and so does the source ('without input tax credit').
+    Judging negation parity by mere presence on each side counts the shared
+    'without' clause on both sides and waves the mutation through as
+    supported. Parity must be judged per shared word: 'taxed' is negated on
+    the claim side only.
+    """
+    claim = (
+        "Restaurant services in India are not taxed at 5% GST without input tax "
+        "credit for standalone restaurants."
+    )
+    source = (
+        "Restaurant services in India are taxed at 5% GST without input tax credit "
+        "for standalone restaurants. Restaurants located within hotels where the "
+        "declared room tariff exceeds 7,500 rupees per night are taxed at 18% GST "
+        "with input tax credit."
+    )
+    result = verify_claim(claim, {"https://example.com/x": source})
+    assert result.status == "contradicted", result.explanation
+
+
+def test_a_subclause_negation_in_a_weaker_sentence_cannot_override_a_better_restatement():
+    """Scope regression: a claim quoted verbatim by its source is supported.
+
+    The claim carries 'without input tax credit'; the source's second sentence
+    is about a different customer class that pays 'with input tax credit'. A
+    naive polarity check reads the second sentence as the claim's negation
+    even though the first sentence restates the claim exactly. A sentence may
+    only contradict when no better-matching sentence stays silent.
+    """
+    claim = (
+        "Restaurant services in India are taxed at 5% GST without input tax credit "
+        "for standalone restaurants."
+    )
+    source = (
+        "Restaurant services in India are taxed at 5% GST without input tax credit "
+        "for standalone restaurants. Restaurants located within hotels where the "
+        "declared room tariff exceeds 7,500 rupees per night are taxed at 18% GST "
+        "with input tax credit."
+    )
+    result = verify_claim(claim, {"https://example.com/x": source})
+    assert result.status == "supported", result.explanation
+
+
+def test_scope_discriminator_is_general_not_keyed_to_any_fixture_vocabulary():
+    """The same structure with unrelated wording must behave identically."""
+    healthy = "The Atlas device ships with a one-year warranty without a repair fee for home users."
+    source = (
+        "The Atlas device ships with a one-year warranty without a repair fee for "
+        "home users. Home users who ship the device with the extended plan pay a "
+        "repair fee of 60 dollars a year for a three-year warranty."
+    )
+    assert verify_claim(healthy, {"https://example.com/x": source}).status == "supported"
+
+    mutated = (
+        "The Atlas device does not ship with a one-year warranty without a repair "
+        "fee for home users."
+    )
+    result = verify_claim(mutated, {"https://example.com/x": source})
     assert result.status == "contradicted", result.explanation
 
 

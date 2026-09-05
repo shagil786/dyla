@@ -222,14 +222,31 @@ standalone restaurants versus restaurants inside expensive hotels. The auditor's
 polarity check found "with input tax credit" against the claim's "without",
 matched on topical overlap, and called it a contradiction.
 
-This is a false positive with a clear cause: **the auditor has no notion of
-scope.** It compares a claim to the highest-overlap sentence in a document
-without checking that the sentence is about the same subset. It is the single
-biggest weakness in the component and it is unfixed.
+This is a false positive with a clear cause: **the auditor had no notion of
+scope.** It compared a claim to a high-overlap sentence in a document without
+checking that the sentence is about the same subset.
 
-I am leaving Q1 failing rather than tuning the threshold until it passes. A
-threshold tuned against one known case is a hardcoded answer wearing a
-statistic's clothes.
+**Fixed.** Polarity contradiction is now scope-gated and negation parity is
+judged per shared word:
+
+1. **Scope gate.** A sentence may contradict a claim only when no
+   *better-matching* sentence stays silent. Here the source's first sentence
+   restates the claim verbatim and stays silent; the weaker hotel sentence
+   therefore cannot veto it. Contradiction by polarity is legitimate only when
+   the conflicting sentence is the best available statement about the claim —
+   or every better statement conflicts too.
+2. **Per-word negation parity.** A negation clause both sides share (the
+   "without input tax credit" in the claim *and* in its source) cancels before
+   polarity is decided. This is what lets the auditor call the *negation* of
+   the Q1 claim — "…are **not** taxed at 5% GST without input tax credit…" —
+   contradicted while calling the claim itself supported: the shared "without"
+   clause no longer masks the real "not".
+
+Both rules are general — no fixture wording appears in the discriminator — and
+the seeded-defect audit still holds at 20/20. The full suite now runs **8/8**
+(measured with the same deterministic offline fixtures; the traces committed in
+`runs/` predate this fix and show the false positive this section dissects,
+which is why they are kept as the historical record).
 
 ### 4.3 Measuring the auditor properly: seeded defects
 
@@ -243,18 +260,23 @@ This is mutation testing pointed at a verifier instead of a test suite. The
 detection rate is a property of the auditor, and is meaningful even though the
 run that produced the answers is a replay.
 
-| Defect class | First measurement | After fixes |
-|---|---|---|
-| `inflated_figure` — a number multiplied by 10 | 4/4 | 4/4 |
-| `dropped_citation` — sources stripped off | 4/4 | 4/4 |
-| `fabricated_claim` — plausible sentence, no support | 4/4 | 4/4 |
-| `negated_claim` — polarity reversed | 3/4 | 3/4 |
-| `swapped_entity` — true statement, wrong company | **0/4** | **4/4** |
-| **Total** | **15/20 (75%)** | **19/20 (95%)** |
+| Defect class | First measurement | After fixes | Final (post 4.2 fix) |
+|---|---|---|---|
+| `inflated_figure` — a number multiplied by 10 | 4/4 | 4/4 | 4/4 |
+| `dropped_citation` — sources stripped off | 4/4 | 4/4 | 4/4 |
+| `fabricated_claim` — plausible sentence, no support | 4/4 | 4/4 | 4/4 |
+| `negated_claim` — polarity reversed | 3/4 | 3/4 | **4/4** |
+| `swapped_entity` — true statement, wrong company | **0/4** | **4/4** | 4/4 |
+| **Total** | **15/20 (75%)** | **19/20 (95%)** | **20/20 (100%)** |
 
-The remaining miss is the negation of the Q1 claim the auditor *already*
-considers contradicted. Calling its negation "supported" is internally
-consistent, so it is a symptom of 4.2, not an independent bug.
+The one miss was the negation of the Q1 claim the auditor *already* considered
+contradicted. Calling its negation "supported" was internally consistent —
+exactly why it was a symptom of 4.2, not an independent bug, and why the 4.2
+fix closes it: with the healthy claim now correctly supported, the polarity
+check is free to read "are **not** taxed at 5% GST" as the reversal it is.
+Per-word negation parity is the specific change that catches it: the "without
+input tax credit" clause appears on both sides and cancels, leaving the
+claim-side "not" with no counterpart. Measured after the fix: **20/20**.
 
 ### 4.4 `swapped_entity` 0/4 — the unexpected result
 
@@ -296,7 +318,12 @@ it should have been 100%. The comparator now reads memory per comparison.
 
 ### 4.6 The auditor's limits, stated plainly
 
-- **No scope reasoning.** Section 4.2. The largest known defect.
+- **Scope reasoning is heuristic, not semantic.** Section 4.2's false positive
+  is fixed by a rank-ordered scope gate (a sentence contradicts only when no
+  better-matching sentence stays silent), but scope is measured by word
+  overlap, not by understanding which subset a sentence describes. A source
+  that restates the claim better in *wording* while meaning something narrower
+  can still suppress a genuine contradiction.
 - **No co-reference.** "The company reported X" is matched by topical word
   overlap, not by knowing which company "the company" is.
 - **Regex sentence segmentation**, which mis-splits on abbreviations.
@@ -313,6 +340,78 @@ it should have been 100%. The comparator now reads memory per comparison.
   With no memory attached the auditor is weaker here — never wrong in a new way,
   but blinder.
 - **And the harness cannot test model honesty at all.** Section 0.
+
+### 4.7 The cross-check is not keyed on self-reported confidence (P4-2)
+
+The analyst's pre-synthesis rejection loop originally cross-checked a claim
+only when the model labelled it `low`/`medium`/`weak` **and** it rested on one
+source. That is backwards in exactly the way overconfidence is backwards: a
+model that labels every claim "high" bypasses corroboration entirely, and
+confidence is a model output, so the check is keyed to the thing being
+checked.
+
+The gate now runs on properties the model does not control. A single-source
+claim is cross-checked when it carries a figure or a year, or when the model
+flagged low confidence — unless a prior run's *supported* verdict already
+covers it (the auditor's independent fetch is stronger evidence than a fresh
+cross-check; the stored wording must also agree on the figure, since the
+restatement fingerprint ignores numbers by construction). The cross-check
+re-fetches candidate pages through the search provider, skips the claim's own
+citations, and accepts only when an independently fetched, on-topic page
+states the claim's facts (`verification.corroborates` — topical overlap plus a
+matching numeric fact or year, falling back to restatement overlap for
+figure-free claims). New metrics `corroboration_searches` and
+`corroboration_fetches` count the work; `claim_rejected` now records
+`corroboration_sources_checked` alongside its reason.
+
+**The corroborating page is deliberately never attached to the claim.** It is
+not added to `claim.citations` and is never returned as a `Citation`. The
+auditor re-fetches exactly the sources a claim cites; making it verify against
+a paraphrased page it was never asked about would manufacture the §4.2 class
+of false contradiction in a new place. This diverges from the design spec's
+evidence-gate sketch (which contemplated the auditor itself re-checking from
+the run's gathered evidence); the divergence is the point — the auditor must
+judge claims against their citations, and the analyst must not widen them
+after the fact.
+
+Measured on the deterministic suite (fresh DB, committed-code replays):
+seeded-defect audit holds at **20/20** before and after; the suite stays
+**8/8**; and the planted second source that states Infosys revenue as
+1,53,670 crore (the corpus's `quick-summaries/infosys-revenue-note`) is now
+rejected in no-reuse runs where the baseline answer carried it as a supported
+claim. Corroboration cost the no-reuse run 19 searches and 32 fetches; it
+rejected three claims — the two restatements of the planted wrong figure and
+one genuine-but-single-source valuation sentence ("The round valued Zepto at
+5 billion dollars", which no other corpus page states). Reuse mode rejected
+four single-source figure/year claims for the same reason. Every rejected
+claim is recorded with its reason and the sources checked; nothing is deleted
+from the trace. The offline corpus is small and deliberately
+single-source-per-fact, so this is the honest upper bound of what the cross-check
+can confirm offline; a live run would be the real test, and that remains
+unavailable (Section 0).
+
+### 4.8 The adversarial-analyst experiment (P3-3) — a negative result, honestly bounded
+
+The brief's "take it further" asks what happens when the analyst is told an
+auditor will check every claim: does citation quality improve, or does it
+start citing authoritative-looking sources that don't support the claim? The
+experiment is cheap to run — same suite, two system prompts, diff the verdict
+distribution — so it was run, and the offline result is exactly nothing:
+**all eight questions byte-identical** (answers, claims, citations, verdicts)
+in both reuse and no-reuse modes (`runlogs/P3-3-result-*.txt`,
+`scripts/experiment_adversarial_analyst.py`).
+
+That nothing is the *expected* negative result, and claiming it as evidence
+about model honesty would be dishonest. `OfflineModel` is an extractive
+stand-in: it answers by quoting supplied evidence sentences verbatim, recovers
+the question and evidence blocks by marker, and never reads the system
+message. An extractive model structurally cannot hallucinate a citation, so it
+also cannot *choose* better ones under threat — the system prompt is inert to
+it by construction. The invariance is pinned in `tests/unit/test_offline.py`
+so the harness cannot silently start pretending otherwise. P3-3 therefore
+remains a live-key experiment: the recorded-fixture harness can demonstrate
+plumbing (claims are rejected, traces record why) but not model honesty, and
+no live key was available (Section 0).
 
 ---
 
@@ -333,6 +432,13 @@ a per-question verdict trend across the last 16 full-suite runs.
 | Misattribution check | Seeded-defect detection 75% → 95% |
 | Plan, rejections and retries traced | The four ways the analyst overrules its own model became machine-readable instead of prose buried in `limitations` |
 | Redactor exemption for token counts | Every token count had been replaced with `[REDACTED]` in every trace |
+| Scope-gated polarity (auditor, §4.2) | Seeded-defect audit 19/20 → 20/20; suite 8/8 |
+| Real-run trace tests for the two silent reason codes | `insufficient_corroboration` had no trace-level assertion at all and `blocked_by_audit_feedback` was metric-only; both are now driven through genuine two-run traces and their emitted `reason` strings asserted |
+| `DYLA_MEMORY_DB_PATH` (P4-1) | Memory location was hardcoded to `dyla.db` in the CWD and unconfigurable; the path now threads from settings through the CLI memory store and embedding cache, so two invocations from different working directories reach the same memory |
+| Cross-check not keyed on self-reported confidence (P4-2, §4.7) | A model that labels every claim "high" used to bypass corroboration entirely; the cross-check now gates on properties the model does not control and re-fetches an independent source |
+| Adversarial-analyst experiment (P3-3, §4.8) | Measured negative result: baseline and audit-threat prompts produce byte-identical outputs offline, as they must — the extractive stand-in never reads the system message. Needs a live key to mean anything |
+| Dead `memory_records_text` index removed (P4-4) | Search never used it; the linear scan is now documented as deliberate |
+| Spec text aligned with the shipped CLI (P4-3/P4-5) | `dyla audit` documented as reading saved traces (never re-auditing); spec examples match the real `runs/<mode>/qNN-*.jsonl` artifacts |
 
 Two rows are worth pausing on.
 
@@ -367,8 +473,10 @@ Ranked by how much they would bother me in review.
 
 1. **No live run.** Everything is a replay. Stated in section 0 and repeated in
    every artifact header.
-2. **The auditor has no scope reasoning** (4.2) and currently fails Q1 because
-   of it.
+2. **Auditor scope reasoning is heuristic.** The §4.2 false positive that
+   failed Q1 is fixed (scope gate + per-word negation parity, seeded audit
+   20/20), but scope is measured by word overlap, not semantics — §4.6 lists
+   what that still cannot see.
 3. **Removing Azure is a breaking change** for anyone who was using those
    adapters. Nobody here was, and the alternative was carrying ~830 lines of
    knowingly-broken, untestable, credential-gated code — but it is a break and
@@ -381,10 +489,16 @@ Ranked by how much they would bother me in review.
    accumulates these over time; doing it up front keeps the harness honest about
    what it measures rather than silently measuring nothing. But it *is* a
    thumb on the scale and it belongs in this list.
-6. **Single-source cross-checking is bypassed** when the model self-labels a
-   claim "high confidence" — i.e. the check is skipped exactly when the model is
-   most sure, which is when overconfidence lives.
+6. **The cross-check's notion of corroboration is lexical** (§4.7). The old
+   high-confidence bypass is closed — the gate is now model-independent — but
+   "independently states the figure" is decided by numeric-fact and overlap
+   matching, and the offline corpus is single-source-per-fact, so the cross-check
+   rejects genuine single-source claims it cannot confirm. Live search is the
+   real test and remains unavailable.
 7. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
+   The scan is now documented as deliberate (the dead `memory_records_text`
+   index was removed rather than kept as decoration); the replacement is FTS5
+   or the embedding store when the corpus outgrows it.
 
 ---
 
