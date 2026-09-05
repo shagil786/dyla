@@ -448,6 +448,97 @@ no live key was available (Section 0).
 
 ---
 
+### 4.9 Declining to answer — three routes, only two of them traced
+
+The brief requires that the agent *"state plainly when it cannot find something
+rather than filling the gap with a plausible guess."* This section is the
+account of how that is implemented, and of an asymmetry in it that was found
+while writing tests rather than while writing the feature.
+
+There are **three** routes to `"Insufficient evidence."`, and they are not
+equivalent:
+
+| Route | Trigger | Model consulted? | `answer_withheld` | Limitation, and who wrote it |
+|---|---|---|---|---|
+| **1** | No evidence retrieved — `_synthesize` returns early (`analyst.py:371`) | **No** | **not emitted** | `No retrieved evidence was available.` — the analyst's |
+| **2** | Evidence retrieved, model proposes zero claims (`analyst.py:504`) | Yes | `model_proposed_no_claims` | `No supplied evidence answered the question.` — the **model's**, passed through |
+| **3** | Model proposes claims, validation strikes all of them (`analyst.py:504`) | Yes | `no_claim_survived_validation` | per-claim rejection notes |
+
+Route 1's trace ends at retrieval:
+
+```text
+started -> memory_retrieved -> query_expanded -> plan_created -> web_searched
+        -> evidence_selected (count: 0) -> completed
+        -> started -> completed -> memory_saved
+        -> quality_completed (status: unaudited)
+```
+
+No `answer_synthesized`, no `answer_withheld`, no `claim_rejected`. Routes 2 and
+3 both emit the decision; they differ in `claims_proposed` (0 vs >0) and in
+whether a `claim_rejected` precedes it:
+
+```text
+Route 2: ... evidence_selected (count: 1)
+             -> answer_synthesized {"claims_proposed": 0, "claims_kept": 0,
+                                    "claims_rejected": 0, "bailed_out": true}
+             -> answer_withheld    {"reason": "model_proposed_no_claims"}
+
+Route 3: ... evidence_selected (count: 1) -> claim_rejected
+             -> answer_synthesized {"claims_proposed": 1, "claims_kept": 0,
+                                    "claims_rejected": 1, "bailed_out": true}
+             -> answer_withheld    {"reason": "no_claim_survived_validation"}
+```
+
+**Why Route 1 is silent, deliberately.** There was no answer to decline, because
+there was nothing to answer from — `_synthesize` returns before the model is
+called at all. Four pre-existing tests prove it by supplying a model whose
+`complete()` raises `AssertionError("empty evidence must not synthesize")` —
+covering no evidence at all, and all searches, all fetches and all ingestions
+failing — and the new Route 1 trace test reuses the same device. Emitting `answer_withheld` there would record a decision the
+agent never made.
+
+**Why the distinction earns its keep.** Route 1 means *retrieval* found nothing;
+Route 2 means retrieval worked and *extraction* failed. Those have different
+fixes — widen the search, or lower the extractive floor — and a trace that
+collapsed them would send you to the wrong one. Note that the discriminator is
+not only the event: Route 1's limitation is written by the analyst and Route 2's
+by the model, so the two are separable from the answer alone.
+
+Route 2 is also the route this harness actually hits. The extractive model
+quotes a sentence only if it is at least 25 characters **and** shares a
+non-stopword token with the question (`offline.py::_claims`), so a page that is
+retrieved but does not lexically overlap the question is a likelier failure than
+retrieving no pages at all.
+
+Route 2 had no test coverage until this branch. `grep -rn
+model_proposed_no_claims src/ tests/` matched exactly one line — its own
+emission site — which means one branch of a two-way ternary was unpinned, and a
+ternary is where two reason strings get swapped without anything else changing.
+Two tests now cover it
+(`test_a_model_that_proposes_nothing_is_traced_as_withheld`,
+`test_the_empty_evidence_shortcut_is_not_traced_as_a_withheld_answer`), both
+red-proven: flipping the ternary fails the new Route 2 test *and* the
+pre-existing Route 3 test; deleting the `if not evidence` early return fails the
+Route 1 test. Suite 319 → **321 passed**.
+
+**Where the gate leaves all three.** The auditor iterates `answer.claims`, so an
+empty list yields no verdicts, and `reliability.py` returns
+`QualityResult("unaudited", ["no audit verdicts were produced"])`.
+`evaluation.py:336` counts only `complete` and `passed`, so a correctly declined
+question **does not** count as passed. That is the right call for a scored
+suite — not answering is not an answer — but it does mean the gate cannot
+distinguish a principled refusal from a pipeline that failed to retrieve
+anything. The trace can, and that is where the distinction belongs; the score
+should not reward declining.
+
+None of the eight committed questions reaches any of these routes in either
+mode: `grep -rl answer_withheld runs/` returns nothing, because every question
+retrieves evidence and produces claims. So this is not a live defect. It is a
+branch that was untested and undocumented, and the offline harness's most
+likely real-world failure mode.
+
+---
+
 ## 5. What changed between runs, and why
 
 Committed run history is in `reports/evaluation.json` (`history`), which renders
@@ -476,7 +567,7 @@ a per-question verdict trend across the last 16 full-suite runs.
 | Seeded probes made read-only (P5-4) | The defect audit used to persist its planted lies into `dyla.db`, overwriting real claims. `persist=False`; post-suite DB now holds 28 real claims, 0 fabricated |
 | Accepted cross-checks traced (P5-5) | New `claim_corroborated` event; 24 confirming fetches per run previously left no record |
 | Committed artifacts regenerated (P5-2) | `runs/` and `reports/` predated the §4.2 and P4-2 fixes (7/8, 19/20); now 8/8 + 20/20 both modes, reproducible with one command again |
-| Provider-independence pins (P5-1) | 12 tests: fresh-checkout local defaults, no-secret builds, any-URL `compatible` adapter, vendor names rejected |
+| Provider-independence pins (P5-1) | 10 test functions / 16 collected cases: fresh-checkout local defaults, no-secret builds, any-URL `compatible` adapter, vendor names rejected |
 | Dead `add_memory` API removed (P5-6) | Zero production callers; `save_claim` is now the store's only writer and all fixtures seed through it. Same precedent as the Azure and P4-4 deletions |
 
 Two rows are worth pausing on.
@@ -512,33 +603,59 @@ Ranked by how much they would bother me in review.
 
 1. **No live run.** Everything is a replay. Stated in section 0 and repeated in
    every artifact header.
-2. **Auditor scope reasoning is heuristic.** The §4.2 false positive that
+2. **No session logs.** The brief weighs three things: *"The session logs tell
+   us how you work. The write-up tells us how you think. The code tells us what
+   you can build. We weigh all three."* One of those three axes is not
+   represented in this repository. What is committed under that name is not it:
+   `runs/*.jsonl` are **agent** traces — the program's own tool calls — and
+   `.superpowers/sdd/` holds 11 implementation reports (`task-1`…`task-8` plus
+   three investigations) recording files changed and TDD history. Neither is a
+   record of the human↔AI working session, and no transcript is committed
+   anywhere. `grep -ril "overruled\|I disagreed\|the tool suggested"
+   .superpowers/ docs/superpowers/` returns nothing — this file is deliberately
+   outside that scope, because the sentence you are reading quotes all three
+   phrases and would otherwise be its own only hit.
+
+   The distinction is easy to blur, and blurring it flatters this
+   submission — a `claim_rejected` event shows the *analyst* overruling its
+   *model*, which is a runtime behaviour the brief asks for in Part A, not
+   evidence about how the candidate worked with a tool. What the brief wants
+   on this axis is the other thing: where the obvious approach was tried,
+   measured and rejected, and where the tool was overruled and was right to
+   be. The closest in-repo substitute is this document —
+   §4.5's three rejections with their measurements, and `FIX_BACKLOG.md` Part 1,
+   which records four features that had been committed and described as working
+   and were not — but those are the *decisions*, not the *session*, so a reader
+   has to take the write-up's word for how they were reached. Exporting and
+   committing the transcripts would close this; it has not been done.
+
+3. **Auditor scope reasoning is heuristic.** The §4.2 false positive that
    failed Q1 is fixed (scope gate + per-word negation parity, seeded audit
    20/20), but scope is measured by word overlap, not semantics — §4.6 lists
    what that still cannot see.
-3. **Removing Azure is a breaking change** for anyone who was using those
+4. **Removing Azure is a breaking change** for anyone who was using those
    adapters. Nobody here was, and the alternative was carrying ~830 lines of
    knowingly-broken, untestable, credential-gated code — but it is a break and
    it belongs on this list rather than in a footnote.
-4. **Extra credit not achieved** — 24.1%, not 50% (§3).
-5. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
+5. **Extra credit not achieved** — 24.1%, not 50% (§3).
+6. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
    pre-registers Zerodha, Infosys, Wipro and Zepto, because entity resolution is
    deterministic and does not invent entities from free text. Without it the
    resolver returns "unknown" and reuse can never engage. A real deployment
    accumulates these over time; doing it up front keeps the harness honest about
    what it measures rather than silently measuring nothing. But it *is* a
    thumb on the scale and it belongs in this list.
-6. **The cross-check's notion of corroboration is lexical** (§4.7). The old
+7. **The cross-check's notion of corroboration is lexical** (§4.7). The old
    high-confidence bypass is closed — the gate is now model-independent — but
    "independently states the figure" is decided by numeric-fact and overlap
    matching, and the offline corpus is single-source-per-fact, so the cross-check
    rejects genuine single-source claims it cannot confirm. Live search is the
    real test and remains unavailable.
-7. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
+8. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
    The scan is now documented as deliberate (the dead `memory_records_text`
    index was removed rather than kept as decoration); the replacement is FTS5
    or the embedding store when the corpus outgrows it.
-8. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
+9. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
    overwrite (memory now holds all eight answers, not one) raised retrieval
    searches in *both* modes — Q3 plans 3 subqueries where it planned 1 —
    because the planner expands entity-prefixed subqueries from everything it

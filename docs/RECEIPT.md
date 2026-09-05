@@ -32,7 +32,7 @@ this branch's work:
 | Pricing module | `dyla/pricing.py`: check-dated list prices, env overrides, `unpriced` instead of an invented rate |
 | Wall-clock ceiling | `DEFAULT_WALL_CLOCK_SECONDS = 120`, `asyncio.wait_for` on shrinking budget, cooperative auditor deadline, daemon-thread stages, `AgentRuntime` wired in |
 | Memory reuse | Entity merge on re-upsert, content-based attribution; Q5–Q8 run 0 searches |
-| **P5-1 provider-independence pins (this branch)** | 12 tests: fresh-checkout `local` defaults, zero-secret builds, any-URL `compatible` adapter, vendor names (`groq`, `azure`, …) rejected for every role |
+| **P5-1 provider-independence pins (this branch)** | 10 test functions / 16 collected cases: fresh-checkout `local` defaults, zero-secret builds, any-URL `compatible` adapter, vendor names (`groq`, `azure`, …) rejected for every role |
 | **P5-2 artifact refresh (this branch)** | `runs/` + `reports/` regenerated (were stale at 7/8 + 19/20); history now 22/21 entries showing the fix landing |
 | **P5-3 claim-ID namespacing (this branch)** | `memory.memory_claim_id(run_id, …)` at both write sites; `dyla.db` holds all 8 runs (28 claims) instead of one overwritten answer |
 | **P5-4 read-only probes (this branch)** | `AuditorAgent.run(..., persist=False)`; seeded audit plants nothing in durable memory (0 fabricated rows) |
@@ -51,7 +51,7 @@ this branch's work:
 | Cross-checks fully traced | `claim_corroborated` ×14 reuse (10 accepted / 4 rejected), ×13 no-reuse |
 | Rupees honestly unpriced | `reports/evaluation.md`: `unpriced` in all 9 cost rows, with the two env vars that populate it |
 | Memory durable across runs | Post-suite `dyla.db`: 28 claims, 8 run prefixes, 28/28 `supported`, 0 fabricated rows, 0 warnings |
-| No hardcoded LLM vendor | `grep -rin groq src/ tests/ scripts/ docs/ .env.example` → empty; unknown providers raise per-role (tested) |
+| No hardcoded LLM vendor | `grep -rin groq src/ scripts/ .env.example` → empty; unknown providers raise per-role (tested). `tests/` is out of scope by design — it names vendor strings in order to assert they are rejected (`test_provider_factory.py:165,175`) |
 | `main` merged clean | `git diff cc86099..1785fe5` (merge of `main`) → empty; suite re-run green |
 
 ## 3. Deliberately not done (unchanged, still true)
