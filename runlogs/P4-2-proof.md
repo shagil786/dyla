@@ -41,3 +41,11 @@ Claim-level rejects (fresh DB, p42):
 Baseline (1eda644) rejected none of these (0/0/0 metrics absent pre-P4-2); the auditor
 then verified every kept claim supported, so answer content is limited by the same
 honest rule: a single cited source is not enough for a figure no independent page states.
+
+Post-everything confirmation (HEAD 07542b8, after P4-4/P4-3/P3-3 commits; fresh
+scratch copy of the committed tree):
+    scratch run_suite.py (no-reuse | reuse) -> 8/8 + seeded 20/20 both modes
+    .venv/bin/pytest -q                     -> 302 passed
+Seeded-defect audit before/after the P4-2 change: 20/20 -> 20/20 (baseline
+1eda644 and P4-2 runs measured identically, by class 4/4 across all five
+defect classes; see table above).
