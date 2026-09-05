@@ -179,3 +179,26 @@ def test_a_custom_question_suite_reports_no_recall_rather_than_a_false_zero(tmp_
     default = run_evaluation(questions=DEFAULT_QUESTIONS, runner=runner,
                              output_dir=tmp_path / "default", model_name="m")
     assert default["recall"]["expected"] == 21
+
+
+def test_expected_facts_match_on_stems_not_exact_words():
+    """Regression: ``must_include=("hotel",)`` missed a claim saying "hotels".
+
+    This was a false positive in the metric itself -- Q1 was reported as
+    omitting a fact its answer plainly contained. Caught while fixing the real
+    gaps recall had exposed. A recall number that cries wolf gets switched off,
+    taking its true findings with it.
+    """
+    fact = ExpectedFact("restaurants in high-tariff hotels are taxed at 18%",
+                        must_include=("hotel",), numbers=("18%",))
+    assert fact.covered_by(
+        "Restaurants located within hotels where the declared room tariff "
+        "exceeds 7,500 rupees per night are taxed at 18% GST with input tax credit."
+    )
+
+
+def test_stemming_does_not_collapse_genuinely_different_words():
+    """The stemmer is crude on purpose; it must still not match unrelated terms."""
+    fact = ExpectedFact("Zepto is not profitable", must_include=("Zepto", "loss"))
+    assert not fact.covered_by("Zepto reported a net profit of 100 crore rupees.")
+    assert fact.covered_by("Zepto reported a net loss of 1,248 crore rupees.")

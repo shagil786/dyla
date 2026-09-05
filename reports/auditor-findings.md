@@ -4,12 +4,12 @@ Run mode: **offline-fixtures / reuse=True**.
 
 ## 1. Verdicts on the analyst's own answers
 
-- Claims audited: **28** across 8 questions
+- Claims audited: **29** across 8 questions
 - Auditor objected to: **0**
 
 | Verdict | Claims |
 | --- | --- |
-| supported | 28 |
+| supported | 29 |
 | unsupported | 0 |
 | contradicted | 0 |
 | uncited | 0 |
@@ -23,7 +23,7 @@ Run mode: **offline-fixtures / reuse=True**.
 | 5 | Who is the chief technology officer of Zerodha, and what is their aca… | complete | 4 | 0 |
 | 6 | Compare the most recent full-year revenues of Infosys and Wipro in ru… | complete | 3 | 0 |
 | 7 | How did Zepto's valuation change across its funding rounds up to its … | complete | 3 | 0 |
-| 8 | State whether Zerodha, Infosys, Wipro, and Zepto are profitable accor… | complete | 3 | 0 |
+| 8 | State whether Zerodha, Infosys, Wipro, and Zepto are profitable accor… | complete | 4 | 0 |
 
 ### Every objection, in full
 
@@ -85,6 +85,6 @@ _Every planted defect was caught._
 
 **`swapped_entity` → unsupported**
 
-- Original: Infosys is headquartered in Bengaluru and is among the largest software services exporters in India.
-- Planted: Zerodha is headquartered in Bengaluru and is among the largest software services exporters in India.
-- Auditor: The claim is attributed to zerodha, which none of the fetched sources mention. Whatever else the sources confirm is about something else.
+- Original: Nithin Kamath is the chief executive officer of Zerodha.
+- Planted: Nithin Kamath is the chief executive officer of Infosys.
+- Auditor: The claim is attributed to infosys, which none of the fetched sources mention. Whatever else the sources confirm is about something else.

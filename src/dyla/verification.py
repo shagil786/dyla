@@ -641,6 +641,18 @@ def on_topic(claim_text: str, source_text: str) -> bool:
         if claim_entities
         else 0.0
     )
+    # A claim about a named subject is not addressed by a page that never names
+    # it, however similar the wording. Financial sentences are near-identical
+    # boilerplate once the company name is removed -- "X reported a net profit
+    # of N crore rupees for the financial year 2025" -- so Infosys's filing
+    # scored 0.88 word overlap against a *Zerodha* claim with zero entity
+    # overlap, was accepted as on-topic, found not to state Zerodha's figure,
+    # and used as grounds to reject a true and correctly cited claim. That is
+    # how Q8 lost every profitability claim it had. When the claim names
+    # entities, sharing one is necessary; word overlap can then only add
+    # topicality, never manufacture it.
+    if claim_entities and entity_topicality == 0.0:
+        return False
     return max(word_topicality, entity_topicality) >= TOPICALITY_FLOOR
 
 

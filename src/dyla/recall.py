@@ -72,6 +72,22 @@ def _same_magnitude(wanted: Any, candidate: Any) -> bool:
     return wanted.matches(candidate) or wanted.value == candidate.value
 
 
+def _stem(word: str) -> str:
+    """Suffix strip shared with the offline model's selector.
+
+    Kept as a local four-line function rather than imported from
+    ``dyla.offline``: the metric must not depend on the component it grades, or
+    a change to the model's notion of a word match would silently move the
+    score it is being measured against.
+    """
+    word = word.removesuffix("'s").removesuffix("s'")
+    for suffix in ("ability", "ations", "ation", "able", "ings", "ing", "ies",
+                   "ed", "es", "s"):
+        if len(word) > len(suffix) + 2 and word.endswith(suffix):
+            return word[: -len(suffix)]
+    return word
+
+
 @dataclass(frozen=True)
 class ExpectedFact:
     """One thing a complete answer to a question has to contain.
@@ -87,9 +103,17 @@ class ExpectedFact:
     numbers: tuple[str, ...] = ()
 
     def covered_by(self, claim_text: str) -> bool:
-        words = content_words(claim_text)
-        if not all(content_words(term) <= words for term in self.must_include):
-            return False
+        # Stems, not exact words. ``must_include=("hotel",)`` failed to match a
+        # claim saying "Restaurants located within hotels ... are taxed at 18%",
+        # so Q1 was reported as missing a fact the answer actually contained --
+        # the metric's own false positive, found while fixing the real ones it
+        # had exposed. A recall number that cries wolf gets switched off, taking
+        # its true findings with it, so the matcher is deliberately forgiving on
+        # morphology while staying strict on figures.
+        words = {_stem(word) for word in content_words(claim_text)}
+        for term in self.must_include:
+            if not {_stem(word) for word in content_words(term)} <= words:
+                return False
         if self.numbers:
             claim_values = extract_numbers(claim_text)
             for raw in self.numbers:

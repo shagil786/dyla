@@ -91,3 +91,40 @@ def test_the_system_prompt_is_not_a_source_of_question_or_evidence():
     assert question == "Any question?"
     assert len(evidence) == 1
     assert evidence[0]["url"] == "https://example.com/markets-wire/zerodha-profile"
+
+
+def test_claim_selection_covers_each_entity_the_question_asks_about():
+    """Regression: the selector ranked by raw overlap and lost the whole answer.
+
+    Asked whether four companies are profitable, the old top-k selector
+    returned four *revenue* sentences: one sentence naming two asked-about
+    companies scored 2 while every profitability sentence scored 1. It then
+    scored 4/4 supported -- 100% precision on 0% of what was asked. Selection
+    is greedy on newly covered question terms so the uncovered entities pull
+    their own sentences in.
+    """
+    from dyla.offline import CORPUS, OfflineModel, _source_id
+
+    evidence = [
+        {"text": page.text, "url": page.url, "title": page.title,
+         "source_id": _source_id(page.url), "chunk_id": "c0"}
+        for page in CORPUS
+    ]
+    question = ("State whether Zerodha, Infosys, Wipro, and Zepto are profitable "
+                "according to their latest published financials, and cite one source for each.")
+    text = " ".join(claim.text for claim in OfflineModel()._claims(question, evidence))
+
+    assert "profit" in text.lower()
+    assert "Zerodha" in text
+    assert "Zepto" in text
+
+
+def test_the_questions_vocabulary_matches_the_evidences():
+    """``profitable`` must reach ``profit``; ``Zepto's`` must reach ``Zepto``."""
+    from dyla.offline import _matching_terms, _tokens
+
+    wanted = _tokens("Is Zepto profitable and how did Zepto's valuation change?")
+    matched = _matching_terms(wanted, "Zepto reported a net profit and was valued at 5 billion.")
+    assert "profitable" in matched
+    assert "zepto's" in matched or "zepto" in matched
+    assert "valuation" in matched

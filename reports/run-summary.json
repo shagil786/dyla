@@ -2,48 +2,48 @@
   "mode": "offline-fixtures",
   "reuse_enabled": true,
   "model": "offline-extractive",
-  "total_wall_seconds": 0.2,
+  "total_wall_seconds": 0.25,
   "questions": [
     {
       "question": "What is the current goods and services tax (GST) rate applied to restaurant services in India?",
-      "run_id": "a360fbbd8f8a4d97b663ab4b63589204",
-      "wall_seconds": 0.022,
-      "web_searches": 4,
-      "web_fetches": 18,
-      "searches_skipped": 0,
-      "status": "complete"
-    },
-    {
-      "question": "Who is the current chief executive officer of Zerodha, and in which year did they take the role?",
-      "run_id": "5a84439d235147a7826ef8403f21565f",
-      "wall_seconds": 0.023,
-      "web_searches": 3,
-      "web_fetches": 17,
-      "searches_skipped": 0,
-      "status": "complete"
-    },
-    {
-      "question": "List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each.",
-      "run_id": "de8a57930ad449738bc791d036b28263",
-      "wall_seconds": 0.024,
-      "web_searches": 3,
-      "web_fetches": 9,
-      "searches_skipped": 0,
-      "status": "complete"
-    },
-    {
-      "question": "Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors?",
-      "run_id": "3b4d3c5a8cf24b56a2436a3a6d82cde4",
-      "wall_seconds": 0.023,
+      "run_id": "91d4b365a35143a8a53557e367b14505",
+      "wall_seconds": 0.029,
       "web_searches": 5,
       "web_fetches": 22,
       "searches_skipped": 0,
       "status": "complete"
     },
     {
+      "question": "Who is the current chief executive officer of Zerodha, and in which year did they take the role?",
+      "run_id": "271082e086be41ad9a8754b380be28ad",
+      "wall_seconds": 0.025,
+      "web_searches": 4,
+      "web_fetches": 21,
+      "searches_skipped": 0,
+      "status": "complete"
+    },
+    {
+      "question": "List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each.",
+      "run_id": "69a14decb59647339d60144685b3ee98",
+      "wall_seconds": 0.022,
+      "web_searches": 2,
+      "web_fetches": 9,
+      "searches_skipped": 0,
+      "status": "complete"
+    },
+    {
+      "question": "Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors?",
+      "run_id": "d0faecc1c06e42bab6f6c03c7b497467",
+      "wall_seconds": 0.021,
+      "web_searches": 4,
+      "web_fetches": 18,
+      "searches_skipped": 0,
+      "status": "complete"
+    },
+    {
       "question": "Who is the chief technology officer of Zerodha, and what is their academic background?",
-      "run_id": "78d551d2a9a84e96ae07dc59e8e69d61",
-      "wall_seconds": 0.019,
+      "run_id": "b32477d36ab34614a8f0c3648cd9410a",
+      "wall_seconds": 0.02,
       "web_searches": 0,
       "web_fetches": 4,
       "searches_skipped": 3,
@@ -51,17 +51,17 @@
     },
     {
       "question": "Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure.",
-      "run_id": "2477cbe73d61472bb6e291896f97978d",
-      "wall_seconds": 0.017,
-      "web_searches": 3,
-      "web_fetches": 15,
+      "run_id": "49405d71e6284dc29606dc3c65f690d5",
+      "wall_seconds": 0.021,
+      "web_searches": 4,
+      "web_fetches": 19,
       "searches_skipped": 7,
       "status": "complete"
     },
     {
       "question": "How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round?",
-      "run_id": "3321017905ce4ef6a367a0915a0c1ee3",
-      "wall_seconds": 0.016,
+      "run_id": "c4a25525417f477c966c91269ca457ff",
+      "wall_seconds": 0.017,
       "web_searches": 1,
       "web_fetches": 5,
       "searches_skipped": 9,
@@ -69,28 +69,28 @@
     },
     {
       "question": "State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each.",
-      "run_id": "f90d23c841ba4ec19c51dc9142088820",
-      "wall_seconds": 0.018,
-      "web_searches": 1,
-      "web_fetches": 5,
+      "run_id": "a065243d9d8b41209e621d7b243abd54",
+      "wall_seconds": 0.023,
+      "web_searches": 0,
+      "web_fetches": 4,
       "searches_skipped": 13,
       "status": "complete"
     }
   ],
   "totals": {
-    "input_tokens": 5825,
-    "output_tokens": 752,
+    "input_tokens": 5801,
+    "output_tokens": 755,
     "embedding_tokens": 1312,
     "estimated_cost": 0.0,
-    "duration_ms": 151,
-    "memory_hits": 61,
-    "searches": 6,
-    "fetches": 47,
+    "duration_ms": 168,
+    "memory_hits": 59,
+    "searches": 5,
+    "fetches": 48,
     "searches_skipped": 13,
     "cost_in_rupees": null,
     "cost_in_usd": null,
-    "counterfactual_inr": 0.125209,
-    "counterfactual_usd": 0.00132495
+    "counterfactual_inr": 0.125038,
+    "counterfactual_usd": 0.00132315
   },
   "pricing": {
     "model": "offline-extractive",
