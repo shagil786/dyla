@@ -1139,6 +1139,98 @@ def test_declining_to_answer_is_traced_as_a_decision(tmp_path):
     }
 
 
+def test_a_model_that_proposes_nothing_is_traced_as_withheld(tmp_path):
+    """Evidence was retrieved, and the model still found nothing to claim.
+
+    This is the second of the three routes to "Insufficient evidence.", and it
+    is the one the offline harness actually hits: evidence exists, but no
+    sentence clears the extractive model's floor, so it proposes zero claims.
+    Distinct from the uncited-claim case above -- there the model *did* propose
+    and validation struck it -- so the reason string has to differ, otherwise a
+    reader of the trace cannot tell "model found nothing" from "model guessed
+    and we caught it".
+    """
+
+    class NothingUseful:
+        """Stands in for the extractive offline model finding no usable sentence.
+
+        The limitation is the model's own, and the analyst passes it through
+        rather than inventing one -- which is the point: on this route the
+        wording that reaches the user comes from the component that actually
+        failed to find anything.
+        """
+
+        def complete(self, request):
+            return SimpleNamespace(
+                parsed=AnalystAnswer(answer="", claims=[],
+                                     limitations=["No supplied evidence answered the question."]),
+                input_tokens=1, output_tokens=1, estimated_cost=0.0,
+            )
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q one"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=NothingUseful(), resolver=FakeResolver(), memory=FakeMemory(),
+                         searcher=FakeSearcher(), fetcher=FakeFetcher(), index=FakeIndex(),
+                         embedder=FakeEmbedder(), planner=controlled_planner(plan),
+                         trace_writer=TraceWriter(tmp_path))
+
+    answer = asyncio.run(agent.run("Q", "run-no-claims"))
+
+    assert answer.answer == "Insufficient evidence."
+    assert answer.claims == []
+    assert "No supplied evidence answered the question." in answer.limitations
+
+    withheld = _trace_events(tmp_path, "run-no-claims", "answer_withheld")
+    assert withheld, "declining to answer must be traced, not inferred from an empty claim list"
+    assert withheld[0]["payload"]["reason"] == "model_proposed_no_claims"
+
+    # Evidence really was retrieved: this is not the empty-evidence early return.
+    selected = _trace_events(tmp_path, "run-no-claims", "evidence_selected")
+    assert selected and selected[0]["payload"]["count"] > 0
+
+    synthesized = _trace_events(tmp_path, "run-no-claims", "answer_synthesized")
+    assert synthesized[0]["payload"] == {
+        "claims_proposed": 0, "claims_kept": 0, "claims_rejected": 0, "bailed_out": True,
+    }
+
+
+def test_the_empty_evidence_shortcut_is_not_traced_as_a_withheld_answer(tmp_path):
+    """No evidence at all returns before the traced decision, and that is deliberate.
+
+    Pins the asymmetry so it stays a documented choice rather than a silent gap.
+    ``_synthesize`` returns early on ``not evidence``: there was no answer to
+    decline, because there was nothing to answer from. Emitting
+    ``answer_withheld`` there would claim a decision the agent never made, and
+    would collapse the distinction between "retrieval found nothing" and "the
+    model was shown evidence and could not use it" -- the two have different
+    fixes. The limitation string carries the difference instead.
+    """
+
+    class Model:
+        def complete(self, request):
+            raise AssertionError("empty evidence must not synthesize")
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}], entities=[], date_constraints=[])
+    agent = AnalystAgent(model=Model(), resolver=FakeResolver(), memory=FakeMemory(),
+                         searcher=FakeSearcher(), fetcher=FakeFetcher(), index=FakeIndex(evidence=[]),
+                         embedder=FakeEmbedder(), planner=controlled_planner(plan),
+                         trace_writer=TraceWriter(tmp_path))
+
+    answer = asyncio.run(agent.run("Q", "run-no-evidence"))
+
+    assert answer.answer == "Insufficient evidence."
+    assert answer.claims == []
+    assert answer.limitations == ["No retrieved evidence was available."]
+
+    # The model was never called (it would have raised), so nothing was weighed
+    # and nothing was declined.
+    assert _trace_events(tmp_path, "run-no-evidence", "answer_withheld") == []
+    assert _trace_events(tmp_path, "run-no-evidence", "answer_synthesized") == []
+
+    # Retrieval itself is still traced: the absence of evidence is recorded.
+    selected = _trace_events(tmp_path, "run-no-evidence", "evidence_selected")
+    assert selected and selected[0]["payload"]["count"] == 0
+
+
 def test_the_plan_is_traced_before_any_search_happens(tmp_path):
     """"Plan before searching" is a stated requirement; the log must show it."""
     plan = ResearchPlan(
