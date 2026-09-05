@@ -160,7 +160,7 @@ needs a call)
 | **P5-3** | ✅ **FIXED.** Claim-ID collision across runs. Claim IDs are per-answer (`c1`..`cN`), and `save_claim` upserted by bare ID — every run overwrote the previous run's rows, so durable memory held only the latest answer and audit feedback could never see back more than one run. Storage keys are now run-namespaced via `memory.memory_claim_id` at both write sites (auditor + orchestrator); answers/traces keep bare IDs; no production reader SELECTs by ID so nothing else changed. Post-fix `dyla.db`: 28 claims, 8 run prefixes, all supported. Behaviour delta, measured: `memory_hits` 7 → 61/suite, planner expands more subqueries (retrieval searches 9 → 19 baseline, 4 → 6 reuse), savings move to 12.7% / 24.1% (see WRITEUP §2–§3). | **DONE** |
 | **P5-4** | ✅ **FIXED.** Seeded-defect probes polluted `dyla.db`. The audit called the real `AuditorAgent.run`, which persisted every planted lie — the post-suite database held "Nithin Kamath is the CEO of Infosys" and the Singapore-Exchange fabrication *instead of* the real Q8 claims. `AuditorAgent.run` takes `persist=False` for read-only probes (still reads live memory, writes nothing); `run_suite.py` passes it. Post-fix: 0 fabricated rows, 0 warnings. | **DONE** |
 | **P5-5** | ✅ **FIXED.** Accepted cross-checks left no trace event. Rejections surfaced via `claim_rejected`, but the 24 corroboration fetches per run that *confirmed* a claim were metrics-only — "every tool call and what came back" had a hole. New `claim_corroborated` event (accepted/source/checked/detail), added to the validator allowlist; committed traces carry 14 (reuse) / 13 (no-reuse), matching `corroboration_searches` exactly. | **DONE** |
-| **P5-6** | `MemoryStore.add_memory` has **no production callers** (`grep -rn "\.add_memory(" src/ scripts/` → definition only). Evidence flows through the vector store; claims through `save_claim`. Either wire evidence records through it or remove it — a public store method nothing calls is the next exhibit for a §4-style "written, committed, described, not wired" paragraph. Breaking API change either way; needs a call before work starts. | **OPEN** |
+| **P5-6** | ✅ **DONE — removed.** `MemoryStore.add_memory` had no production callers (definition + tests only). Call made: remove, not wire — evidence already lives in the vector store, claims flow through `save_claim`, and wiring a second writer would duplicate state and reintroduce the content-hash overwrite shape (`sha256(kind + text)` IDs collide across runs with different entity lists). Deleted the method, its now-unused `hashlib` import, and re-seeded all `test_memory.py` fixtures through `save_claim` (the store's single real writer); the stable-order test additionally asserts the `source_ids` round-trip it previously seeded-but-never-checked. Suite holds at 319 passed. Same precedent as the Azure removal and the P4-4 index removal: dead code deleted, not carried. | **DONE** |
 | **P5-7** | P3-3 re-confirmation after the memory fix: `scripts/experiment_adversarial_analyst.py` both modes → still byte-identical 8/8; `runlogs/P3-3-result-*.txt` unchanged. | **DONE** |
 
 Red proof for the P5-3–P5-5 tests (fix stashed, tests kept): the two auditor
@@ -183,9 +183,10 @@ fails; restored → 319 passed. Full record: `runlogs/P5-memory-proof.md`.
    measured and pinned), P3-4 (closed — P1-5 is the completed form, see its
    row) and all of P4 are done. P3-2 is **DEFERRED** with a recorded reason,
    not silently dropped — see its row. This session (Part 4) closed P5-1
-   through P5-5 plus P5-7. The open items are **P5-6** (`add_memory` dead API:
-   wire or remove) and the standing live-key prerequisite for P3-3's real
-   experiment, P3-2's authority signals, and P2's live mode.
+   through P5-7, including P5-6 (dead `add_memory` API removed per explicit
+   call). No code items remain open: the only outstanding prerequisite is a
+   live key for P3-3's real experiment, P3-2's authority signals, and P2's
+   live mode.
 
 5. ✅ **Qdrant entity-overwrite bug FIXED.** `QdrantVectorStore.upsert()` now
    reads the stored `entity_ids` for each point and unions them before writing.

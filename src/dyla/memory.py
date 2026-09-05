@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 import string
@@ -228,45 +227,6 @@ class MemoryStore:
             ORDER BY canonical_name COLLATE NOCASE, id, candidate
             """
         ).fetchall()
-
-    @_synchronized
-    def add_memory(
-        self,
-        text: str,
-        *,
-        kind: str,
-        entity_ids: list[str] | None = None,
-        source_ids: list[str] | None = None,
-        verified: bool = False,
-        record_id: str | None = None,
-        verdict_status: str | None = None,
-    ) -> None:
-        record_id = record_id or hashlib.sha256(
-            f"{kind}\0{text}".encode()
-        ).hexdigest()
-        self.connection.execute(
-            """
-            INSERT INTO memory_records
-              (id, kind, text, entity_ids_json, source_ids_json, verified, verdict_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-              kind=excluded.kind, text=excluded.text,
-              entity_ids_json=excluded.entity_ids_json,
-              source_ids_json=excluded.source_ids_json,
-              verified=excluded.verified,
-              verdict_status=excluded.verdict_status
-            """,
-            (
-                record_id,
-                kind,
-                text,
-                json.dumps(entity_ids or []),
-                json.dumps(source_ids or []),
-                int(verified),
-                verdict_status,
-            ),
-        )
-        self.connection.commit()
 
     @_synchronized
     def save_research_warning(self, warning: str) -> int:
