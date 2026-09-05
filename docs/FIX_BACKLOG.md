@@ -162,6 +162,7 @@ needs a call)
 | **P5-5** | ✅ **FIXED.** Accepted cross-checks left no trace event. Rejections surfaced via `claim_rejected`, but the 24 corroboration fetches per run that *confirmed* a claim were metrics-only — "every tool call and what came back" had a hole. New `claim_corroborated` event (accepted/source/checked/detail), added to the validator allowlist; committed traces carry 14 (reuse) / 13 (no-reuse), matching `corroboration_searches` exactly. | **DONE** |
 | **P5-6** | ✅ **DONE — removed.** `MemoryStore.add_memory` had no production callers (definition + tests only). Call made: remove, not wire — evidence already lives in the vector store, claims flow through `save_claim`, and wiring a second writer would duplicate state and reintroduce the content-hash overwrite shape (`sha256(kind + text)` IDs collide across runs with different entity lists). Deleted the method, its now-unused `hashlib` import, and re-seeded all `test_memory.py` fixtures through `save_claim` (the store's single real writer); the stable-order test additionally asserts the `source_ids` round-trip it previously seeded-but-never-checked. Suite holds at 319 passed. Same precedent as the Azure removal and the P4-4 index removal: dead code deleted, not carried. | **DONE** |
 | **P5-7** | P3-3 re-confirmation after the memory fix: `scripts/experiment_adversarial_analyst.py` both modes → still byte-identical 8/8; `runlogs/P3-3-result-*.txt` unchanged. | **DONE** |
+| **P5-8** | Local completion receipt incorporated as `docs/RECEIPT.md` — verified against this HEAD by execution (319 passed, 8/8 + 20/20 both modes as committed), not pasted raw: stale counts refreshed, the false no-timeout claim struck with code cites, the padded 22-item failure list de-duplicated to ~15 with each item kept/corrected/rejected, and the production verdict re-scoped to what the brief actually grades. | **DONE** |
 
 Red proof for the P5-3–P5-5 tests (fix stashed, tests kept): the two auditor
 persistence tests fail (overwrite returns; probe rows persist), the two
@@ -183,10 +184,10 @@ fails; restored → 319 passed. Full record: `runlogs/P5-memory-proof.md`.
    measured and pinned), P3-4 (closed — P1-5 is the completed form, see its
    row) and all of P4 are done. P3-2 is **DEFERRED** with a recorded reason,
    not silently dropped — see its row. This session (Part 4) closed P5-1
-   through P5-7, including P5-6 (dead `add_memory` API removed per explicit
-   call). No code items remain open: the only outstanding prerequisite is a
-   live key for P3-3's real experiment, P3-2's authority signals, and P2's
-   live mode.
+   through P5-8, including P5-6 (dead `add_memory` API removed per explicit
+   call) and P5-8 (verified completion receipt). No code items remain open:
+   the only outstanding prerequisite is a live key for P3-3's real
+   experiment, P3-2's authority signals, and P2's live mode.
 
 5. ✅ **Qdrant entity-overwrite bug FIXED.** `QdrantVectorStore.upsert()` now
    reads the stored `entity_ids` for each point and unions them before writing.
