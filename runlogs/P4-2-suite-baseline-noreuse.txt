@@ -1,0 +1,13 @@
+mode=offline-fixtures reuse=False passed=8/8 in 0.2s
+  complete      0.02s  search=1 fetch=8  What is the current goods and services tax (GST) rate applie
+  complete      0.02s  search=1 fetch=9  Who is the current chief executive officer of Zerodha, and i
+  complete      0.02s  search=1 fetch=9  List the three largest software services exporters by revenu
+  complete      0.02s  search=1 fetch=9  Which Indian quick-commerce startups raised funding rounds a
+  complete      0.02s  search=1 fetch=7  Who is the chief technology officer of Zerodha, and what is 
+  complete      0.02s  search=1 fetch=9  Compare the most recent full-year revenues of Infosys and Wi
+  complete      0.02s  search=1 fetch=7  How did Zepto's valuation change across its funding rounds u
+  complete      0.03s  search=2 fetch=9  State whether Zerodha, Infosys, Wipro, and Zepto are profita
+seeded-defect audit: 20/20 caught
+wrote /tmp/dyla-run/reports/run-summary-no-reuse.json
+wrote /tmp/dyla-run/reports/auditor-findings-no-reuse.md
+archived logs to /tmp/dyla-run/runs/no-reuse

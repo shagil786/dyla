@@ -13,6 +13,7 @@ from .ingest import ingest_document
 from .models import ModelRequest
 from .ports import SearchProvider
 from .query_planner import QueryPlanner
+from .verification import corroborates, extract_numbers, extract_years, on_topic
 
 _REJECTED_VERDICTS = frozenset({"unsupported", "contradicted"})
 
@@ -83,6 +84,7 @@ class AnalystAgent:
                         "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0,
                         "failed_searches": 0, "failed_fetches": 0, "failed_ingestions": 0,
                         "claims_blocked_by_audit_feedback": 0,
+                        "corroboration_searches": 0, "corroboration_fetches": 0,
                         "searches_skipped": 0, "evidence_reused": 0, "reuse_corrections": 0,
                         "embedding_tokens": 0}
         self.embedder = _CountingEmbedder(embedder, self.metrics)
@@ -446,16 +448,6 @@ class AnalystAgent:
                     ],
                 })
                 continue
-            if claim.confidence.casefold() in {"low", "medium", "weak"} and len({citation.source_id for citation in mapped}) < 2:
-                limitations.append(f"Claim {claim.id} was rejected for lacking independent evidence.")
-                self._trace(run_id, "claim_rejected", {
-                    "claim_id": claim.id, "reason": "insufficient_corroboration",
-                    "detail": "A claim the model was not confident about rested on a single source.",
-                    "claim_text": claim.text,
-                    "confidence": claim.confidence,
-                    "distinct_sources": len({citation.source_id for citation in mapped}),
-                })
-                continue
             if _restates_rejected_claim(claim.text, rejected_before):
                 # The prompt above asks the model not to restate these. Asking is
                 # advisory; this filter is not. The loop has to hold even when the
@@ -472,6 +464,21 @@ class AnalystAgent:
                     "claim_text": claim.text,
                 })
                 continue
+            if self._needs_corroboration(claim, memories):
+                outcome = self._corroborate(claim, run_id)
+                if not outcome["accepted"]:
+                    limitations.append(
+                        f"Claim {claim.id} was rejected for lacking independent evidence."
+                    )
+                    self._trace(run_id, "claim_rejected", {
+                        "claim_id": claim.id, "reason": "insufficient_corroboration",
+                        "detail": outcome["detail"],
+                        "claim_text": claim.text,
+                        "confidence": claim.confidence,
+                        "distinct_sources": len({citation.source_id for citation in mapped}),
+                        "corroboration_sources_checked": outcome["checked"],
+                    })
+                    continue
             valid_claims.append(claim)
         self._trace(run_id, "answer_synthesized", {
             "claims_proposed": len(answer.claims),
@@ -489,6 +496,134 @@ class AnalystAgent:
             })
             return AnalystAnswer(answer="Insufficient evidence.", claims=[], limitations=list(dict.fromkeys([*limitations, *date_limitations])))
         return AnalystAnswer(answer=answer.answer, claims=valid_claims, limitations=list(dict.fromkeys([*limitations, *date_limitations])))
+
+    def _needs_corroboration(self, claim: Any, memories: list[MemoryRecord]) -> bool:
+        """Decide whether a claim must be cross-checked against a second source.
+
+        Deliberately **not** keyed on the model's self-reported confidence
+        alone. A model that labels every claim "high" is exactly the failure
+        mode a confidence-keyed cross-check cannot see, so the gates are
+        properties the model does not control:
+
+        * the claim rests on a single distinct cited source;
+        * no previously *supported* claim in memory restates it (the auditor
+          already verified that assertion against independently fetched
+          sources, which is stronger evidence than a fresh cross-check);
+        * and it carries a material fact — a figure or a year — or the model
+          itself flagged low confidence.
+
+        Confidence survives only as one trigger among equals, never as the
+        whole decision.
+        """
+        distinct_sources = {citation.source_id for citation in claim.citations}
+        if len(distinct_sources) != 1:
+            return False
+        if self._restated_by_supported_memory(claim.text, memories):
+            return False
+        if extract_numbers(claim.text) or extract_years(claim.text):
+            return True
+        return claim.confidence.casefold() in {"low", "medium", "weak"}
+
+    def _restated_by_supported_memory(self, text: str, memories: list[MemoryRecord]) -> bool:
+        """True when a prior run's *supported* claim covers this assertion.
+
+        Both conditions must hold: the wording must restate the stored claim
+        (fingerprint overlap), and the stored claim must state the same
+        material facts. The fingerprint ignores numbers by construction, so
+        wording alone must not bless a claim whose figure differs from the
+        verified one — a stored "1,62,990 crore" claim does not cover a new
+        "1,53,670 crore" claim even though every word matches.
+        """
+        prior = [
+            record.text for record in memories
+            if record.kind == "claim" and record.text
+            and record.verified
+            and (record.verdict_status or "") == "supported"
+        ]
+        return any(
+            _restates_rejected_claim(text, [record_text]) and corroborates(text, record_text)
+            for record_text in prior
+        )
+
+    def _corroborate(self, claim: Any, run_id: str = "") -> dict:
+        """Cross-check the claim against a second, independently fetched source.
+
+        Returns ``{"accepted": bool, "source_url": str | None, "detail": str,
+        "checked": int}``.
+
+        The corroborating page is evidence for *this* decision only. It is
+        never attached to ``claim.citations`` and never returned as a
+        ``Citation``: the auditor later re-fetches exactly the sources the
+        claim cites, and making it verify against a paraphrased page it was
+        never asked about manufactures false ``contradicted`` verdicts.
+
+        Every non-cited candidate within ``search_limit`` is checked, not just
+        the first two: a near-verbatim page that disagrees can outrank the
+        agreeing one, and stopping early would reject claims that do have
+        independent support.
+
+        Failures fail open — a search outage or an unreadable page is not
+        evidence against the claim, and the auditor still verifies the cited
+        source — except for claims the model itself flagged low confidence:
+        their own uncertainty plus no independent confirmation is the one case
+        that rejects without on-topic counter-evidence.
+        """
+        cited_urls = {citation.url for citation in claim.citations}
+        try:
+            hits = self.searcher.search(claim.text, self.search_limit)
+        except Exception:
+            return {
+                "accepted": True, "source_url": None,
+                "detail": "The cross-check search failed; the claim is left to the auditor.",
+                "checked": 0,
+            }
+        self.metrics["corroboration_searches"] += 1
+        relevant_but_silent: list[str] = []
+        for hit in hits:
+            if hit.url in cited_urls:
+                continue
+            self.metrics["corroboration_fetches"] += 1
+            try:
+                document = self.fetcher.fetch(hit.url)
+            except Exception:
+                continue
+            text = str(getattr(document, "text", "") or "")
+            if not text:
+                continue
+            if not on_topic(claim.text, text):
+                continue
+            if corroborates(claim.text, text):
+                return {
+                    "accepted": True, "source_url": hit.url,
+                    "detail": f"Cross-checked against {hit.url}, which independently "
+                              "states the claim's facts.",
+                    "checked": len(relevant_but_silent) + 1,
+                }
+            relevant_but_silent.append(hit.url)
+        if relevant_but_silent:
+            return {
+                "accepted": False, "source_url": None,
+                "detail": "Independent sources on this claim's subject were fetched "
+                          "(" + ", ".join(relevant_but_silent) + ") but none states the "
+                          "claim's figure; a single cited source is not enough for a "
+                          "figure of this kind.",
+                "checked": len(relevant_but_silent),
+            }
+        low_confidence = claim.confidence.casefold() in {"low", "medium", "weak"}
+        if low_confidence:
+            return {
+                "accepted": False, "source_url": None,
+                "detail": "No independent source on this claim's subject could be found, "
+                          "and the model itself flagged the claim "
+                          f"{claim.confidence!r} confidence.",
+                "checked": 0,
+            }
+        return {
+            "accepted": True, "source_url": None,
+            "detail": "No independent source on this claim's subject was found; the claim "
+                      "is left to the auditor.",
+            "checked": 0,
+        }
 
     @staticmethod
     def _citation_maps(citation: Citation, keys: set[tuple[str, str, str | None]]) -> bool:

@@ -216,10 +216,14 @@ def test_an_under_corroborated_claim_is_traced_with_its_reason_code(orchestrator
     It used to have no trace-level assertion at all: no test drove a claim
     through the real analyst with low confidence and a single source, so a
     change that silently dropped or renamed the event would have stayed green.
+
+    The claim must be one the cross-check genuinely fails: it asserts a year
+    that every other source on the same subject contradicts by silence, so the
+    analyst rejects it before the auditor ever sees it.
     """
     runner, root = orchestrator
     runner.analyst.model = _SingleClaimModel(
-        "Nithin Kamath is the chief executive officer of Zerodha.",
+        "Nithin Kamath has served as chief executive officer of Zerodha since 2019.",
         confidence="low",
     )
 
@@ -230,7 +234,10 @@ def test_an_under_corroborated_claim_is_traced_with_its_reason_code(orchestrator
     event = next(item for item in payloads if item["reason"] == "insufficient_corroboration")
     assert event["confidence"] == "low"
     assert event["distinct_sources"] == 1
-    assert event["claim_text"] == "Nithin Kamath is the chief executive officer of Zerodha."
+    assert event["corroboration_sources_checked"] >= 1
+    assert event["claim_text"] == (
+        "Nithin Kamath has served as chief executive officer of Zerodha since 2019."
+    )
 
 
 def test_audit_feedback_blocking_is_traced_with_its_reason_code(orchestrator):
@@ -240,11 +247,16 @@ def test_audit_feedback_blocking_is_traced_with_its_reason_code(orchestrator):
     trace event: the machine-readable record a reviewer actually opens. Two
     real runs — the first audited and rejected, the second restating the claim
     — are the honest way to exercise it.
+
+    The claim is deliberately figure-free: a figure-bearing single-source
+    claim is now cross-checked (and rejected) by the analyst before the
+    auditor ever sees it, so this scenario uses what the auditor itself must
+    catch — a true statement attributed to the wrong company.
     """
     runner, root = orchestrator
 
     runner.analyst.model = _SingleClaimModel(
-        "Nithin Kamath took over as chief executive officer of Zerodha in 2019."
+        "Nithin Kamath is the chief executive officer of Infosys."
     )
     first = asyncio.run(runner.ask("Who is the current chief executive officer of Zerodha?"))
     first_audits = [
@@ -257,7 +269,7 @@ def test_audit_feedback_blocking_is_traced_with_its_reason_code(orchestrator):
     # system prompt and restates the claim; the post-synthesis filter is the
     # backstop the trace must record.
     runner.analyst.model = _SingleClaimModel(
-        "In 2019, Nithin Kamath became the chief executive officer of Zerodha."
+        "Nithin Kamath runs Infosys as its chief executive officer."
     )
     second = asyncio.run(runner.ask("Who is the current chief executive officer of Zerodha?"))
 

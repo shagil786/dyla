@@ -18,8 +18,10 @@ from dyla.verification import (
     MATCH_TOLERANCE,
     NumericFact,
     content_words,
+    corroborates,
     extract_numbers,
     extract_years,
+    on_topic,
     verify_claim,
 )
 
@@ -120,6 +122,70 @@ def test_off_topic_source_is_uncited_not_unsupported():
     source = "The Bengaluru metro Purple Line extension opened to passengers on Saturday."
     result = verify_claim(CLAIM_REVENUE, {"https://example.com/x": source})
     assert result.status == "uncited", result.explanation
+
+
+# --------------------------------------------------------------------------
+# corroborates(): the independent cross-check question
+# --------------------------------------------------------------------------
+
+def test_corroborates_when_an_independent_source_states_the_figure():
+    source = (
+        "Infosys Limited reported consolidated revenue of Rs 1,53,670 crore for the "
+        "financial year 2024 according to its annual report."
+    )
+    assert corroborates(CLAIM_REVENUE, source)
+
+
+def test_corroborates_a_rounded_restatement_within_tolerance():
+    source = "Infosys posted revenue of 1.54 lakh crore rupees for FY2024."
+    assert corroborates(CLAIM_REVENUE, source)
+
+
+def test_does_not_corroborate_when_the_source_is_on_topic_but_states_a_different_figure():
+    source = (
+        "Infosys Limited reported consolidated revenue of Rs 1,22,000 crore for the "
+        "financial year 2024, the company said in its annual report."
+    )
+    assert not corroborates(CLAIM_REVENUE, source)
+
+
+def test_does_not_corroborate_when_the_figure_belongs_to_another_subject():
+    source = "The Nifty index closed at 24,500 points while gold traded near 72,000 rupees."
+    assert not corroborates(CLAIM_REVENUE, source)
+
+
+def test_a_multi_figure_claim_is_corroborated_by_either_figure():
+    """A comparison claim needs one page per company; either confirms it."""
+    claim = "Infosys reported revenue of 1,53,670 crore rupees in FY2024 while Wipro reported 89,088 crore rupees."
+    infosys_page = "Infosys Limited reported consolidated revenue of 1,53,670 crore rupees for FY2024."
+    wipro_page = "Wipro Limited reported consolidated revenue of 89,088 crore rupees for FY2024."
+    assert corroborates(claim, infosys_page)
+    assert corroborates(claim, wipro_page)
+
+
+def test_year_only_claims_are_corroborated_by_the_year():
+    claim = "Nithin Kamath has served as chief executive officer of Zerodha since 2010."
+    source = "Zerodha was founded in 2010 by Nithin Kamath, who remains chief executive officer."
+    assert corroborates(claim, source)
+    no_year = "Zerodha is the largest retail broker in India by active clients."
+    assert not corroborates(claim, no_year)
+
+
+def test_figureless_claims_need_an_actual_restatement_to_corroborate():
+    claim = "Nithin Kamath is the chief executive officer of Zerodha."
+    restated = (
+        "Nithin Kamath, the chief executive officer of Zerodha, addressed the "
+        "brokerage's annual results call."
+    )
+    assert corroborates(claim, restated)
+    adjacent = "Zerodha is a Bengaluru-based brokerage founded by the Kamath brothers."
+    assert not corroborates(claim, adjacent)
+
+
+def test_on_topic_and_corroborates_agree_on_the_relevance_gate():
+    claim = "Infosys reported revenue of 1,53,670 crore rupees in FY2024."
+    assert on_topic(claim, "Infosys Limited published its annual report for FY2024.")
+    assert not on_topic(claim, "The Bengaluru metro opened a new extension on Saturday.")
 
 
 def test_rounding_band_between_thresholds_is_unsupported_not_contradicted():

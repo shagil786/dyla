@@ -194,6 +194,170 @@ def test_analyst_marks_weak_claim_without_independent_evidence():
     assert any("independent" in item.lower() for item in answer.limitations)
 
 
+# ---------------------------------------------------------------------------
+# Cross-check (corroboration) of single-source claims
+#
+# The cross-check gate must not be keyed on the model's self-reported
+# confidence: a model that labels everything "high" is exactly the failure
+# mode a confidence-keyed check cannot see. These tests drive real claims
+# through bespoke search/fetch pairs so the corroboration outcome is
+# controlled.
+# ---------------------------------------------------------------------------
+
+def _figure_claim_model(text="In 2024, Acme opened 250 new stores.", confidence="high"):
+    return type("Model", (), {"complete": lambda self, request: type("R", (), {"parsed": AnalystAnswer(
+        answer=text,
+        claims=[Claim(id="c", text=text,
+                      citations=[Citation(url="https://example.com/1", title="Source",
+                                          source_id="s1", chunk_id="c1")],
+                      confidence=confidence)],
+        limitations=[],
+    )})()})()
+
+
+class _CorroborationSearcher:
+    """Returns the same hit for every query, remembering the query."""
+
+    def __init__(self, urls=("https://example.com/other",)):
+        self.urls = list(urls)
+
+    def search(self, query, limit=5):
+        return [SearchHit(url=url, title="Source", snippet=query, published_at=None)
+                for url in self.urls]
+
+
+def _agent_with_corroboration(model, searcher, fetcher_text):
+    class Fetcher:
+        def fetch(self, url):
+            return type("Document", (), {"source_id": url, "url": url, "title": "Source",
+                                         "text": fetcher_text, "published_at": None})()
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}],
+                        entities=[], date_constraints=[])
+    return make_agent(model, plan), Fetcher()
+
+
+def test_single_source_figure_claim_is_rejected_when_independent_sources_do_not_state_the_figure():
+    model = _figure_claim_model()
+    agent, fetcher = _agent_with_corroboration(model, _CorroborationSearcher(), fetcher_text=(
+        "Acme opened fewer than 50 new stores in 2024 and closed several older ones."
+    ))
+    agent.fetcher = fetcher
+
+    answer = asyncio.run(agent.run("Q", "run-no-corroboration"))
+
+    assert answer.claims == []
+    assert any("independent" in item.lower() for item in answer.limitations)
+    assert agent.metrics["corroboration_searches"] == 1
+    assert agent.metrics["corroboration_fetches"] == 1
+
+
+def test_single_source_figure_claim_is_accepted_when_an_independent_source_states_the_figure():
+    model = _figure_claim_model()
+    agent, fetcher = _agent_with_corroboration(model, _CorroborationSearcher(), fetcher_text=(
+        "Acme opened 250 new stores in 2024, its annual report confirmed, taking the "
+        "total past 1,000 nationwide."
+    ))
+    agent.fetcher = fetcher
+
+    answer = asyncio.run(agent.run("Q", "run-corroborated"))
+
+    assert [claim.text for claim in answer.claims] == ["In 2024, Acme opened 250 new stores."]
+    assert agent.metrics["corroboration_searches"] == 1
+
+
+def test_the_cross_check_is_not_keyed_on_self_reported_confidence():
+    """A claim the model calls 'high' confidence must still be cross-checked.
+
+    This is the gate the old code got backwards: confidence is a model output,
+    so a model that labels everything 'high' used to bypass corroboration
+    entirely. The figure-bearing claim below is rejected despite 'high'.
+    """
+    model = _figure_claim_model(confidence="high")
+    agent, fetcher = _agent_with_corroboration(model, _CorroborationSearcher(), fetcher_text=(
+        "Acme opened 20 new stores in 2024, far below its earlier target."
+    ))
+    agent.fetcher = fetcher
+
+    answer = asyncio.run(agent.run("Q", "run-high-confidence"))
+
+    assert answer.claims == []
+    assert agent.metrics["corroboration_searches"] == 1
+
+
+def test_a_claim_restated_by_a_supported_memory_skips_the_cross_check():
+    """A prior run's *supported* verdict is stronger than a fresh search."""
+    text = "Acme opened 250 new stores in 2024."
+    memory = _MemoryWithVerdicts([_claim_record(text, "supported", verified=True)])
+    agent = _agent_with(memory, _ModelReturning(text))
+
+    result = asyncio.run(agent.run("How many stores did Acme open?", "run-covered"))
+
+    assert [claim.text for claim in result.claims] == [text]
+    assert agent.metrics["corroboration_searches"] == 0
+
+
+def test_a_supported_memory_with_a_different_figure_does_not_cover_the_claim():
+    """Wording overlap is not enough: the stored figure must agree.
+
+    The fingerprint used for restatement ignores numbers by construction, so a
+    supported memory claiming 250 stores must not bless a new claim of 1,250 —
+    the cross-check must still run against independent sources.
+    """
+    model = _figure_claim_model(text="Acme opened 1,250 new stores in 2024.")
+    memory = _MemoryWithVerdicts([_claim_record("Acme opened 250 new stores in 2024.",
+                                                "supported", verified=True)])
+    agent = _agent_with(memory, model)
+    agent.searcher = _CorroborationSearcher()
+
+    class Fetcher:
+        def fetch(self, url):
+            return type("Document", (), {"source_id": url, "url": url, "title": "Source",
+                                         "text": ("Acme opened 20 new stores in 2024, far "
+                                                  "below its earlier target."),
+                                         "published_at": None})()
+
+    agent.fetcher = Fetcher()
+
+    result = asyncio.run(agent.run("How many stores did Acme open?", "run-uncovered"))
+
+    assert result.claims == []
+    assert agent.metrics["corroboration_searches"] == 1
+
+
+def test_an_off_topic_page_quoting_the_same_number_is_not_corroboration_or_contradiction():
+    """A page quoting the same figure about something else proves nothing.
+
+    It must not count as corroboration, but equally must not reject a claim it
+    does not address: an off-topic hit is no information either way, and a
+    high-confidence claim survives to the auditor, which verifies the cited
+    source.
+    """
+    model = _figure_claim_model()
+    agent, fetcher = _agent_with_corroboration(model, _CorroborationSearcher(), fetcher_text=(
+        "The Nifty index closed above 250 points in 2024 for the first time."
+    ))
+    agent.fetcher = fetcher
+
+    answer = asyncio.run(agent.run("Q", "run-off-topic"))
+
+    assert [claim.text for claim in answer.claims] == ["In 2024, Acme opened 250 new stores."]
+    assert agent.metrics["corroboration_fetches"] == 1
+
+
+def test_an_off_topic_page_still_fails_a_low_confidence_claim_closed():
+    """Only the low-confidence carve-out rejects on absence of any on-topic source."""
+    model = _figure_claim_model(confidence="low")
+    agent, fetcher = _agent_with_corroboration(model, _CorroborationSearcher(), fetcher_text=(
+        "The Nifty index closed above 250 points in 2024 for the first time."
+    ))
+    agent.fetcher = fetcher
+
+    answer = asyncio.run(agent.run("Q", "run-off-topic-low"))
+
+    assert answer.claims == []
+
+
 def test_analyst_rejects_narrative_when_model_returns_no_supported_claims():
     model = type("Model", (), {"complete": lambda self, request: type("R", (), {"parsed": AnalystAnswer(answer="unsupported narrative", claims=[], limitations=[])})()})()
     plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}], entities=[], date_constraints=[])

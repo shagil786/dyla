@@ -623,6 +623,77 @@ def verify_claim(
     )
 
 
+def on_topic(claim_text: str, source_text: str) -> bool:
+    """Whether ``source_text`` addresses the claim's subject at all.
+
+    Word overlap alone is brittle for short claims; entity overlap rescues the
+    case where a source is squarely about the right company yet shares little
+    wording. Same signal verify_claim uses for its ``uncited`` decision, kept
+    here as the cheap relevance gate for corroboration candidates.
+    """
+    claim_words = content_words(claim_text)
+    if not claim_words:
+        return False
+    word_topicality = len(claim_words & content_words(source_text)) / len(claim_words)
+    claim_entities = proper_nouns(claim_text)
+    entity_topicality = (
+        len(claim_entities & proper_nouns(source_text)) / len(claim_entities)
+        if claim_entities
+        else 0.0
+    )
+    return max(word_topicality, entity_topicality) >= TOPICALITY_FLOOR
+
+
+def corroborates(
+    claim_text: str, source_text: str, known_entities: frozenset[str] | set[str] = frozenset()
+) -> bool:
+    """Whether ``source_text`` independently states the claim's material facts.
+
+    This is the cross-check question, and it is deliberately weaker than
+    ``verify_claim(...) == supported``. Corroboration asks only "is there
+    independent evidence for the headline fact(s) of this claim?" — not whether
+    the source fully verifies the claim. The differences matter:
+
+    * A multi-figure claim (a comparison of two companies' revenues) is
+      corroborated by a source stating *either* figure; requiring every figure
+      would demand one page cover the whole claim, which real sources rarely
+      do.
+    * Misattribution and polarity are not re-litigated here. The auditor
+      already checks the *cited* sources for those, and a cross-check page that
+      discusses the same figure in passing is enough to break a single-source
+      monopoly on the number.
+    * ``verify_claim`` returns ``unsupported`` when a source is on topic but
+      omits the figure — exactly the "relevant but not corroborating" state a
+      cross-check must distinguish from "off topic, no information", and the
+      reason this function answers yes/no rather than a verdict.
+
+    A source that does not address the claim's subject never corroborates,
+    whatever numbers it contains: a market report quoting the same index level
+    is not independent evidence for a revenue figure.
+    """
+    if not on_topic(claim_text, source_text):
+        return False
+    numbers = extract_numbers(claim_text)
+    years = extract_years(claim_text)
+    if numbers:
+        return any(
+            fact.matches(candidate)
+            for fact in numbers
+            for candidate in extract_numbers(source_text)
+        )
+    if years:
+        return bool(years & extract_years(source_text))
+    # No facts to cross-check: an independent restatement of the assertion is
+    # the only corroboration available. Require a sentence that substantially
+    # restates the claim, as the lexical branch of verify_claim does.
+    claim_words = content_words(claim_text)
+    best = max(
+        (_overlap(claim_words, sentence) for sentence in sentences(source_text)),
+        default=0.0,
+    )
+    return best >= LEXICAL_SUPPORT_FLOOR
+
+
 def _find_conflicting_value(fact: NumericFact, context: list[str]) -> NumericFact | None:
     """Find a same-kind number in on-topic text that clearly differs from ``fact``.
 
