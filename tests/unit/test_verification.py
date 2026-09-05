@@ -169,6 +169,71 @@ def test_negation_reversal_is_contradicted():
     assert result.status == "contradicted", result.explanation
 
 
+def test_negation_shared_with_the_source_cancels_instead_of_hiding_a_real_flip():
+    """The seeded 'negated_claim' mutation this check exists to catch.
+
+    The mutated claim carries TWO negation words — 'not taxed' and 'without
+    input tax credit' — and so does the source ('without input tax credit').
+    Judging negation parity by mere presence on each side counts the shared
+    'without' clause on both sides and waves the mutation through as
+    supported. Parity must be judged per shared word: 'taxed' is negated on
+    the claim side only.
+    """
+    claim = (
+        "Restaurant services in India are not taxed at 5% GST without input tax "
+        "credit for standalone restaurants."
+    )
+    source = (
+        "Restaurant services in India are taxed at 5% GST without input tax credit "
+        "for standalone restaurants. Restaurants located within hotels where the "
+        "declared room tariff exceeds 7,500 rupees per night are taxed at 18% GST "
+        "with input tax credit."
+    )
+    result = verify_claim(claim, {"https://example.com/x": source})
+    assert result.status == "contradicted", result.explanation
+
+
+def test_a_subclause_negation_in_a_weaker_sentence_cannot_override_a_better_restatement():
+    """Scope regression: a claim quoted verbatim by its source is supported.
+
+    The claim carries 'without input tax credit'; the source's second sentence
+    is about a different customer class that pays 'with input tax credit'. A
+    naive polarity check reads the second sentence as the claim's negation
+    even though the first sentence restates the claim exactly. A sentence may
+    only contradict when no better-matching sentence stays silent.
+    """
+    claim = (
+        "Restaurant services in India are taxed at 5% GST without input tax credit "
+        "for standalone restaurants."
+    )
+    source = (
+        "Restaurant services in India are taxed at 5% GST without input tax credit "
+        "for standalone restaurants. Restaurants located within hotels where the "
+        "declared room tariff exceeds 7,500 rupees per night are taxed at 18% GST "
+        "with input tax credit."
+    )
+    result = verify_claim(claim, {"https://example.com/x": source})
+    assert result.status == "supported", result.explanation
+
+
+def test_scope_discriminator_is_general_not_keyed_to_any_fixture_vocabulary():
+    """The same structure with unrelated wording must behave identically."""
+    healthy = "The Atlas device ships with a one-year warranty without a repair fee for home users."
+    source = (
+        "The Atlas device ships with a one-year warranty without a repair fee for "
+        "home users. Home users who ship the device with the extended plan pay a "
+        "repair fee of 60 dollars a year for a three-year warranty."
+    )
+    assert verify_claim(healthy, {"https://example.com/x": source}).status == "supported"
+
+    mutated = (
+        "The Atlas device does not ship with a one-year warranty without a repair "
+        "fee for home users."
+    )
+    result = verify_claim(mutated, {"https://example.com/x": source})
+    assert result.status == "contradicted", result.explanation
+
+
 def test_future_intent_does_not_contradict_a_present_tense_claim():
     """'aims to be profitable' must not be read as 'is not profitable'."""
     claim = "Zepto operates more than 250 dark stores across India."

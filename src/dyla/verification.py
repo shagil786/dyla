@@ -41,7 +41,11 @@ Known limits (stated here because the auditor's blind spots matter):
 * Co-reference is not resolved: "the company reported X" is matched by topical
   word overlap, not by knowing which company "the company" is.
 * Polarity detection uses a fixed antonym/negation table and will miss
-  paraphrased reversals.
+  paraphrased reversals. It is deliberately conservative in the other
+  direction too: a sentence may contradict only when no better-matching
+  sentence stays silent (scope gate), and negation parity is judged per
+  shared word, so a sub-clause negation both sides share ("…without input
+  tax credit…") cancels instead of manufacturing or masking a reversal.
 * A source that discusses two entities in one sentence can produce a false
   contradiction when the number belongs to the other entity.
 """
@@ -358,12 +362,53 @@ def _overlap(claim_words: set[str], other: str) -> float:
     return len(claim_words & content_words(other)) / len(claim_words)
 
 
+def _negation_scope(text: str) -> frozenset[str]:
+    """Content words a negation token reaches, i.e. its local scope.
+
+    Returns the content words that follow each negation token, up to three of
+    them (a negator binds its nearest words: "not taxed at 5% GST without input
+    tax credit" binds "taxed" first, and the second negator "without" opens its
+    own scope over "input tax credit"). Words from a scope are the propositions
+    that side asserts *negatively*.
+
+    Scope is bounded at three content words on purpose. A longer reach would
+    let an incidental negated clause colour words far outside it — a claim
+    quoting "…without input tax credit for standalone restaurants" would put
+    "standalone" in the negation scope even though nothing about standalone is
+    negated. The price is missing a negation separated from its verb by more
+    than two content words; that is the rarer failure and it fails toward
+    "no signal", never toward a false contradiction.
+    """
+    negated: set[str] = set()
+    remaining = 0
+    for token in _WORD.findall(text.casefold()):
+        if token in _NEGATIONS:
+            remaining = 3  # a negator opens a fresh scope over three words
+            continue
+        if remaining <= 0:
+            continue
+        if token in _STOPWORDS or _is_numeric_token(token):
+            continue  # transparent to scope: articles and figures bind nothing
+        negated.add(token)
+        remaining -= 1
+    return frozenset(negated)
+
+
 def _polarity_conflict(claim: str, sentence: str) -> str | None:
     """Detect an asserted reversal between claim and sentence.
 
-    Returns a human-readable reason, or None. Only fires on an explicit antonym
-    pair or a negation present on exactly one side, both of which are narrow
-    enough to keep false contradictions rare.
+    Returns a human-readable reason, or None. Fires on an explicit antonym
+    pair, or when a shared proposition word is negated on exactly one side.
+
+    Negation parity is judged per word, not per sentence. A negation shared by
+    both sides is a shared fact — "…without input tax credit" appears in both a
+    claim and its verbatim source — and must not make the claim look negated.
+    What counts is whether the *same word* is asserted on one side and negated
+    on the other: the seeded mutation "…are not taxed at 5% GST without input
+    tax credit…" and its source "…are taxed at 5% GST without input tax
+    credit…" share the "without" clause, but "taxed" is negated only on the
+    claim side. Judging parity by mere presence anywhere would count "without"
+    on both sides as parity and wave that mutation through as supported.
     """
     claim_words = {word.casefold() for word in _WORD.findall(claim)}
     sentence_words = {word.casefold() for word in _WORD.findall(sentence)}
@@ -372,15 +417,21 @@ def _polarity_conflict(claim: str, sentence: str) -> str | None:
             return f"the claim asserts '{left}' where the source states '{right}'"
         if right in claim_words and left in sentence_words and right not in sentence_words:
             return f"the claim asserts '{right}' where the source states '{left}'"
-    claim_negated = bool(claim_words & _NEGATIONS)
-    sentence_negated = bool(sentence_words & _NEGATIONS)
-    if claim_negated != sentence_negated:
-        shared = len(claim_words & sentence_words) / max(1, len(claim_words))
-        if shared >= 0.5:
-            return (
-                "the source states the opposite polarity of the claim "
-                f"({'source negates' if sentence_negated else 'claim negates'})"
-            )
+
+    claim_negated = _negation_scope(claim)
+    sentence_negated = _negation_scope(sentence)
+    shared = content_words(claim) & content_words(sentence)
+    claim_only = (claim_negated - sentence_negated) & shared
+    sentence_only = (sentence_negated - claim_negated) & shared
+    # Each side negating words of its own is a mixed signal only when the
+    # negated words are different propositions; this can still be a genuine
+    # conflict (claim "not A" against a source asserting A while negating B),
+    # so whichever shared word is flipped on exactly one side decides.
+    if claim_only or sentence_only:
+        return (
+            "the source states the opposite polarity of the claim "
+            f"({'source negates' if sentence_only else 'claim negates'})"
+        )
     return None
 
 
@@ -453,22 +504,16 @@ def verify_claim(
             topicality=topicality,
         )
 
-    # --- polarity contradiction (catches claims carrying no numbers) ---
-    for url, detail in per_document.items():
-        for sentence in detail["context"][:5]:
-            reason = _polarity_conflict(claim_text, sentence)
-            if reason is not None:
-                return VerificationResult(
-                    "contradicted",
-                    f"{url} contradicts the claim: {reason}. Source text: \"{_clip(sentence)}\"",
-                    conflicting_facts=[_clip(sentence)],
-                    topicality=topicality,
-                )
-
     matched: list[str] = []
     missing: list[str] = []
     conflicting: list[str] = []
 
+    # --- numeric/date facts are evaluated BEFORE polarity is consulted ---
+    # Numbers are the claim's most trustworthy content: a sentence that
+    # restates the figure settles the claim more reliably than a polarity word
+    # in a weaker sentence can unsettle it. So the fact comparison runs first
+    # and polarity (below) is only allowed to override its conclusion when the
+    # polarity conflict itself survives the scope check.
     for fact in claim_numbers:
         agreeing = [
             url for url, detail in per_document.items()
@@ -511,6 +556,34 @@ def verify_claim(
             conflicting_facts=conflicting,
             topicality=topicality,
         )
+
+    # --- polarity contradiction (catches claims carrying no numbers) ---
+    # Scope check: a sentence may contradict the claim only when no
+    # *better-matching* sentence stays silent. Sentences are examined in
+    # descending order of how much of the claim they restate; a weaker sentence
+    # that flips a sub-clause (a claim quoting "…without input tax credit",
+    # contradicted by a sentence about a different customer class that pays
+    # "with input tax credit") must not override a stronger sentence that
+    # restates the claim and stays silent. Contradiction by polarity is only
+    # legitimate when the conflicting sentence is the best available statement
+    # about the claim — or every better statement conflicts too.
+    for url, detail in per_document.items():
+        ranked = detail["context"][:5]
+        for index, sentence in enumerate(ranked):
+            reason = _polarity_conflict(claim_text, sentence)
+            if reason is None:
+                continue
+            if any(
+                _polarity_conflict(claim_text, better) is None
+                for better in ranked[:index]
+            ):
+                continue
+            return VerificationResult(
+                "contradicted",
+                f"{url} contradicts the claim: {reason}. Source text: \"{_clip(sentence)}\"",
+                conflicting_facts=[_clip(sentence)],
+                topicality=topicality,
+            )
 
     if claim_numbers or claim_years:
         if not missing:

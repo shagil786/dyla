@@ -222,14 +222,30 @@ standalone restaurants versus restaurants inside expensive hotels. The auditor's
 polarity check found "with input tax credit" against the claim's "without",
 matched on topical overlap, and called it a contradiction.
 
-This is a false positive with a clear cause: **the auditor has no notion of
-scope.** It compares a claim to the highest-overlap sentence in a document
-without checking that the sentence is about the same subset. It is the single
-biggest weakness in the component and it is unfixed.
+This is a false positive with a clear cause: **the auditor had no notion of
+scope.** It compared a claim to a high-overlap sentence in a document without
+checking that the sentence is about the same subset.
 
-I am leaving Q1 failing rather than tuning the threshold until it passes. A
-threshold tuned against one known case is a hardcoded answer wearing a
-statistic's clothes.
+**Fixed.** Polarity contradiction is now scope-gated and negation parity is
+judged per shared word:
+
+1. **Scope gate.** A sentence may contradict a claim only when no
+   *better-matching* sentence stays silent. Here the source's first sentence
+   restates the claim verbatim and stays silent; the weaker hotel sentence
+   therefore cannot veto it. Contradiction by polarity is legitimate only when
+   the conflicting sentence is the best available statement about the claim —
+   or every better statement conflicts too.
+2. **Per-word negation parity.** A negation clause both sides share (the
+   "without input tax credit" in the claim *and* in its source) cancels before
+   polarity is decided. This is what lets the auditor call the *negation* of
+   the Q1 claim — "…are **not** taxed at 5% GST without input tax credit…" —
+   contradicted while calling the claim itself supported: the shared "without"
+   clause no longer masks the real "not".
+
+Both rules are general — no fixture wording appears in the discriminator — and
+the seeded-defect audit still holds at 20/20. The full suite now runs **8/8**
+(measured with the same deterministic offline fixtures whose traces are
+committed in `runs/`).
 
 ### 4.3 Measuring the auditor properly: seeded defects
 
@@ -243,18 +259,23 @@ This is mutation testing pointed at a verifier instead of a test suite. The
 detection rate is a property of the auditor, and is meaningful even though the
 run that produced the answers is a replay.
 
-| Defect class | First measurement | After fixes |
-|---|---|---|
-| `inflated_figure` — a number multiplied by 10 | 4/4 | 4/4 |
-| `dropped_citation` — sources stripped off | 4/4 | 4/4 |
-| `fabricated_claim` — plausible sentence, no support | 4/4 | 4/4 |
-| `negated_claim` — polarity reversed | 3/4 | 3/4 |
-| `swapped_entity` — true statement, wrong company | **0/4** | **4/4** |
-| **Total** | **15/20 (75%)** | **19/20 (95%)** |
+| Defect class | First measurement | After fixes | Final (post 4.2 fix) |
+|---|---|---|---|
+| `inflated_figure` — a number multiplied by 10 | 4/4 | 4/4 | 4/4 |
+| `dropped_citation` — sources stripped off | 4/4 | 4/4 | 4/4 |
+| `fabricated_claim` — plausible sentence, no support | 4/4 | 4/4 | 4/4 |
+| `negated_claim` — polarity reversed | 3/4 | 3/4 | **4/4** |
+| `swapped_entity` — true statement, wrong company | **0/4** | **4/4** | 4/4 |
+| **Total** | **15/20 (75%)** | **19/20 (95%)** | **20/20 (100%)** |
 
-The remaining miss is the negation of the Q1 claim the auditor *already*
-considers contradicted. Calling its negation "supported" is internally
-consistent, so it is a symptom of 4.2, not an independent bug.
+The one miss was the negation of the Q1 claim the auditor *already* considered
+contradicted. Calling its negation "supported" was internally consistent —
+exactly why it was a symptom of 4.2, not an independent bug, and why the 4.2
+fix closes it: with the healthy claim now correctly supported, the polarity
+check is free to read "are **not** taxed at 5% GST" as the reversal it is.
+Per-word negation parity is the specific change that catches it: the "without
+input tax credit" clause appears on both sides and cancels, leaving the
+claim-side "not" with no counterpart. Measured after the fix: **20/20**.
 
 ### 4.4 `swapped_entity` 0/4 — the unexpected result
 
@@ -296,7 +317,12 @@ it should have been 100%. The comparator now reads memory per comparison.
 
 ### 4.6 The auditor's limits, stated plainly
 
-- **No scope reasoning.** Section 4.2. The largest known defect.
+- **Scope reasoning is heuristic, not semantic.** Section 4.2's false positive
+  is fixed by a rank-ordered scope gate (a sentence contradicts only when no
+  better-matching sentence stays silent), but scope is measured by word
+  overlap, not by understanding which subset a sentence describes. A source
+  that restates the claim better in *wording* while meaning something narrower
+  can still suppress a genuine contradiction.
 - **No co-reference.** "The company reported X" is matched by topical word
   overlap, not by knowing which company "the company" is.
 - **Regex sentence segmentation**, which mis-splits on abbreviations.
