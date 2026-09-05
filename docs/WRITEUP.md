@@ -603,33 +603,59 @@ Ranked by how much they would bother me in review.
 
 1. **No live run.** Everything is a replay. Stated in section 0 and repeated in
    every artifact header.
-2. **Auditor scope reasoning is heuristic.** The §4.2 false positive that
+2. **No session logs.** The brief weighs three things: *"The session logs tell
+   us how you work. The write-up tells us how you think. The code tells us what
+   you can build. We weigh all three."* One of those three axes is not
+   represented in this repository. What is committed under that name is not it:
+   `runs/*.jsonl` are **agent** traces — the program's own tool calls — and
+   `.superpowers/sdd/` holds 11 implementation reports (`task-1`…`task-8` plus
+   three investigations) recording files changed and TDD history. Neither is a
+   record of the human↔AI working session, and no transcript is committed
+   anywhere. `grep -ril "overruled\|I disagreed\|the tool suggested"
+   .superpowers/ docs/superpowers/` returns nothing — this file is deliberately
+   outside that scope, because the sentence you are reading quotes all three
+   phrases and would otherwise be its own only hit.
+
+   The distinction is easy to blur, and blurring it flatters this
+   submission — a `claim_rejected` event shows the *analyst* overruling its
+   *model*, which is a runtime behaviour the brief asks for in Part A, not
+   evidence about how the candidate worked with a tool. What the brief wants
+   on this axis is the other thing: where the obvious approach was tried,
+   measured and rejected, and where the tool was overruled and was right to
+   be. The closest in-repo substitute is this document —
+   §4.5's three rejections with their measurements, and `FIX_BACKLOG.md` Part 1,
+   which records four features that had been committed and described as working
+   and were not — but those are the *decisions*, not the *session*, so a reader
+   has to take the write-up's word for how they were reached. Exporting and
+   committing the transcripts would close this; it has not been done.
+
+3. **Auditor scope reasoning is heuristic.** The §4.2 false positive that
    failed Q1 is fixed (scope gate + per-word negation parity, seeded audit
    20/20), but scope is measured by word overlap, not semantics — §4.6 lists
    what that still cannot see.
-3. **Removing Azure is a breaking change** for anyone who was using those
+4. **Removing Azure is a breaking change** for anyone who was using those
    adapters. Nobody here was, and the alternative was carrying ~830 lines of
    knowingly-broken, untestable, credential-gated code — but it is a break and
    it belongs on this list rather than in a footnote.
-4. **Extra credit not achieved** — 24.1%, not 50% (§3).
-5. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
+5. **Extra credit not achieved** — 24.1%, not 50% (§3).
+6. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
    pre-registers Zerodha, Infosys, Wipro and Zepto, because entity resolution is
    deterministic and does not invent entities from free text. Without it the
    resolver returns "unknown" and reuse can never engage. A real deployment
    accumulates these over time; doing it up front keeps the harness honest about
    what it measures rather than silently measuring nothing. But it *is* a
    thumb on the scale and it belongs in this list.
-6. **The cross-check's notion of corroboration is lexical** (§4.7). The old
+7. **The cross-check's notion of corroboration is lexical** (§4.7). The old
    high-confidence bypass is closed — the gate is now model-independent — but
    "independently states the figure" is decided by numeric-fact and overlap
    matching, and the offline corpus is single-source-per-fact, so the cross-check
    rejects genuine single-source claims it cannot confirm. Live search is the
    real test and remains unavailable.
-7. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
+8. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
    The scan is now documented as deliberate (the dead `memory_records_text`
    index was removed rather than kept as decoration); the replacement is FTS5
    or the embedding store when the corpus outgrows it.
-8. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
+9. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
    overwrite (memory now holds all eight answers, not one) raised retrieval
    searches in *both* modes — Q3 plans 3 subqueries where it planned 1 —
    because the planner expands entity-prefixed subqueries from everything it
