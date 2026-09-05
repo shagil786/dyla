@@ -476,7 +476,7 @@ a per-question verdict trend across the last 16 full-suite runs.
 | Seeded probes made read-only (P5-4) | The defect audit used to persist its planted lies into `dyla.db`, overwriting real claims. `persist=False`; post-suite DB now holds 28 real claims, 0 fabricated |
 | Accepted cross-checks traced (P5-5) | New `claim_corroborated` event; 24 confirming fetches per run previously left no record |
 | Committed artifacts regenerated (P5-2) | `runs/` and `reports/` predated the §4.2 and P4-2 fixes (7/8, 19/20); now 8/8 + 20/20 both modes, reproducible with one command again |
-| Provider-independence pins (P5-1) | 12 tests: fresh-checkout local defaults, no-secret builds, any-URL `compatible` adapter, vendor names rejected |
+| Provider-independence pins (P5-1) | 10 test functions / 16 collected cases: fresh-checkout local defaults, no-secret builds, any-URL `compatible` adapter, vendor names rejected |
 | Dead `add_memory` API removed (P5-6) | Zero production callers; `save_claim` is now the store's only writer and all fixtures seed through it. Same precedent as the Azure and P4-4 deletions |
 
 Two rows are worth pausing on.
