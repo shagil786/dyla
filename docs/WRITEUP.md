@@ -448,6 +448,97 @@ no live key was available (Section 0).
 
 ---
 
+### 4.9 Declining to answer — three routes, only two of them traced
+
+The brief requires that the agent *"state plainly when it cannot find something
+rather than filling the gap with a plausible guess."* This section is the
+account of how that is implemented, and of an asymmetry in it that was found
+while writing tests rather than while writing the feature.
+
+There are **three** routes to `"Insufficient evidence."`, and they are not
+equivalent:
+
+| Route | Trigger | Model consulted? | `answer_withheld` | Limitation, and who wrote it |
+|---|---|---|---|---|
+| **1** | No evidence retrieved — `_synthesize` returns early (`analyst.py:371`) | **No** | **not emitted** | `No retrieved evidence was available.` — the analyst's |
+| **2** | Evidence retrieved, model proposes zero claims (`analyst.py:504`) | Yes | `model_proposed_no_claims` | `No supplied evidence answered the question.` — the **model's**, passed through |
+| **3** | Model proposes claims, validation strikes all of them (`analyst.py:504`) | Yes | `no_claim_survived_validation` | per-claim rejection notes |
+
+Route 1's trace ends at retrieval:
+
+```text
+started -> memory_retrieved -> query_expanded -> plan_created -> web_searched
+        -> evidence_selected (count: 0) -> completed
+        -> started -> completed -> memory_saved
+        -> quality_completed (status: unaudited)
+```
+
+No `answer_synthesized`, no `answer_withheld`, no `claim_rejected`. Routes 2 and
+3 both emit the decision; they differ in `claims_proposed` (0 vs >0) and in
+whether a `claim_rejected` precedes it:
+
+```text
+Route 2: ... evidence_selected (count: 1)
+             -> answer_synthesized {"claims_proposed": 0, "claims_kept": 0,
+                                    "claims_rejected": 0, "bailed_out": true}
+             -> answer_withheld    {"reason": "model_proposed_no_claims"}
+
+Route 3: ... evidence_selected (count: 1) -> claim_rejected
+             -> answer_synthesized {"claims_proposed": 1, "claims_kept": 0,
+                                    "claims_rejected": 1, "bailed_out": true}
+             -> answer_withheld    {"reason": "no_claim_survived_validation"}
+```
+
+**Why Route 1 is silent, deliberately.** There was no answer to decline, because
+there was nothing to answer from — `_synthesize` returns before the model is
+called at all. Four pre-existing tests prove it by supplying a model whose
+`complete()` raises `AssertionError("empty evidence must not synthesize")` —
+covering no evidence at all, and all searches, all fetches and all ingestions
+failing — and the new Route 1 trace test reuses the same device. Emitting `answer_withheld` there would record a decision the
+agent never made.
+
+**Why the distinction earns its keep.** Route 1 means *retrieval* found nothing;
+Route 2 means retrieval worked and *extraction* failed. Those have different
+fixes — widen the search, or lower the extractive floor — and a trace that
+collapsed them would send you to the wrong one. Note that the discriminator is
+not only the event: Route 1's limitation is written by the analyst and Route 2's
+by the model, so the two are separable from the answer alone.
+
+Route 2 is also the route this harness actually hits. The extractive model
+quotes a sentence only if it is at least 25 characters **and** shares a
+non-stopword token with the question (`offline.py::_claims`), so a page that is
+retrieved but does not lexically overlap the question is a likelier failure than
+retrieving no pages at all.
+
+Route 2 had no test coverage until this branch. `grep -rn
+model_proposed_no_claims src/ tests/` matched exactly one line — its own
+emission site — which means one branch of a two-way ternary was unpinned, and a
+ternary is where two reason strings get swapped without anything else changing.
+Two tests now cover it
+(`test_a_model_that_proposes_nothing_is_traced_as_withheld`,
+`test_the_empty_evidence_shortcut_is_not_traced_as_a_withheld_answer`), both
+red-proven: flipping the ternary fails the new Route 2 test *and* the
+pre-existing Route 3 test; deleting the `if not evidence` early return fails the
+Route 1 test. Suite 319 → **321 passed**.
+
+**Where the gate leaves all three.** The auditor iterates `answer.claims`, so an
+empty list yields no verdicts, and `reliability.py` returns
+`QualityResult("unaudited", ["no audit verdicts were produced"])`.
+`evaluation.py:336` counts only `complete` and `passed`, so a correctly declined
+question **does not** count as passed. That is the right call for a scored
+suite — not answering is not an answer — but it does mean the gate cannot
+distinguish a principled refusal from a pipeline that failed to retrieve
+anything. The trace can, and that is where the distinction belongs; the score
+should not reward declining.
+
+None of the eight committed questions reaches any of these routes in either
+mode: `grep -rl answer_withheld runs/` returns nothing, because every question
+retrieves evidence and produces claims. So this is not a live defect. It is a
+branch that was untested and undocumented, and the offline harness's most
+likely real-world failure mode.
+
+---
+
 ## 5. What changed between runs, and why
 
 Committed run history is in `reports/evaluation.json` (`history`), which renders
