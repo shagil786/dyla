@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from .domain import AnalystAnswer, AuditVerdict, AuditorVerdictModel, Citation, RunEvent
+from .memory import memory_claim_id
 from .models import ModelRequest
 from .ports import SearchProvider
 from .verification import verify_claim
@@ -49,7 +50,8 @@ class AuditorAgent:
         self.audit_state = AuditState("complete", [])
 
     def run(
-        self, answer: AnalystAnswer, run_id: str, deadline: float | None = None
+        self, answer: AnalystAnswer, run_id: str, deadline: float | None = None,
+        *, persist: bool = True,
     ) -> list[AuditVerdict]:
         """Audit every claim, stopping early if ``deadline`` passes.
 
@@ -59,6 +61,12 @@ class AuditorAgent:
         thread, so an external timeout alone would abandon a thread that keeps
         working. Stopping between claims returns the verdicts already earned and
         reports the shortfall instead of silently truncating.
+
+        ``persist=False`` audits read-only: verdicts are returned but nothing
+        is written to memory (no claims, no warnings). Measurement probes such
+        as the seeded-defect audit must use it -- a probe that saves its
+        planted lies would leave fabricated claims in durable memory for the
+        next real run to inherit.
         """
         self.audit_state = AuditState("complete", [])
         verdicts: list[AuditVerdict] = []
@@ -81,7 +89,8 @@ class AuditorAgent:
                         citations_checked=[],
                     )
                     verdicts.append(verdict)
-                    self._persist(claim, verdict, run_id)
+                    if persist:
+                        self._persist(claim, verdict, run_id)
                     self._trace(run_id, "claim_audited", {"claim_id": claim.id, "status": verdict.status})
                     continue
 
@@ -94,7 +103,8 @@ class AuditorAgent:
                         document = self._fetch(citation.url, run_id, deadline)
                     except Exception as exc:
                         failed = True
-                        self._warning(run_id, claim.id, "source fetch failed")
+                        if persist:
+                            self._warning(run_id, claim.id, "source fetch failed")
                         self._trace(run_id, "source_fetch_failed", {"claim_id": claim.id, "url": citation.url, "error": str(exc)})
                         continue
                     documents[citation.url] = document
@@ -120,12 +130,14 @@ class AuditorAgent:
                         explanation=explanation, citations_checked=checked,
                     )
                 verdicts.append(verdict)
-                self._persist(claim, verdict, run_id)
+                if persist:
+                    self._persist(claim, verdict, run_id)
                 self._trace(run_id, "claim_audited", {"claim_id": claim.id, "status": verdict.status})
         except Exception as exc:
             message = f"{run_id}: auditor failed: {exc}"
             issues.append(message)
-            self._warning(run_id, None, f"auditor failed: {exc}")
+            if persist:
+                self._warning(run_id, None, f"auditor failed: {exc}")
             self._trace(run_id, "auditor_failed", {"error": str(exc)})
         issues = list(dict.fromkeys([*issues, *self.audit_state.issues]))
         run_status: AuditRunStatus = "partial" if issues and verdicts else ("failed" if issues else "complete")
@@ -201,8 +213,15 @@ class AuditorAgent:
     def _persist(self, claim: Any, verdict: AuditVerdict, run_id: str) -> None:
         if self.memory is None:
             return
+        # Bare per-answer IDs (c1..cN) repeat in every answer. Store them
+        # run-namespaced so this run's claims do not overwrite the previous
+        # run's rows; the answer and trace keep the bare IDs.
+        namespaced = memory_claim_id(run_id, claim.id)
         try:
-            self.memory.save_claim(claim, verdict)
+            self.memory.save_claim(
+                claim.model_copy(update={"id": namespaced}),
+                verdict.model_copy(update={"claim_id": namespaced}),
+            )
         except Exception as exc:
             message = f"{run_id}: {claim.id}: memory persistence failed: {exc}"
             self._record_issue(message)

@@ -35,6 +35,7 @@ from typing import Any
 
 from .agent_runtime import AgentRuntime, BudgetedModel, BudgetLedger
 from .domain import AgentInput, AgentResult, AnalystAnswer, AuditReport, AuditVerdict, Budget, Metrics, RunEvent
+from .memory import memory_claim_id
 from .reliability import QualityGate, QualityResult
 
 DEFAULT_WALL_CLOCK_SECONDS = 120.0
@@ -181,8 +182,17 @@ class RunOrchestrator:
 
         for claim in answer.claims:
             verdict = next((item for item in verdicts if item.claim_id == claim.id), None)
+            # Same namespaced key the auditor wrote: bare per-answer IDs repeat
+            # every run, so storing them bare would overwrite the previous run.
+            # This second write is idempotent with the auditor's, not a rival.
+            namespaced = memory_claim_id(run_id, claim.id)
+            namespaced_claim = claim.model_copy(update={"id": namespaced})
+            namespaced_verdict = (
+                verdict.model_copy(update={"claim_id": namespaced})
+                if verdict is not None else None
+            )
             try:
-                self.memory.save_claim(claim, verdict)
+                self.memory.save_claim(namespaced_claim, namespaced_verdict)
             except Exception as exc:
                 self._run_issues.append(f"{run_id}: {claim.id}: memory persistence failed: {exc}")
         self._trace(run_id, "memory_saved", {"claims": len(answer.claims)})

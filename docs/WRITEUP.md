@@ -43,18 +43,30 @@ Questions 5–8 deliberately revisit entities from questions 2–4.
 
 | # | Question | Result | Searches | Fetches |
 |---|---|---|---|---|
-| 1 | GST rate on restaurant services | incomplete | 1 | 8 |
+| 1 | GST rate on restaurant services | complete | 1 | 8 |
 | 2 | Zerodha CEO and year | complete | 1 | 9 |
-| 3 | Three largest Bengaluru software exporters | complete | 1 | 9 |
-| 4 | Quick-commerce rounds above $100M in 2025 | complete | 1 | 9 |
+| 3 | Three largest Bengaluru software exporters | complete | 3 | 9 |
+| 4 | Quick-commerce rounds above $100M in 2025 | complete | 1 | 8 |
 | 5 | Zerodha CTO and academic background | complete | **0** | 4 |
-| 6 | Infosys vs Wipro full-year revenue | complete | **0** | 4 |
-| 7 | Zepto valuation across rounds | complete | **0** | 4 |
-| 8 | Profitability of all four companies | complete | **0** | 4 |
+| 6 | Infosys vs Wipro full-year revenue | complete | **0** | 3 |
+| 7 | Zepto valuation across rounds | complete | **0** | 3 |
+| 8 | Profitability of all four companies | complete | **0** | 3 |
 
-7 of 8 pass. Q1 is `incomplete` because the auditor rejected one of its claims —
-covered in section 4.2, and it is an auditor false positive, not an analyst
-error.
+8 of 8 pass. (Q1 used to fail on an auditor false positive — the scope bug
+dissected in section 4.2. It is fixed, and the committed traces now show the
+fixed behaviour; the pre-fix trace is preserved in git history, not in the
+working tree.)
+
+Two things about how to read the Searches/Fetches columns, because both changed
+while this project was measured. First, the Fetches column counts evidence
+fetches **plus** the auditor's independent re-fetches of every cited URL: on
+Q5–Q8 the analyst fetches nothing (0 evidence fetches — pure reuse) and all
+3–4 fetches are the auditor doing its job. Second, neither column counts the
+cross-check: corroboration adds 14 searches and 24 fetches across the suite
+(analyst metrics `corroboration_searches`/`corroboration_fetches`), accepting
+10 claims and rejecting 4, and every one of those decisions is now a
+`claim_corroborated` trace event naming the confirming source or the reason
+there wasn't one. Section 4.7 has the detail.
 
 Full logs, one file per question, with the plan, every tool call, every result
 and every course correction: `runs/reuse/qNN-*.jsonl`. The `--no-reuse` baseline
@@ -76,18 +88,30 @@ Total tokens per question (input + output + **embedding**), reuse vs baseline:
 |---|---|---|---|---|---|
 | 1 | 910 | 910 | — | 1→1 | 8→8 |
 | 2 | 1014 | 1014 | — | 1→1 | 9→9 |
-| 3 | 1333 | 1333 | — | 1→1 | 9→9 |
-| 4 | 1200 | 1200 | — | 1→1 | 9→9 |
-| 5 | 885 | 732 | −17% | 1→**0** | 7→4 |
-| 6 | 997 | 551 | −45% | 1→**0** | 9→4 |
-| 7 | 920 | 558 | −39% | 1→**0** | 7→4 |
-| 8 | 1445 | 1227 | −15% | 2→**0** | 9→4 |
-| **All 8** | **8704** | **7525** | **−13.5%** | 9→4 (−56%) | 67→51 (−24%) |
-| **Q5–8 only** | **4247** | **3068** | **−27.8%** | 5→0 (−100%) | 32→16 (−50%) |
+| 3 | 1427 | 1427 | — | 3→3 | 9→9 |
+| 4 | 1200 | 1200 | — | 1→1 | 8→8 |
+| 5 | 981 | 828 | −16% | 3→**0** | 7→4 |
+| 6 | 1132 | 686 | −39% | 4→**0** | 8→3 |
+| 7 | 1032 | 641 | −38% | 2→**0** | 8→3 |
+| 8 | 1916 | 1684 | −12% | 4→**0** | 8→3 |
+| **All 8** | **9612** | **8390** | **−12.7%** | 19→6 (−68%) | 65→47 (−28%) |
+| **Q5–8 only** | **5061** | **3839** | **−24.1%** | 13→0 (−100%) | 31→13 (−58%) |
 
 The trend is flat for the first four questions and then steps down, which is
 what transferable memory should look like: nothing to transfer until something
 has been learned.
+
+These numbers moved since the last write-up (13.5% → 12.7%, 27.8% → 24.1%),
+and the reason is worth stating because it is a behaviour change, not a
+measurement change: durable memory used to hold only the previous run's claims
+— every run overwrote the last run's rows under the same bare `c1`..`cN` IDs —
+and now it holds all of them (`memory_hits` 7 → 61 per suite). The planner
+reads that memory and expands entity-prefixed subqueries from it, so both
+modes plan more searches than before (Q3: 1 → 3) while reuse still skips every
+search from Q5 on. Memory that actually remembers costs a little more to
+consult and saves a little less in net terms. That is the honest direction for
+a memory feature to move the numbers: the old saving was measured against a
+memory that forgot.
 
 ### 2.2 Why rupees says `unpriced`
 
@@ -118,8 +142,8 @@ DYLA_PRICE_INPUT_PER_MTOK_USD=0.15 DYLA_PRICE_OUTPUT_PER_MTOK_USD=0.60 \
 
 **I did not achieve it as specified, and I am not going to round up to it.**
 
-Target: 50% reduction in cost per question. Measured: **13.5% across all eight
-questions, 27.8% across the four that could reuse anything.** Searches fell 56%.
+Target: 50% reduction in cost per question. Measured: **12.7% across all eight
+questions, 24.1% across the four that could reuse anything.** Searches fell 68%.
 
 ### Why it falls short, precisely
 
@@ -131,11 +155,11 @@ qualify:
 - Q2, Q3, Q4 are the *first* questions about their entities. There is nothing
   to transfer to them by construction.
 
-So the honest denominator is Q5–Q8, where the reduction is 27.8%. Even there,
+So the honest denominator is Q5–Q8, where the reduction is 24.1%. Even there,
 50% is out of reach because **the analyst still fetches the cited sources to
-answer**. Memory removes the *search* step entirely (5→0) and halves fetches
-(32→16), but the answer still has to be grounded in retrieved text, and that
-text still has to be embedded and put in a prompt.
+answer**. Memory removes the *search* step entirely (13→0) and more than halves
+fetches (31→13), but the answer still has to be grounded in retrieved text, and
+that text still has to be embedded and put in a prompt.
 
 To halve total cost, memory would need to serve the *answer*, not just the
 *retrieval* — i.e. answer from stored claims without re-reading sources. That is
@@ -143,7 +167,7 @@ a different and much less safe design, because it means trusting a prior
 conclusion rather than the evidence under it. I did not build it, and I would
 argue against building it for a system whose entire point is being auditable.
 
-### What made the difference between 0% and 27.8%
+### What made the difference between 0% and 24.1%
 
 The first measurement of the reuse feature showed **exactly 0% token savings**.
 Two separate silent bugs, both invisible to 267 passing unit tests, and both
@@ -203,7 +227,9 @@ flagging uncited claims.
 
 ### 4.1 What it caught on the analyst's own answers
 
-32 claims. **31 supported, 1 contradicted, 0 uncited.**
+28 claims. **28 supported, 0 objected, 0 uncited.** (No-reuse mode: 29 claims,
+also all supported — the one-claim difference is a fourth corroboration
+rejection in reuse mode, section 4.7.)
 
 That is a bad result to present, because as section 0 said, it measures nothing.
 An extractive model that quotes verbatim will pass any verifier.
@@ -243,10 +269,13 @@ judged per shared word:
    clause no longer masks the real "not".
 
 Both rules are general — no fixture wording appears in the discriminator — and
-the seeded-defect audit still holds at 20/20. The full suite now runs **8/8**
-(measured with the same deterministic offline fixtures; the traces committed in
-`runs/` predate this fix and show the false positive this section dissects,
-which is why they are kept as the historical record).
+the seeded-defect audit still holds at 20/20. The full suite now runs **8/8**,
+and the committed traces show the fixed behaviour. This section keeps dissecting
+the false positive because the failure is more instructive than the fix; the
+pre-fix Q1 trace is preserved in git history
+(`a7a32eb:runs/reuse/q01-…jsonl`, `claim_audited` with `c1` → `contradicted`),
+not in the working tree. The run-history trend table in `reports/evaluation.md`
+shows the same landing: sixteen 7/8 runs, then 8/8 from the fix on.
 
 ### 4.3 Measuring the auditor properly: seeded defects
 
@@ -374,21 +403,25 @@ the run's gathered evidence); the divergence is the point — the auditor must
 judge claims against their citations, and the analyst must not widen them
 after the fact.
 
-Measured on the deterministic suite (fresh DB, committed-code replays):
-seeded-defect audit holds at **20/20** before and after; the suite stays
-**8/8**; and the planted second source that states Infosys revenue as
-1,53,670 crore (the corpus's `quick-summaries/infosys-revenue-note`) is now
-rejected in no-reuse runs where the baseline answer carried it as a supported
-claim. Corroboration cost the no-reuse run 19 searches and 32 fetches; it
-rejected three claims — the two restatements of the planted wrong figure and
-one genuine-but-single-source valuation sentence ("The round valued Zepto at
-5 billion dollars", which no other corpus page states). Reuse mode rejected
-four single-source figure/year claims for the same reason. Every rejected
-claim is recorded with its reason and the sources checked; nothing is deleted
-from the trace. The offline corpus is small and deliberately
-single-source-per-fact, so this is the honest upper bound of what the cross-check
-can confirm offline; a live run would be the real test, and that remains
-unavailable (Section 0).
+Measured on the deterministic suite (fresh DB, committed runs): the
+seeded-defect audit holds at **20/20** and the suite at **8/8** in both modes;
+and the planted second source that states Infosys revenue as 1,53,670 crore
+(the corpus's `quick-summaries/infosys-revenue-note`) is rejected in no-reuse
+runs where the pre-P4-2 baseline carried it as a supported claim.
+Corroboration cost the no-reuse run 13 searches and 24 fetches; it rejected
+three claims — the two restatements of the planted wrong figure and one
+genuine-but-single-source valuation sentence ("The round valued Zepto at 5
+billion dollars", which no other corpus page states). Reuse mode cost 14
+searches and 24 fetches and rejected four: the $5B sentence twice, the Wipro
+net-profit figure (13,135 crore, single source), and "He joined Zerodha in
+2013." Every cross-check, accepted or not, is a `claim_corroborated` trace
+event naming the confirming source or the count checked (14 events in the
+reuse traces, 13 in no-reuse — exactly the `corroboration_searches` metrics);
+rejections additionally carry `claim_rejected` with reason
+`insufficient_corroboration`. Nothing is deleted from the trace. The offline
+corpus is small and deliberately single-source-per-fact, so this is the honest
+upper bound of what the cross-check can confirm offline; a live run would be
+the real test, and that remains unavailable (Section 0).
 
 ### 4.8 The adversarial-analyst experiment (P3-3) — a negative result, honestly bounded
 
@@ -439,6 +472,11 @@ a per-question verdict trend across the last 16 full-suite runs.
 | Adversarial-analyst experiment (P3-3, §4.8) | Measured negative result: baseline and audit-threat prompts produce byte-identical outputs offline, as they must — the extractive stand-in never reads the system message. Needs a live key to mean anything |
 | Dead `memory_records_text` index removed (P4-4) | Search never used it; the linear scan is now documented as deliberate |
 | Spec text aligned with the shipped CLI (P4-3/P4-5) | `dyla audit` documented as reading saved traces (never re-auditing); spec examples match the real `runs/<mode>/qNN-*.jsonl` artifacts |
+| Claim IDs run-namespaced in SQLite (P5-3) | Bare `c1`..`cN` IDs let every run overwrite the last run's rows — durable memory held one answer, not eight. `memory_hits` 7 → 61/suite; savings re-measured at 12.7% / 24.1% |
+| Seeded probes made read-only (P5-4) | The defect audit used to persist its planted lies into `dyla.db`, overwriting real claims. `persist=False`; post-suite DB now holds 28 real claims, 0 fabricated |
+| Accepted cross-checks traced (P5-5) | New `claim_corroborated` event; 24 confirming fetches per run previously left no record |
+| Committed artifacts regenerated (P5-2) | `runs/` and `reports/` predated the §4.2 and P4-2 fixes (7/8, 19/20); now 8/8 + 20/20 both modes, reproducible with one command again |
+| Provider-independence pins (P5-1) | 12 tests: fresh-checkout local defaults, no-secret builds, any-URL `compatible` adapter, vendor names rejected |
 
 Two rows are worth pausing on.
 
@@ -481,7 +519,7 @@ Ranked by how much they would bother me in review.
    adapters. Nobody here was, and the alternative was carrying ~830 lines of
    knowingly-broken, untestable, credential-gated code — but it is a break and
    it belongs on this list rather than in a footnote.
-4. **Extra credit not achieved** — 27.8%, not 50% (§3).
+4. **Extra credit not achieved** — 24.1%, not 50% (§3).
 5. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
    pre-registers Zerodha, Infosys, Wipro and Zepto, because entity resolution is
    deterministic and does not invent entities from free text. Without it the
@@ -499,6 +537,15 @@ Ranked by how much they would bother me in review.
    The scan is now documented as deliberate (the dead `memory_records_text`
    index was removed rather than kept as decoration); the replacement is FTS5
    or the embedding store when the corpus outgrows it.
+8. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
+   overwrite (memory now holds all eight answers, not one) raised retrieval
+   searches in *both* modes — Q3 plans 3 subqueries where it planned 1 —
+   because the planner expands entity-prefixed subqueries from everything it
+   remembers. Reuse still skips every Q5–Q8 search, so the net effect is a
+   smaller saving (24.1%, not 27.8%), but the coupling is one-directional:
+   nothing tells the planner when extra breadth stops paying. A subquery
+   budget, or reuse assessment *before* expansion rather than after, is the
+   obvious next control.
 
 ---
 
@@ -507,6 +554,10 @@ Ranked by how much they would bother me in review.
 Three of the bugs above — entity overwrite, planner blindness, and the empty
 comparator snapshot — were invisible to a fully green test suite. All three were
 found by running eight questions in order and looking at what the numbers did.
+Two more joined them this session: the claim-ID overwrite that left durable
+memory holding one answer instead of eight, and the seeded-defect probes that
+persisted their planted lies into `dyla.db`. Both were found by inspecting the
+database after a full run; both were invisible to 302 passing tests.
 
 A shorter repro did not reproduce them. An isolated Q2→Q5 script **passed** while
 the full suite failed, because the corruption required a third question in

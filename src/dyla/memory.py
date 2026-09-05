@@ -19,6 +19,23 @@ _NAMESPACE = uuid.UUID("9f3e5b95-7c47-4c73-a2e7-6ddf5d6d64f8")
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
+def memory_claim_id(run_id: str, claim_id: str) -> str:
+    """Storage key for a claim asserted by a run.
+
+    Claim IDs are per-answer identifiers (``c1``..``cN``): the offline model
+    numbers claims from 1 in every answer, and a live model does the same.
+    Storing them bare means each run's ``save_claim`` overwrites the previous
+    run's rows in ``claims``, ``audit_verdicts`` and ``memory_records`` --
+    durable memory silently holds only the latest answer, and the
+    audit-feedback loop can never see further back than one run. Namespacing
+    the key by run keeps every run's claims. Answers, traces and verdicts keep
+    the bare IDs; only the SQLite keys are namespaced, and no reader splits
+    them back apart (``search_memory`` full-scans; nothing else SELECTs these
+    tables by ID).
+    """
+    return f"{run_id}:{claim_id}"
+
+
 def _synchronized(method: _F) -> _F:
     @wraps(method)
     def wrapper(self: "MemoryStore", *args: Any, **kwargs: Any) -> Any:
@@ -320,6 +337,13 @@ class MemoryStore:
 
     @_synchronized
     def save_claim(self, claim: Claim, verdict: AuditVerdict | None) -> None:
+        """Upsert a claim, its verdict, and its memory record under one key.
+
+        Callers must pass run-namespaced IDs (see ``memory_claim_id``): bare
+        per-answer IDs collide across runs and each run would overwrite the
+        last. The store takes the IDs as given and does not namespace them
+        itself, so the key format stays visible at the call site.
+        """
         citations = [citation.model_dump(mode="json") for citation in claim.citations]
         with self.connection:
             for citation in claim.citations:

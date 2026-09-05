@@ -466,6 +466,17 @@ class AnalystAgent:
                 continue
             if self._needs_corroboration(claim, memories):
                 outcome = self._corroborate(claim, run_id)
+                # The cross-check is a tool call like any other: accepted or
+                # not, the trace records what was checked and what decided it.
+                # Rejections were already visible via claim_rejected, but an
+                # accepted cross-check used to leave no event at all -- 24
+                # fetches per suite run with no record of what they confirmed.
+                self._trace(run_id, "claim_corroborated", {
+                    "claim_id": claim.id, "accepted": outcome["accepted"],
+                    "source_url": outcome["source_url"],
+                    "sources_checked": outcome["checked"],
+                    "detail": outcome["detail"],
+                })
                 if not outcome["accepted"]:
                     limitations.append(
                         f"Claim {claim.id} was rejected for lacking independent evidence."

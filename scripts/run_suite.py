@@ -168,8 +168,12 @@ def main() -> int:
     label = "no-reuse" if args.no_reuse else "reuse"
     archive = archive_logs(root, per_question, label)
 
+    # Probes audit read-only: the auditor still fetches sources and compares
+    # against live memory, but planted lies must not be persisted -- a probe
+    # that saves would leave fabricated claims in dyla.db for the next run.
     defects = run_seeded_defect_audit(
-        answers=answers, audit=lambda answer, run_id: orchestrator.auditor.run(answer, run_id)
+        answers=answers,
+        audit=lambda answer, run_id: orchestrator.auditor.run(answer, run_id, persist=False),
     )
     findings = build_findings_markdown(
         summary=summarise_verdicts(report["results"]), defects=defects,
