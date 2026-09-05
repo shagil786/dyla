@@ -9,10 +9,33 @@ artifacts (`reports/`, `runs/`) and can be regenerated with one command.
 ## 0. The thing you should know before anything else
 
 **Every number about answer quality in this repository comes from a recorded
-fixture corpus, not from a live LLM.** No API keys were available for this work.
-Rather than fake a run, the suite ships an offline harness: 14 recorded pages, a
-hashed bag-of-words embedder, and an *extractive* model that answers by quoting
-source sentences verbatim.
+fixture corpus, not from a live LLM.** Rather than fake a run, the suite ships
+an offline harness: 14 recorded pages, a hashed bag-of-words embedder, and an
+*extractive* model that answers by quoting source sentences verbatim.
+
+**Why there is no live run — the accurate version.** I previously wrote "no API
+keys were available", which was true but incomplete, and incomplete in the
+direction that flatters me: it implies a key is the only thing standing between
+this repo and live results. It is not. The build environment has **no general
+outbound internet**. Measured, not assumed:
+
+| Target | Result |
+|---|---|
+| `files.pythonhosted.org`, `pypi.org` | HTTP 200 |
+| `en.wikipedia.org`, `example.com`, `google.com` | connection closed at TLS |
+| `api.openai.com`, `api.you.com` | connection closed at TLS |
+
+DNS resolves and `validate_external_url` passes; the TLS handshake is then
+terminated. Egress is allowlisted to the package index. So a You.com key would
+authenticate against a host this sandbox cannot reach, and **the missing
+ingredient is network egress, not a credential**. Both are needed; only one was
+named before.
+
+This matters for reading §4: the analyst's own cross-check and the auditor's
+independent re-fetch both do real HTTP through the same `PageFetcher` in live
+mode. They are exercised here against the fixture provider, which implements
+the identical `SearchProvider` interface. The plumbing is real and the wire is
+not.
 
 That choice has a consequence I want stated before the good numbers, not after:
 
@@ -226,17 +249,83 @@ qualify:
 - Q2, Q3, Q4 are the *first* questions about their entities. There is nothing
   to transfer to them by construction.
 
-So the honest denominator is Q5–Q8, where the reduction is 34.0%. Even there,
-50% is out of reach because **the analyst still fetches the cited sources to
-answer**. Memory removes the *search* step entirely (13→0) and more than halves
-fetches (31→13), but the answer still has to be grounded in retrieved text, and
-that text still has to be embedded and put in a prompt.
+So the honest denominator is Q5–Q8, where the reduction is 34.0%.
 
-To halve total cost, memory would need to serve the *answer*, not just the
-*retrieval* — i.e. answer from stored claims without re-reading sources. That is
-a different and much less safe design, because it means trusting a prior
+### Why not 50%: the arithmetic, not a vibe
+
+"Memory removes the search step, not the grounding step" is the one-line
+version and it is true, but it is not a measurement. Here is the measurement.
+Q5–Q8, by token type:
+
+| Token type | Baseline | With memory | Removed | Share of what remains |
+|---|---|---|---|---|
+| Embedding | 970 | 117 | **−87.9%** | 3.5% |
+| Input (prompt) | 3,635 | 2,823 | −22.3% | **84.6%** |
+| Output | 456 | 398 | −12.7% | 11.9% |
+| **Total** | **5,061** | **3,338** | **−34.0%** | |
+
+Embedding tokens are the thing memory is *designed* to eliminate, and they are
+essentially gone — 87.9% removed, down to 3.5% of what is left. That part
+worked. The problem is that it was never the big number.
+
+The binding constraint is arithmetic and worth stating precisely. A 50% cut
+means getting Q5–Q8 to **2,530** tokens. Input alone is **2,823** — already
+55.8% of the baseline on its own. So even if embedding went to *exactly zero*
+and output never changed, the target would still be missed. **50% is
+unreachable without cutting the evidence block itself**, which is the prompt.
+No amount of memory cleverness gets there, because memory's savings live almost
+entirely in a category that is now 3.5% of the total.
+
+### The measurement that would have let me claim 50%, and why I am not
+
+The evidence block is `evidence_limit` items. I swept it:
+
+| `evidence_limit` | Q5–8 tokens | vs baseline | Questions | Claims | Seeded defects |
+|---|---|---|---|---|---|
+| 3 | 2,471 | **−51.2%** | 8/8 | **24/24** | 20/20 |
+| 4 | 2,471 | **−51.2%** | 8/8 | **24/24** | 20/20 |
+| 5 | 2,471 | **−51.2%** | 8/8 | **24/24** | 20/20 |
+| **8 (shipped)** | 3,338 | −34.0% | 8/8 | **28/28** | 20/20 |
+
+**−51.2% clears the brief's target.** Every question still completes, every
+claim is still supported, the auditor still catches every seeded defect. On
+the metrics this project reports, it looks strictly better.
+
+It is not, and the "claims" column is where it shows. **28 claims become 24.**
+Q4, Q6 and Q7 each return one fewer claim. The suite passes because a
+three-claim answer with three supported claims scores exactly like a four-claim
+answer with four — the quality gate measures the *support rate* of what was
+asserted, and never asks whether something was left out.
+
+So the cost fell because the agent answered less thoroughly, and the metric
+that should have caught that is structurally blind to it. A 100% support rate
+is trivially achievable by asserting one claim per question. Shipping
+`evidence_limit=3` and reporting "51.2% cost reduction, 8/8 passed, 24/24
+claims supported, no loss in correctness" would be true in every particular
+and misleading as a whole.
+
+The brief's phrasing is *"cost per question dropping by half **with no loss in
+correctness**"*. Dropping a third of a comparison question's claims is a loss
+of completeness, and completeness is part of correctness for questions of the
+form "compare X and Y" or "list every company that…". So: **the target is
+reachable on this harness and I did not take it.** `evidence_limit` stays at 8,
+the number stays 34.0%, and this table is the evidence for why.
+
+That also names a real gap in this project's own evaluation, which I would fix
+before trusting any future cost claim: **there is no recall metric.** Nothing
+measures whether an answer omitted something the sources supported. Every
+number in §2 is a precision-style measure. A cost optimisation that trades
+recall for tokens is invisible to all of them, and I only caught this one
+because I swept a parameter I expected to be neutral and read the claim counts
+rather than the pass rate.
+
+The other route to 50% is to have memory serve the *answer* rather than the
+*retrieval* — answer from stored claims without re-reading sources. That is a
+different and much less safe design, because it means trusting a prior
 conclusion rather than the evidence under it. I did not build it, and I would
 argue against building it for a system whose entire point is being auditable.
+Note that it is also the route the brief explicitly rules out: "caching an
+answer you have already seen does not count".
 
 ### The prompt budget: 24.1% → 34.0%
 
@@ -816,7 +905,11 @@ was broken.** If I had trusted the report I would have reverted working code.
 Ranked by how much they would bother me in review.
 
 1. **No live run.** Everything is a replay. Stated in section 0 and repeated in
-   every artifact header.
+   every artifact header. The blocker is **network egress, not just a missing
+   key** — the sandbox reaches the package index and nothing else, so even a
+   valid You.com key would authenticate against an unreachable host (§0 has the
+   measurements). I stated the key-only version for several sessions, which
+   understated the problem in the direction that flattered the work.
 2. **No session logs.** The brief weighs three things: *"The session logs tell
    us how you work. The write-up tells us how you think. The code tells us what
    you can build. We weigh all three."* One of those three axes is not
@@ -851,31 +944,41 @@ Ranked by how much they would bother me in review.
    adapters. Nobody here was, and the alternative was carrying ~830 lines of
    knowingly-broken, untestable, credential-gated code — but it is a break and
    it belongs on this list rather than in a footnote.
-5. **Extra credit not achieved** — 34.0%, not 50% (§3). Closer than the 24.1%
-   it was, and I know where the remaining gap is: the answer is still grounded
-   in freshly-fetched source text, and cutting that means answering from stored
-   conclusions instead of evidence. I argue against that in §3 and still do.
-   There is also ~3 points I measured and deliberately did not take — the
-   memory budget sweep in §3 — because taking it would be tuning to a harness
-   that cannot see what the setting costs.
-6. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
+5. **Extra credit not achieved** — 34.0%, not 50% (§3). The gap is now
+   arithmetic rather than mystery: input tokens are 84.6% of what remains and
+   2,823 of them alone exceed the 2,530 a 50% cut allows, so the target cannot
+   be reached without cutting the evidence block. **I can reach −51.2% by
+   setting `evidence_limit=3`, and I did not**, because it costs 4 of 28 claims
+   while every metric this project reports stays green. The full table is in
+   §3. Two smaller amounts were also measured and left: ~3 points from the
+   memory-budget sweep, for the same reason.
+6. **There is no recall metric, and that is the most serious gap in the
+   evaluation itself.** Every quality number here — 8/8 complete, 28/28
+   supported, 20/20 seeded defects — measures the *support rate of what was
+   asserted*. Nothing measures what was omitted. That makes the whole suite
+   blind to a cost optimisation that simply answers less, which is exactly the
+   failure mode a "make cost fall while accuracy holds" exercise invites. I
+   found the one instance above by accident, sweeping a parameter I expected to
+   be neutral. A claim-recall measure against a per-question answer key is the
+   fix, and it does not exist yet.
+7. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
    pre-registers Zerodha, Infosys, Wipro and Zepto, because entity resolution is
    deterministic and does not invent entities from free text. Without it the
    resolver returns "unknown" and reuse can never engage. A real deployment
    accumulates these over time; doing it up front keeps the harness honest about
    what it measures rather than silently measuring nothing. But it *is* a
    thumb on the scale and it belongs in this list.
-7. **The cross-check's notion of corroboration is lexical** (§4.7). The old
+8. **The cross-check's notion of corroboration is lexical** (§4.7). The old
    high-confidence bypass is closed — the gate is now model-independent — but
    "independently states the figure" is decided by numeric-fact and overlap
    matching, and the offline corpus is single-source-per-fact, so the cross-check
    rejects genuine single-source claims it cannot confirm. Live search is the
    real test and remains unavailable.
-8. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
+9. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
    The scan is now documented as deliberate (the dead `memory_records_text`
    index was removed rather than kept as decoration); the replacement is FTS5
    or the embedding store when the corpus outgrows it.
-9. **The disagreement resolver fires exactly once on this corpus** (§4.10). One
+10. **The disagreement resolver fires exactly once on this corpus** (§4.10). One
    planted conflict, correctly resolved on authority. That demonstrates the
    mechanism; it does not validate the tier table, and a single positive is not
    a measurement. The two false-positive classes I found and fixed on the way
@@ -883,13 +986,13 @@ Ranked by how much they would bother me in review.
    labelled disagreement set to score against. Its authority ordering is my
    judgement written down (`resolution.AUTHORITY_TIERS`) — legible and
    arguable, but not derived from anything.
-10. **The counterfactual column prices a harness, not a run** (§2.4). The
+11. **The counterfactual column prices a harness, not a run** (§2.4). The
    arithmetic is exact and the rates are real, but the token counts come from
    an extractive model that quotes rather than reasons. A live model would emit
    more output tokens and likely take more turns, so ₹0.1252 is a floor on a
    floor. It answers "show the trend in rupees"; it does not answer "what does
    this agent cost".
-11. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
+12. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
    overwrite (memory now holds all eight answers, not one) raised retrieval
    searches in *both* modes — Q3 plans 3 subqueries where it planned 1 —
    because the planner expands entity-prefixed subqueries from everything it

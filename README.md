@@ -40,6 +40,13 @@ and explains exactly which conclusions that does and does not support.
 To run against real providers instead, configure `.env` (see Setup) and pass
 `--live`.
 
+**`--live` has never been executed.** The environment this was built in has no
+general outbound internet — it reaches the Python package index and nothing
+else, with TLS handshakes to every other host closed (measured in
+`docs/WRITEUP.md` §0). So live mode needs *network egress as well as*
+credentials, and the code path is verified by unit tests against mocked
+transports rather than by a real run. Treat it as untested end to end.
+
 ## Setup
 
 1. Create a virtual environment and install the package with development dependencies:

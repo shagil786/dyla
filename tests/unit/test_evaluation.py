@@ -157,3 +157,66 @@ def test_markdown_escape_handles_pipes_without_pep701_syntax():
     assert _md_escape("a|b") == "a\\|b"
     assert _md_escape("plain") == "plain"
     assert _md_escape(7) == "7"
+
+
+def test_the_quality_gate_cannot_see_an_answer_that_omits_claims(tmp_path):
+    """Pins a known blind spot rather than a behaviour: there is no recall metric.
+
+    Both answers below score identically -- 100% supported, status complete --
+    but the second asserts half as much. This is why the ``evidence_limit=3``
+    sweep in WRITEUP section 3 showed a 51.2% cost reduction with every
+    reported metric green while quietly dropping 4 of 28 claims.
+
+    If a claim-recall measure is ever added, this test should start failing and
+    be replaced by one asserting the two answers score differently. Until then
+    it exists so the gap is discoverable from the test suite and not only from
+    a paragraph in the write-up.
+    """
+    from dyla.domain import AnalystAnswer, AuditVerdict, Citation, Claim
+
+    def result_with(claim_count: int, tokens: int) -> SimpleNamespace:
+        claims = [
+            Claim(id=f"c{n}", text=f"claim {n}",
+                  citations=[Citation(url=f"https://example.com/{n}", title="S",
+                                      source_id=f"s{n}", chunk_id=None)],
+                  confidence="high")
+            for n in range(1, claim_count + 1)
+        ]
+        verdicts = [
+            AuditVerdict(claim_id=claim.id, status="supported", explanation="ok",
+                         citations_checked=claim.citations)
+            for claim in claims
+        ]
+        return SimpleNamespace(
+            quality=QualityResult("complete", []),
+            run_id="run",
+            metrics=Metrics(input_tokens=tokens, output_tokens=tokens // 2,
+                            estimated_cost=0.0, duration_ms=10, searches=1,
+                            fetches=1, memory_hits=0, parallel_calls=1),
+            answer=AnalystAnswer(answer="a", claims=claims, limitations=[]),
+            verdicts=verdicts,
+        )
+
+    full = run_evaluation(questions=("Q",), runner=lambda _q: result_with(4, 100),
+                          output_dir=tmp_path / "full")
+    thin = run_evaluation(questions=("Q",), runner=lambda _q: result_with(2, 50),
+                          output_dir=tmp_path / "thin")
+
+    assert full["passed"] == thin["passed"] == 1
+
+    def support_rate(report):
+        return [
+            (sum(1 for v in item["verdicts"] if v["status"] == "supported"),
+             len(item["verdicts"]))
+            for item in report["results"]
+        ]
+
+    # Same perfect support rate, different completeness. Nothing distinguishes
+    # them, and the thinner answer is strictly cheaper.
+    assert support_rate(full) == [(4, 4)]
+    assert support_rate(thin) == [(2, 2)]
+    assert (thin["cost_report"]["totals"]["counterfactual_inr"]
+            < full["cost_report"]["totals"]["counterfactual_inr"]), (
+        "the cheaper answer is cheaper precisely because it says less, and no "
+        "reported metric penalises it"
+    )

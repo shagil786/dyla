@@ -175,10 +175,17 @@ fails; restored → 319 passed. Full record: `runlogs/P5-memory-proof.md`.
 
 ## Part 3 — Decisions needed before P1/P2 start
 
-1. **Live API access.** P2-1 through P2-4 and all of P3 need working keys for the
-   model, embedding and You.com search providers. Without them the ceiling is a
-   recorded-fixture harness — defensible, but it must be stated plainly in the
-   write-up rather than presented as a live run.
+1. **Live API access — and egress.** P2-1 through P2-4 and all of P3 need
+   working keys for the model, embedding and You.com search providers. They
+   also need something this backlog previously failed to name: **outbound
+   network access**. Measured on this environment — `pypi.org` and
+   `files.pythonhosted.org` return 200; `en.wikipedia.org`, `example.com`,
+   `google.com`, `api.openai.com` and `api.you.com` all have the TLS
+   connection closed. DNS resolves and `validate_external_url` passes, so the
+   failure surfaces late, at handshake. A key alone therefore unblocks
+   nothing. Without both, the ceiling is a recorded-fixture harness —
+   defensible, but it must be stated plainly in the write-up rather than
+   presented as a live run.
 2. ~~**P1-4** — is `local` a credible default auditor, or an offline stub?~~
    **Resolved:** it stays the default, now that it is credible.
 3. ~~**P1-7** — wire in `agent_runtime.py`, or delete it?~~ **Resolved:** wired in.
