@@ -92,7 +92,7 @@ def test_auditor_emits_contradicted_and_uncited_verdicts_and_persists_them():
     )
 
     assert [verdict.status for verdict in verdicts] == ["contradicted", "uncited"]
-    assert [item[0] for item in memory.claims] == ["contradicted", "uncited"]
+    assert [item[0] for item in memory.claims] == ["run-2:contradicted", "run-2:uncited"]
     assert verdicts[1].citations_checked == []
 
 
@@ -346,7 +346,7 @@ def test_auditor_run_with_model_comparator_produces_verdicts_and_no_issues():
         ("source_fetched", None),
         ("claim_audited", "contradicted"),
     ]
-    assert memory.claims == [("c1", "contradicted")]
+    assert memory.claims == [("run-model:c1", "contradicted")]
 
 
 def test_misattribution_check_sees_entities_learned_after_the_auditor_was_built():
@@ -452,3 +452,54 @@ def test_the_last_failed_attempt_is_not_marked_as_retrying(tmp_path):
     retried = [e for e in events if e["event"] == "source_fetch_retried"]
 
     assert [e["payload"]["will_retry"] for e in retried] == [True, False]
+
+
+def test_two_runs_with_the_same_bare_claim_ids_both_persist(tmp_path):
+    """Regression: claim IDs are per-answer (c1..cN), so storing them bare let
+    each run overwrite the previous run's rows -- durable memory held only the
+    latest answer. Storage keys are run-namespaced; both runs' claims survive."""
+    from dyla.memory import MemoryStore
+
+    store = MemoryStore(tmp_path / "dyla.db")
+    store.initialize()
+    agent = AuditorAgent(fetcher=FakeFetcher(), memory=store)
+
+    agent.run(
+        answer_with(Claim(id="c1", text="first run claim about Zerodha", citations=[], confidence="high")),
+        "run-one",
+    )
+    agent.run(
+        answer_with(Claim(id="c1", text="second run claim about Infosys", citations=[], confidence="high")),
+        "run-two",
+    )
+
+    rows = store.connection.execute("SELECT id, text FROM claims ORDER BY id").fetchall()
+    assert [(row["id"], row["text"]) for row in rows] == [
+        ("run-one:c1", "first run claim about Zerodha"),
+        ("run-two:c1", "second run claim about Infosys"),
+    ]
+    verdict_rows = store.connection.execute("SELECT claim_id FROM audit_verdicts ORDER BY claim_id").fetchall()
+    assert [row["claim_id"] for row in verdict_rows] == ["run-one:c1", "run-two:c1"]
+    memory_rows = store.connection.execute("SELECT id FROM memory_records ORDER BY id").fetchall()
+    assert [row["id"] for row in memory_rows] == ["run-one:c1", "run-two:c1"]
+
+
+def test_probe_audits_with_persist_false_leave_no_memory_behind(tmp_path):
+    """Regression: the seeded-defect audit used to save its planted lies to
+    dyla.db, overwriting real claims (and, once fixed, still adding fabricated
+    rows the next run would inherit). Probes audit read-only."""
+    from dyla.memory import MemoryStore
+
+    store = MemoryStore(tmp_path / "dyla.db")
+    store.initialize()
+    memory_claim = Claim(id="c1", text="real claim", citations=[], confidence="high")
+    store.save_claim(memory_claim, None)
+    agent = AuditorAgent(fetcher=FakeFetcher(), memory=store)
+
+    probe = Claim(id="c1", text="planted lie with no support anywhere", citations=[], confidence="high")
+    verdicts = agent.run(answer_with(probe), "seeded-fabricated_claim-0-1", persist=False)
+
+    assert [verdict.status for verdict in verdicts] == ["uncited"]
+    rows = store.connection.execute("SELECT id, text FROM claims").fetchall()
+    assert [(row["id"], row["text"]) for row in rows] == [("c1", "real claim")]
+    assert store.connection.execute("SELECT COUNT(*) FROM research_warnings").fetchone()[0] == 0

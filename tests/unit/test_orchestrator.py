@@ -315,3 +315,16 @@ def test_a_normal_run_is_unaffected_by_the_ceiling(tmp_path):
     assert result.answer.answer == "answer"
     assert len(result.verdicts) == 1
     assert not any("wall-clock" in issue for issue in result.quality.issues)
+
+
+def test_orchestrator_persists_run_namespaced_claim_ids(tmp_path):
+    """The orchestrator's memory write must use the same namespaced key as the
+    auditor's, or the two writes diverge and cross-run history is lost."""
+    events = []
+    memory = FakeMemory(events)
+    result = asyncio.run(RunOrchestrator(
+        analyst=FakeAnalyst(events), auditor=FakeAuditor(events), memory=memory,
+        trace_writer=FakeTrace(tmp_path, events), quality_gate=None,
+    ).ask("question"))
+
+    assert memory.records == [(f"{result.run_id}:c1", "uncited")]

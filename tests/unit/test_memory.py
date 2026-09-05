@@ -6,6 +6,28 @@ from dyla.domain import AuditVerdict, Claim, Citation
 from dyla.memory import MemoryStore
 
 
+def _seed_text(store, text, *, claim_id, source_ids=()):
+    """Seed a memory record the way production does: through save_claim.
+
+    save_claim is the store's only writer (add_memory was removed as dead
+    API), so tests seed through it too. search_memory does not filter by
+    kind, and verdict=None stores the record unverified.
+    """
+    citations = [
+        Citation(
+            url=f"https://example.com/{source_id}",
+            title="Source",
+            source_id=source_id,
+            chunk_id=f"{source_id}-chunk",
+        )
+        for source_id in source_ids
+    ]
+    store.save_claim(
+        Claim(id=claim_id, text=text, citations=citations, confidence="high"),
+        None,
+    )
+
+
 def test_initialize_creates_application_memory_schema(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
 
@@ -46,17 +68,16 @@ def test_upsert_entity_reuses_id_and_alias_search_is_exact(tmp_path):
 def test_search_memory_returns_matching_records_in_stable_order(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     store.initialize()
-    entity_id = store.upsert_entity("Acme Corporation", "organization")
-    store.add_memory(
+    _seed_text(
+        store,
         "Acme announced a new product.",
-        kind="note",
-        entity_ids=[entity_id],
+        claim_id="c1",
         source_ids=["source-1"],
     )
-    store.add_memory(
+    _seed_text(
+        store,
         "Acme product sales increased.",
-        kind="note",
-        entity_ids=[entity_id],
+        claim_id="c2",
         source_ids=["source-2"],
     )
 
@@ -67,6 +88,7 @@ def test_search_memory_returns_matching_records_in_stable_order(tmp_path):
         "Acme product sales increased.",
     ]
     assert records[0].verified is False
+    assert records[0].source_ids == ["source-1"]
 
 
 def test_save_claim_persists_claim_verdict_sources_and_memory_record(tmp_path):
@@ -130,14 +152,19 @@ def test_research_warning_rejects_empty_text(tmp_path):
 def test_memory_operations_are_safe_from_worker_threads_and_concurrent_access(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     store.initialize()
-    store.add_memory("seed record", kind="note")
+    _seed_text(store, "seed record", claim_id="seed")
 
     async def search_from_worker():
         return await asyncio.to_thread(store.search_memory, "seed", 10)
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = [
-            executor.submit(store.add_memory, f"concurrent record {index}", kind="note")
+            executor.submit(
+                _seed_text,
+                store,
+                f"concurrent record {index}",
+                claim_id=f"concurrent-{index}",
+            )
             for index in range(20)
         ]
         futures.extend(
@@ -155,8 +182,10 @@ def test_memory_operations_are_safe_from_worker_threads_and_concurrent_access(tm
 def test_search_memory_strips_punctuation_from_each_query_term(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     store.initialize()
-    store.add_memory(
-        "Zerodha was founded in 2010 by Nithin Kamath.", kind="fact"
+    _seed_text(
+        store,
+        "Zerodha was founded in 2010 by Nithin Kamath.",
+        claim_id="c1",
     )
 
     records = store.search_memory("Zerodha, founded", limit=10)
@@ -169,10 +198,14 @@ def test_search_memory_strips_punctuation_from_each_query_term(tmp_path):
 def test_search_memory_finds_relevant_record_for_multi_word_question(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     store.initialize()
-    store.add_memory(
-        "He joined Zerodha in 2013 to start its technology team.", kind="fact"
+    _seed_text(
+        store,
+        "He joined Zerodha in 2013 to start its technology team.",
+        claim_id="c1",
     )
-    store.add_memory("Acme announced a quarterly filing.", kind="fact")
+    _seed_text(
+        store, "Acme announced a quarterly filing.", claim_id="c2"
+    )
 
     records = store.search_memory(
         "Who is the chief technology officer of Zerodha and what did he do before?",
@@ -187,9 +220,13 @@ def test_search_memory_finds_relevant_record_for_multi_word_question(tmp_path):
 def test_search_memory_orders_records_by_number_of_overlapping_terms(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     store.initialize()
-    store.add_memory("Zerodha is an Indian stockbroker.", kind="fact")
-    store.add_memory(
-        "Nithin Kamath is the chief executive officer of Zerodha.", kind="fact"
+    _seed_text(
+        store, "Zerodha is an Indian stockbroker.", claim_id="c1"
+    )
+    _seed_text(
+        store,
+        "Nithin Kamath is the chief executive officer of Zerodha.",
+        claim_id="c2",
     )
 
     records = store.search_memory(
@@ -205,7 +242,9 @@ def test_search_memory_orders_records_by_number_of_overlapping_terms(tmp_path):
 def test_search_memory_ignores_stopword_only_and_punctuation_only_queries(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     store.initialize()
-    store.add_memory("Zerodha is an Indian stockbroker.", kind="fact")
+    _seed_text(
+        store, "Zerodha is an Indian stockbroker.", claim_id="c1"
+    )
 
     assert store.search_memory("The of and who is?", limit=10) == []
     assert store.search_memory("?! ..., ;", limit=10) == []
@@ -214,11 +253,15 @@ def test_search_memory_ignores_stopword_only_and_punctuation_only_queries(tmp_pa
 def test_search_memory_returns_nothing_for_unrelated_queries(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     store.initialize()
-    store.add_memory(
-        "He joined Zerodha in 2013 to start its technology team.", kind="fact"
+    _seed_text(
+        store,
+        "He joined Zerodha in 2013 to start its technology team.",
+        claim_id="c1",
     )
-    store.add_memory(
-        "Zerodha was founded in 2010 by Nithin Kamath.", kind="fact"
+    _seed_text(
+        store,
+        "Zerodha was founded in 2010 by Nithin Kamath.",
+        claim_id="c2",
     )
 
     records = store.search_memory("What is the capital of France?", limit=10)
@@ -229,9 +272,17 @@ def test_search_memory_returns_nothing_for_unrelated_queries(tmp_path):
 def test_search_memory_limit_applies_to_ranked_results(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     store.initialize()
-    store.add_memory("Zerodha is an Indian stockbroker.", kind="fact")
-    store.add_memory("Zerodha built its ranking technology in house.", kind="fact")
-    store.add_memory("Zerodha publishes a ranking of brokers.", kind="fact")
+    _seed_text(
+        store, "Zerodha is an Indian stockbroker.", claim_id="c1"
+    )
+    _seed_text(
+        store,
+        "Zerodha built its ranking technology in house.",
+        claim_id="c2",
+    )
+    _seed_text(
+        store, "Zerodha publishes a ranking of brokers.", claim_id="c3"
+    )
 
     records = store.search_memory("Zerodha ranking", limit=2)
 
@@ -272,7 +323,9 @@ def test_memory_records_carry_no_free_text_index(tmp_path):
         )
     }
     assert "memory_records_text" not in names
-    store.add_memory("Zerodha is an Indian stockbroker.", kind="fact")
+    _seed_text(
+        store, "Zerodha is an Indian stockbroker.", claim_id="c1"
+    )
     assert store.search_memory("stockbroker")  # the scan still works
 
     # Simulate a database created by an older version, then re-initialize:

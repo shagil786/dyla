@@ -87,6 +87,7 @@ class QualityGate:
             "reuse_probe_failed", "reuse_insufficient",
             # results and course corrections
             "evidence_selected", "claim_audited", "claim_rejected",
+            "claim_corroborated",
             "answer_synthesized", "answer_withheld", "auditor_failed",
             "quality_completed",
         }

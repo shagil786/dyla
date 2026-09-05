@@ -1160,3 +1160,48 @@ def test_the_plan_is_traced_before_any_search_happens(tmp_path):
     assert payload["subqueries"] == ["Q one", "Q two"]
     assert payload["entities"] == ["Acme"]
     assert payload["date_constraints"] == ["2024"]
+
+
+def test_an_accepted_cross_check_is_traced_with_its_confirming_source(tmp_path):
+    """Accepted corroboration used to leave no event: 24 fetches per suite run
+    with no record of what they confirmed. The trace must show the decision."""
+    from dyla.tracing import TraceWriter
+
+    model = _figure_claim_model()
+    agent, fetcher = _agent_with_corroboration(model, _CorroborationSearcher(), fetcher_text=(
+        "Acme opened 250 new stores in 2024, its annual report confirmed, taking the "
+        "total past 1,000 nationwide."
+    ))
+    agent.fetcher = fetcher
+    agent.trace_writer = TraceWriter(tmp_path)
+
+    answer = asyncio.run(agent.run("Q", "run-corroborated-traced"))
+
+    assert len(answer.claims) == 1
+    events = _trace_events(tmp_path, "run-corroborated-traced", "claim_corroborated")
+    assert len(events) == 1
+    assert events[0]["payload"]["accepted"] is True
+    assert events[0]["payload"]["source_url"]
+    assert events[0]["payload"]["sources_checked"] >= 1
+
+
+def test_a_rejected_cross_check_is_traced_before_the_rejection(tmp_path):
+    """The rejection names the reason; the corroboration event names the work."""
+    from dyla.tracing import TraceWriter
+
+    model = _figure_claim_model()
+    agent, fetcher = _agent_with_corroboration(model, _CorroborationSearcher(), fetcher_text=(
+        "Acme opened fewer than 50 new stores in 2024 and closed several older ones."
+    ))
+    agent.fetcher = fetcher
+    agent.trace_writer = TraceWriter(tmp_path)
+
+    answer = asyncio.run(agent.run("Q", "run-uncorroborated-traced"))
+
+    assert answer.claims == []
+    corroborated = _trace_events(tmp_path, "run-uncorroborated-traced", "claim_corroborated")
+    assert len(corroborated) == 1
+    assert corroborated[0]["payload"]["accepted"] is False
+    assert corroborated[0]["payload"]["source_url"] is None
+    names = [event["event"] for event in _read_trace(tmp_path, "run-uncorroborated-traced")]
+    assert names.index("claim_corroborated") < names.index("claim_rejected")

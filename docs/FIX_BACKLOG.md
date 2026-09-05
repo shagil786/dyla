@@ -118,10 +118,10 @@ The brief: *"Your run logs matter as much as your answers here."*
 
 | ID | Item | Notes |
 |---|---|---|
-| **P3-1** | ⚠️ **PARTIAL — 27.8%, not 50%.** Measured and reported as a shortfall in `docs/WRITEUP.md` §3, not rounded up. Searches fall 56% (9→4) and four of eight questions do zero searches; total tokens fall 13.5% over all eight and 27.8% over the four that can reuse anything. Memory removes the search step, not the grounding step. **Cost falls by half with accuracy held.** Make `memory_hits` actually suppress redundant search/fetch: before dispatching a subquery, check whether resolved entities already have verified claims covering it, and skip the web round-trip | This is the strongest candidate. It is the one the brief describes most concretely, memory infrastructure already exists, and "memory that transfers to an unseen question" is exactly what Q5–Q8 were designed to demonstrate. Today `memory_hits` is counted but changes no behaviour. |
-| **P3-2** | Source conflict auto-resolution — pick a number and justify it, rather than reporting both | Needs recency, primary-vs-secondary and publisher weighting. Depends on P1-1. |
+| **P3-1** | ⚠️ **PARTIAL — 24.1%, not 50%.** Measured and reported as a shortfall in `docs/WRITEUP.md` §3, not rounded up. (Was 27.8% / 13.5% before the P5-3 memory fix; memory that actually accumulates feeds the planner more subqueries, so both modes cost more and the net saving re-measured at 24.1% / 12.7%.) Searches fall 68% (19→6) and four of eight questions do zero searches; total tokens fall 12.7% over all eight and 24.1% over the four that can reuse anything. Memory removes the search step, not the grounding step. **Cost falls by half with accuracy held.** Make `memory_hits` actually suppress redundant search/fetch: before dispatching a subquery, check whether resolved entities already have verified claims covering it, and skip the web round-trip | This is the strongest candidate. It is the one the brief describes most concretely, memory infrastructure already exists, and "memory that transfers to an unseen question" is exactly what Q5–Q8 were designed to demonstrate. `memory_hits` now changes behaviour (reuse skips), and since P5-3 the hits themselves are real history rather than one overwritten run. |
+| **P3-2** | ⏸️ **DEFERRED — decided, not forgotten.** Source conflict auto-resolution — pick a number and justify it, rather than reporting both | Needs recency, primary-vs-secondary and publisher weighting that does not exist anywhere in the tree, and a naive "newer page wins" rule would be untestable: the offline corpus has dates but no publisher-authority signal, so the rule could only be exercised against fixtures that assume the conclusion. The shipped behaviour is P4-2's conservative resolution instead: a figure no independent page states is rejected with `insufficient_corroboration` (no-reuse 3, reuse 4 — the planted 1,53,670-crore figure among them), the corroborated figure is kept, and `claim_corroborated` now traces every accepted cross-check with its confirming source. Auto-resolution that *picks* rather than *rejects* stays a live-data feature: it needs real publisher signals to be anything but a coin flip with a justification attached. |
 | **P3-3** | ✅ **DONE — negative result, measured and pinned.** Adversarial analyst — tell it an auditor will check every claim, measure whether citation quality improves or whether it starts citing authoritative-looking sources that don't support the claim. `scripts/experiment_adversarial_analyst.py` runs the full suite twice (baseline vs an audit-threat system prompt) and diffs answers, claims, citations and verdicts: **8/8 questions byte-identical** in reuse and no-reuse modes (`runlogs/P3-3-result-*.txt`). That is the expected offline result: `OfflineModel` is extractive — it recovers the `Question:` line and evidence blocks by marker and ignores the system message, so it structurally cannot change its citations under threat. The invariance is pinned by `tests/unit/test_offline.py`. Offline, the experiment cannot demonstrate model honesty either way; the real run needs a live key, which remains unavailable (see WRITEUP §4.8). |
-| **P3-4** | Auditor findings feed back automatically into the next run | P1-5 is the prerequisite; this is its honest, completed form. |
+| **P3-4** | ✅ **DONE.** Auditor findings feed back automatically into the next run | P1-5 is the completed form, and the tests prove the loop rather than asserting its parts: `test_claim_rejected_by_a_previous_audit_is_blocked_on_the_next_run`, `test_a_paraphrase_of_a_rejected_claim_is_also_blocked` (fingerprint, not substring), `test_rejected_claims_are_named_in_the_system_prompt`, plus `test_audit_feedback_blocking_is_traced_with_its_reason_code` driving `blocked_by_audit_feedback` through a real two-run trace. Caveat closed this session: the loop used to see only the previous run, because every run overwrote the last run's claim rows (see Part 4, P5-3); feedback now reads the full run history. |
 
 **Recommendation:** commit to **P3-1** and treat P3-3 as a bonus, since P3-3 is
 nearly free once the suite runs live. The brief is explicit: *"Solve one properly
@@ -139,6 +139,38 @@ rather than four loosely."*
 
 ---
 
+## Part 4 — Session 2026-09-05: provider independence, local execution, memory durability
+
+**Branch:** `arena/01a070ee-dyla` (from `arena/01a0701c-dyla` @ `a7a32eb`)
+**Suite:** `uv run pytest -q` → **319 passed** (was 302). `uv` itself was
+installed into the sandbox (`pip install --user uv`); the repo has no `uv`
+dependency — plain `pytest` from a venv runs the same suite.
+**Evaluation:** `scripts/run_suite.py` in both modes, fully local (SQLite,
+in-memory vector store, JSONL logs, recorded fixtures — `dyla.offline`
+imports stdlib only, and the offline path never touches the provider factory):
+**8/8 complete, seeded-defect audit 20/20, both modes.**
+
+Status key: `DONE` · `TODO` · `DECIDE` · `DEFERRED` · `OPEN` (newly found,
+needs a call)
+
+| ID | Item | Status |
+|---|---|---|
+| **P5-1** | Provider-independence pins: 12 tests in `tests/unit/test_provider_factory.py`. A fresh checkout (no env, no `.env`) defaults every model role to `local` and builds all four local providers with zero secrets set; the `compatible` adapter posts the standard OpenAI shape to an arbitrary localhost runner URL (no vendor-specific path/header/payload key); vendor names (`groq`, `azure`, `openai`, `anthropic`, `together`) are rejected as unknown for the model role, and unknown values are rejected for every other role (web fails fast at settings validation, since it has no local adapter). `grep -rin groq src/ tests/ scripts/ docs/ .env.example` → empty. | **DONE** |
+| **P5-2** | Committed artifacts were stale: `reports/` and `runs/` predated both the §4.2 scope-gate fix (committed Q1 `incomplete`, seeded 19/20) and P4-2 corroboration, so the write-up's "regenerate with one command" claim was false — regeneration produced 8/8 + 20/20. Regenerated in the established order (no-reuse first, copied to `evaluation-no-reuse.*`, then reuse; history now 19/20 entries, showing the fix landing). The pre-fix Q1 trace survives at `a7a32eb:runs/reuse/q01-…jsonl` for the §4.2 dissection. | **DONE** |
+| **P5-3** | ✅ **FIXED.** Claim-ID collision across runs. Claim IDs are per-answer (`c1`..`cN`), and `save_claim` upserted by bare ID — every run overwrote the previous run's rows, so durable memory held only the latest answer and audit feedback could never see back more than one run. Storage keys are now run-namespaced via `memory.memory_claim_id` at both write sites (auditor + orchestrator); answers/traces keep bare IDs; no production reader SELECTs by ID so nothing else changed. Post-fix `dyla.db`: 28 claims, 8 run prefixes, all supported. Behaviour delta, measured: `memory_hits` 7 → 61/suite, planner expands more subqueries (retrieval searches 9 → 19 baseline, 4 → 6 reuse), savings move to 12.7% / 24.1% (see WRITEUP §2–§3). | **DONE** |
+| **P5-4** | ✅ **FIXED.** Seeded-defect probes polluted `dyla.db`. The audit called the real `AuditorAgent.run`, which persisted every planted lie — the post-suite database held "Nithin Kamath is the CEO of Infosys" and the Singapore-Exchange fabrication *instead of* the real Q8 claims. `AuditorAgent.run` takes `persist=False` for read-only probes (still reads live memory, writes nothing); `run_suite.py` passes it. Post-fix: 0 fabricated rows, 0 warnings. | **DONE** |
+| **P5-5** | ✅ **FIXED.** Accepted cross-checks left no trace event. Rejections surfaced via `claim_rejected`, but the 24 corroboration fetches per run that *confirmed* a claim were metrics-only — "every tool call and what came back" had a hole. New `claim_corroborated` event (accepted/source/checked/detail), added to the validator allowlist; committed traces carry 14 (reuse) / 13 (no-reuse), matching `corroboration_searches` exactly. | **DONE** |
+| **P5-6** | ✅ **DONE — removed.** `MemoryStore.add_memory` had no production callers (definition + tests only). Call made: remove, not wire — evidence already lives in the vector store, claims flow through `save_claim`, and wiring a second writer would duplicate state and reintroduce the content-hash overwrite shape (`sha256(kind + text)` IDs collide across runs with different entity lists). Deleted the method, its now-unused `hashlib` import, and re-seeded all `test_memory.py` fixtures through `save_claim` (the store's single real writer); the stable-order test additionally asserts the `source_ids` round-trip it previously seeded-but-never-checked. Suite holds at 319 passed. Same precedent as the Azure removal and the P4-4 index removal: dead code deleted, not carried. | **DONE** |
+| **P5-7** | P3-3 re-confirmation after the memory fix: `scripts/experiment_adversarial_analyst.py` both modes → still byte-identical 8/8; `runlogs/P3-3-result-*.txt` unchanged. | **DONE** |
+| **P5-8** | Local completion receipt incorporated as `docs/RECEIPT.md` — verified against this HEAD by execution (319 passed, 8/8 + 20/20 both modes as committed), not pasted raw: stale counts refreshed, the false no-timeout claim struck with code cites, the padded 22-item failure list de-duplicated to ~15 with each item kept/corrected/rejected, and the production verdict re-scoped to what the brief actually grades. | **DONE** |
+
+Red proof for the P5-3–P5-5 tests (fix stashed, tests kept): the two auditor
+persistence tests fail (overwrite returns; probe rows persist), the two
+`claim_corroborated` tests fail (no event), the orchestrator namespacing test
+fails; restored → 319 passed. Full record: `runlogs/P5-memory-proof.md`.
+
+---
+
 ## Part 3 — Decisions needed before P1/P2 start
 
 1. **Live API access.** P2-1 through P2-4 and all of P3 need working keys for the
@@ -149,10 +181,13 @@ rather than four loosely."*
    **Resolved:** it stays the default, now that it is credible.
 3. ~~**P1-7** — wire in `agent_runtime.py`, or delete it?~~ **Resolved:** wired in.
 4. **Scope.** P0, P1, P2, P3-1 (partial — see its row), P3-3 (negative result,
-   measured and pinned) and all of P4 are done. The only open item is **P3-2**
-   (source conflict auto-resolution), which depends on recency/authority
-   weighting work that is out of scope; a live-key run is the standing
-   prerequisite for P3-3's real experiment and P2's live mode.
+   measured and pinned), P3-4 (closed — P1-5 is the completed form, see its
+   row) and all of P4 are done. P3-2 is **DEFERRED** with a recorded reason,
+   not silently dropped — see its row. This session (Part 4) closed P5-1
+   through P5-8, including P5-6 (dead `add_memory` API removed per explicit
+   call) and P5-8 (verified completion receipt). No code items remain open:
+   the only outstanding prerequisite is a live key for P3-3's real
+   experiment, P3-2's authority signals, and P2's live mode.
 
 5. ✅ **Qdrant entity-overwrite bug FIXED.** `QdrantVectorStore.upsert()` now
    reads the stored `entity_ids` for each point and unions them before writing.
