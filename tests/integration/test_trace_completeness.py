@@ -166,3 +166,106 @@ def test_the_validator_also_accepts_the_course_correction_events(tmp_path):
 
     unknown = [issue for issue in result.quality.issues if "unknown event" in issue]
     assert unknown == [], f"trace contains events the validator rejects: {unknown}"
+
+
+class _SingleClaimModel:
+    """Proposes exactly one claim, cited to the first evidence item in the prompt.
+
+    Copying url/source_id/chunk_id from the prompt's evidence blocks guarantees
+    the citation maps to what this run actually retrieved, so the claim reaches
+    the specific rejection gate each test is aimed at rather than dying on the
+    citation-mapping gate.
+    """
+
+    def __init__(self, text: str, confidence: str = "high") -> None:
+        from types import SimpleNamespace
+
+        self.text = text
+        self.confidence = confidence
+        self._namespace = SimpleNamespace
+
+    def complete(self, request):
+        from dyla.domain import AnalystAnswer, Claim, Citation
+        from dyla.offline import _parse_prompt
+
+        prompt = "\n".join(str(message.get("content", "")) for message in request.messages)
+        _, evidence = _parse_prompt(prompt)
+        item = evidence[0]
+        claim = Claim(
+            id="c1", text=self.text,
+            citations=[Citation(url=item["url"], title=item["title"],
+                                source_id=item["source_id"], chunk_id=item["chunk_id"])],
+            confidence=self.confidence,
+        )
+        return self._namespace(
+            parsed=AnalystAnswer(answer=self.text, claims=[claim], limitations=[]),
+            input_tokens=10, output_tokens=5, estimated_cost=0.0,
+        )
+
+
+def _rejection_reasons(root: Path, run_id: str) -> list[dict]:
+    return [
+        event["payload"] for event in _events(root, run_id)
+        if event["event"] == "claim_rejected"
+    ]
+
+
+def test_an_under_corroborated_claim_is_traced_with_its_reason_code(orchestrator):
+    """`insufficient_corroboration` must be asserted on the trace artifact.
+
+    It used to have no trace-level assertion at all: no test drove a claim
+    through the real analyst with low confidence and a single source, so a
+    change that silently dropped or renamed the event would have stayed green.
+    """
+    runner, root = orchestrator
+    runner.analyst.model = _SingleClaimModel(
+        "Nithin Kamath is the chief executive officer of Zerodha.",
+        confidence="low",
+    )
+
+    result = asyncio.run(runner.ask("Who is the current chief executive officer of Zerodha?"))
+
+    payloads = _rejection_reasons(root, result.run_id)
+    assert any(item["reason"] == "insufficient_corroboration" for item in payloads), payloads
+    event = next(item for item in payloads if item["reason"] == "insufficient_corroboration")
+    assert event["confidence"] == "low"
+    assert event["distinct_sources"] == 1
+    assert event["claim_text"] == "Nithin Kamath is the chief executive officer of Zerodha."
+
+
+def test_audit_feedback_blocking_is_traced_with_its_reason_code(orchestrator):
+    """`blocked_by_audit_feedback` must be asserted on the trace artifact.
+
+    The metric existed and the unit tests asserted it, but nothing asserted the
+    trace event: the machine-readable record a reviewer actually opens. Two
+    real runs — the first audited and rejected, the second restating the claim
+    — are the honest way to exercise it.
+    """
+    runner, root = orchestrator
+
+    runner.analyst.model = _SingleClaimModel(
+        "Nithin Kamath took over as chief executive officer of Zerodha in 2019."
+    )
+    first = asyncio.run(runner.ask("Who is the current chief executive officer of Zerodha?"))
+    first_audits = [
+        event["payload"] for event in _events(root, first.run_id)
+        if event["event"] == "claim_audited"
+    ]
+    assert any(item["status"] == "unsupported" for item in first_audits), first_audits
+
+    # The model ignores the "an auditor rejected this" instruction in its
+    # system prompt and restates the claim; the post-synthesis filter is the
+    # backstop the trace must record.
+    runner.analyst.model = _SingleClaimModel(
+        "In 2019, Nithin Kamath became the chief executive officer of Zerodha."
+    )
+    second = asyncio.run(runner.ask("Who is the current chief executive officer of Zerodha?"))
+
+    payloads = _rejection_reasons(root, second.run_id)
+    assert any(item["reason"] == "blocked_by_audit_feedback" for item in payloads), payloads
+    assert runner.analyst.metrics["claims_blocked_by_audit_feedback"] == 1
+    withheld = [
+        event for event in _events(root, second.run_id)
+        if event["event"] == "answer_withheld"
+    ]
+    assert withheld, "a run whose every claim was rejected must say so in the trace"
