@@ -128,3 +128,34 @@ def test_the_questions_vocabulary_matches_the_evidences():
     assert "profitable" in matched
     assert "zepto's" in matched or "zepto" in matched
     assert "valuation" in matched
+
+
+def test_selected_claims_are_verbatim_from_their_cited_source():
+    """The auditor re-fetches the cited page, so claims must be literally in it.
+
+    Tried and reverted: resolving "The company reported a net profit ..." to
+    name the company makes the claim readable standalone, and makes it
+    *unverifiable* -- the rewritten sentence is no longer in the source the
+    claim cites. Measured cost was 8/8 -> 7/8 with a true statement marked
+    unsupported, and measured benefit on recall was zero.
+
+    Any future paraphrasing of evidence has to solve attribution first. This
+    test exists so that gets rediscovered at the point of change rather than in
+    the auditor's verdicts.
+    """
+    from dyla.offline import CORPUS, OfflineModel, _source_id
+
+    by_url = {page.url: page.text for page in CORPUS}
+    evidence = [
+        {"text": page.text, "url": page.url, "title": page.title,
+         "source_id": _source_id(page.url), "chunk_id": "c0"}
+        for page in CORPUS
+    ]
+    question = ("State whether Zerodha, Infosys, Wipro, and Zepto are profitable "
+                "according to their latest published financials, and cite one source for each.")
+
+    for claim in OfflineModel()._claims(question, evidence):
+        source_text = by_url[claim.citations[0].url]
+        assert claim.text in source_text, (
+            f"claim is not verbatim in its cited source: {claim.text!r}"
+        )

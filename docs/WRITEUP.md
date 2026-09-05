@@ -429,27 +429,60 @@ within *hotels*". The key now matches on stems. I had reported Q1 as a genuine
 that cries wolf gets switched off, taking its true findings with it, so this
 matters more than the single point it moved.
 
-### 3.2 What is still broken, and the honest reason
+### 3.2 What is still broken, and two wrong explanations for it
 
-**Q7 is 1/4 and Q8 is 1/4 in the shipped configuration.** The selector now
-*proposes* the right sentences -- Zepto's loss, the 5-billion valuation -- and
-they are then thrown away downstream. Two distinct causes:
+**Q7 is 1/4 and Q8 is 1/4.** The previous revision of this section gave two
+causes. I then measured both, and **both were wrong**. Recording that, because
+the wrong versions were stated with the same confidence as the right one.
 
-1. **Corroboration rejects single-sourced figures.** "The round valued Zepto at
-   5 billion dollars" appears in exactly one fixture page. The cross-check
-   fetches other Zepto pages, finds none of them restates the figure, and
-   rejects the claim. That rule is *working as designed* and the design is
-   defensible -- one source for a number is thin -- but it means a corpus with
-   one page per fact cannot express those facts at all. Loosening it to close a
-   recall gap would trade away the property that catches fabricated figures.
-   I am not making that trade to improve a number I introduced.
-2. **The four-claim cap.** Q8 legitimately needs four profitability facts plus
-   whatever else it says. `max_claims=4` cannot fit them. Raising it inflates
-   token cost across every question, which is precisely the axis §3 is
-   measuring, so it is not a free fix either.
+**Wrong explanation 1: "four profitability facts do not fit under
+`max_claims=4`."** Plausible, and false. Sweeping the cap:
 
-Both are stated rather than fixed. The gap is real, its cause is known, and the
-cheap ways to close it damage something else the project claims.
+| `max_claims` | Tokens | Claims | Supported | Recall |
+|---|---|---|---|---|
+| **4 (shipped)** | 7,868 | 29 | 29 | **15/21** |
+| 5 | 8,115 | 34 | 34 | **15/21** |
+| 6 | 8,285 | 40 | 40 | **15/21** |
+| 8 | 8,586 | 49 | 49 | **15/21** |
+
+Recall is flat while claim count grows to 49 and cost rises 9%. The extra slots
+fill with *more Infosys revenue*, not the missing facts. This is the second time
+on this project a claim-count intuition has failed the same way, and the second
+time the recall metric caught it.
+
+**Wrong explanation 2: "co-reference is the blocker."** The right facts are
+phrased "**The company** reported a net profit of 26,713 crore rupees" — the
+sentence answering the question never names Infosys. That is a real defect
+(§4.6 lists it), so I built a narrow resolver: rewrite a leading generic subject
+to the document's subject, only when the first sentence or title supplies
+exactly one candidate.
+
+It resolved correctly and **made things worse**: 8/8 became 7/8, with
+"Zerodha is headquartered in Bengaluru" marked *unsupported*. The reason is the
+point. **The auditor re-fetches the cited page and checks the claim against
+it.** A rewritten sentence is no longer literally in the source, so a true claim
+becomes unverifiable — precisely the property that makes this system auditable
+turning against a well-meant fix. Restricting the resolver to *scoring* while
+citing the original wording restored 8/8 and moved recall **not at all** (15/21
+either way). Reverted: it was complexity with no measured benefit.
+
+The real remaining causes, now actually established:
+
+1. **Q7 — corroboration rejects single-sourced figures.** "The round valued
+   Zepto at 5 billion dollars" appears on one fixture page. The cross-check
+   finds no second source and rejects it. Working as designed; loosening it
+   trades away what catches fabricated figures.
+2. **Q7 — the two earlier valuations are in a sentence the selector never
+   reaches**, because "Zepto had previously been valued at 1.4 billion dollars
+   in 2023 and at 3.6 billion in 2024" shares almost no vocabulary with the
+   question beyond the entity.
+3. **Q8 — the profitability sentences are unattributed.** Fixable only by
+   rewriting evidence, which costs verifiability (above), or by a synthesis
+   model that can paraphrase-with-attribution. The extractive fixture model
+   cannot, and that is a limit of the harness rather than of the design.
+
+All three are stated rather than fixed, and the cheap fixes for each damage
+something the project claims.
 
 ### 3.3 Memory reuse costs one fact, and only recall could see it
 
@@ -1106,10 +1139,13 @@ Ranked by how much they would bother me in review.
    assumed.** `src/dyla/recall.py` scores each answer against a hand-written
    key of the facts its question demands. It started at 13/21; three defects it
    exposed are fixed (§3.1) and it now reads **15/21, with Q7 and Q8 still at
-   1/4 each**. The residue is diagnosed, not mysterious (§3.2): single-sourced
-   figures are rejected by the corroboration rule, and four profitability facts
-   do not fit under `max_claims=4`. Both cheap fixes would damage something
-   else the project claims, so they are named rather than taken.
+   1/4 each**. The residue is diagnosed (§3.2): single-sourced figures are
+   rejected by the corroboration rule, and Q8's profitability sentences are
+   unattributed ("The company reported ..."). I published two *other*
+   explanations for this gap before measuring them, and both were wrong — the
+   `max_claims` cap makes no difference (recall is flat while claim count grows
+   to 49), and resolving the co-reference actively broke the suite by making a
+   true claim unverifiable. Both are written up as failed attempts.
 7. **The recall key is mine, and it does not generalise.** 21 facts,
    hand-written against eight questions and 14 fixture pages. A reviewer may
    disagree with individual entries — it lives in `ANSWER_KEY` so that
