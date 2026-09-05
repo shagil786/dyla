@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 import json
 import threading
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1297,3 +1298,221 @@ def test_a_rejected_cross_check_is_traced_before_the_rejection(tmp_path):
     assert corroborated[0]["payload"]["source_url"] is None
     names = [event["event"] for event in _read_trace(tmp_path, "run-uncorroborated-traced")]
     assert names.index("claim_corroborated") < names.index("claim_rejected")
+
+
+# ---------------------------------------------------------------------------
+# Source disagreement: resolved on provenance, not dropped
+#
+# Before this, a source stating a *different* figure and a source saying
+# nothing were handled identically -- both counted as "no corroboration" and
+# the claim was dropped. That let a low-authority page veto a filing by
+# disagreeing with it, which is the "reports both and shrugs" failure in a
+# more evasive form.
+# ---------------------------------------------------------------------------
+
+
+class _DatedFetcher:
+    """Serves distinct text and publication dates per URL."""
+
+    def __init__(self, pages):
+        self.pages = pages
+
+    def fetch(self, url):
+        text, published = self.pages[url]
+        return type("Document", (), {"source_id": url, "url": url, "title": "Source",
+                                     "text": text, "published_at": published})()
+
+
+
+def _disagreement_agent(model, cited, rival, pages):
+    """Agent whose retrieved evidence matches the cited URL.
+
+    The citation validator drops claims citing anything not in the retrieved
+    evidence, so the index has to be seeded with the cited source or the run
+    never reaches the cross-check at all.
+    """
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}],
+                        entities=[], date_constraints=[])
+    index = FakeIndex(evidence=[Evidence(chunk_id="c1", source_id="s1", url=cited,
+                                         title="Source", text=pages[cited][0],
+                                         score=0.9, entity_ids=["e1"])])
+    agent = make_agent(model, plan, index)
+    agent.searcher = _CorroborationSearcher(urls=(rival,))
+    agent.fetcher = _DatedFetcher(pages)
+    return agent
+
+def _infosys_model(url="https://example.com/exchange/infosys-annual-report-fy25"):
+    text = ("Infosys Limited reported consolidated revenue of 1,62,990 crore "
+            "rupees for the financial year 2025.")
+    return type("Model", (), {"complete": lambda self, request: type("R", (), {"parsed": AnalystAnswer(
+        answer=text,
+        claims=[Claim(id="c", text=text,
+                      citations=[Citation(url=url, title="Source", source_id="s1", chunk_id="c1")],
+                      confidence="high")],
+        limitations=[],
+    )})()})()
+
+
+def test_a_lower_authority_source_cannot_veto_a_filing_by_disagreeing():
+    """Authority resolves it, the claim survives, and the trace says why."""
+    cited = "https://example.com/exchange/infosys-annual-report-fy25"
+    rival = "https://example.com/quick-summaries/infosys-revenue-note"
+    model = _infosys_model(cited)
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}],
+                        entities=[], date_constraints=[])
+    agent = _disagreement_agent(model, cited, rival, {
+        cited: ("Infosys Limited reported consolidated revenue of 1,62,990 crore "
+                "rupees for the financial year 2025.", datetime(2025, 4, 17, tzinfo=UTC)),
+        rival: ("Infosys Limited reported consolidated revenue of 1,53,670 crore "
+                "rupees for the financial year 2025 according to a preliminary "
+                "summary.", datetime(2024, 12, 30, tzinfo=UTC)),
+    })
+
+    answer = asyncio.run(agent.run("Q", "run-disagreement-won"))
+
+    assert len(answer.claims) == 1
+    assert agent.metrics["disagreements_resolved"] == 1
+    assert agent.metrics["disagreements_won"] == 1
+    assert agent.metrics["disagreements_lost"] == 0
+
+
+def test_a_higher_authority_disagreement_defeats_the_claim():
+    """The resolver must be able to rule against the claim, not only for it."""
+    cited = "https://example.com/quick-summaries/infosys-revenue-note"
+    rival = "https://example.com/exchange/infosys-annual-report-fy25"
+    text = ("Infosys Limited reported consolidated revenue of 1,53,670 crore "
+            "rupees for the financial year 2025.")
+    model = type("Model", (), {"complete": lambda self, request: type("R", (), {"parsed": AnalystAnswer(
+        answer=text,
+        claims=[Claim(id="c", text=text,
+                      citations=[Citation(url=cited, title="Source", source_id="s1", chunk_id="c1")],
+                      confidence="high")],
+        limitations=[],
+    )})()})()
+    agent = _disagreement_agent(model, cited, rival, {
+        cited: (text, datetime(2026, 12, 30, tzinfo=UTC)),
+        rival: ("Infosys Limited reported consolidated revenue of 1,62,990 crore "
+                "rupees for the financial year 2025.", datetime(2025, 4, 17, tzinfo=UTC)),
+    })
+
+    answer = asyncio.run(agent.run("Q", "run-disagreement-lost"))
+
+    assert answer.claims == []
+    assert agent.metrics["disagreements_lost"] == 1
+    assert any("better-sourced" in item.lower() or "independent" in item.lower()
+               for item in answer.limitations)
+
+
+def test_the_disagreement_is_traced_with_the_rule_that_decided_it():
+    """A resolution nobody can inspect is not a resolution."""
+    cited = "https://example.com/exchange/infosys-annual-report-fy25"
+    rival = "https://example.com/quick-summaries/infosys-revenue-note"
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        agent = _disagreement_agent(_infosys_model(cited), cited, rival, {
+            cited: ("Infosys Limited reported consolidated revenue of 1,62,990 crore "
+                    "rupees for the financial year 2025.", datetime(2025, 4, 17, tzinfo=UTC)),
+            rival: ("Infosys Limited reported consolidated revenue of 1,53,670 crore "
+                    "rupees for the financial year 2025 according to a preliminary "
+                    "summary.", datetime(2024, 12, 30, tzinfo=UTC)),
+        })
+        agent.trace_writer = TraceWriter(root=root)
+
+        asyncio.run(agent.run("Q", "run-disagreement-trace"))
+
+        events = [
+            json.loads(line)
+            for line in (root / "logs" / "run-disagreement-trace.jsonl").read_text().splitlines()
+        ]
+    resolved = [event for event in events if event["event"] == "disagreement_resolved"]
+    assert len(resolved) == 1
+    payload = resolved[0]["payload"]
+    assert payload["winner"] == "claim"
+    assert payload["basis"] == "authority"
+    assert payload["rival_value"].replace(",", "") == "153670 crore".replace(",", "")
+    assert "Authority" in payload["justification"]
+
+
+# ---------------------------------------------------------------------------
+# Memory context budget
+#
+# Memory was pasted into the prompt in full. On the suite's most expensive
+# question that made the "cost saving" feature a cost *increase*: 30 records
+# pushed Q8 to 1,534 input tokens against a 1,485-token no-memory baseline.
+# ---------------------------------------------------------------------------
+
+
+class _PromptCapturingModel:
+    """Records the prompt it was given, then answers from the first evidence item."""
+
+    def __init__(self):
+        self.prompt = ""
+
+    def complete(self, request):
+        self.prompt = "\n".join(str(m.get("content", "")) for m in request.messages)
+        return type("R", (), {"parsed": AnalystAnswer(
+            answer="ok",
+            claims=[Claim(id="c", text="Acme is based in Bengaluru.",
+                          citations=[Citation(url="https://example.com/1", title="Source",
+                                              source_id="s1", chunk_id="c1")],
+                          confidence="high")],
+            limitations=[])})()
+
+
+def _memory_agent(model, records):
+    class Memory(FakeMemory):
+        def search_memory(self, *args, **kwargs):
+            return records
+
+        def recent(self, *args, **kwargs):
+            return records
+
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}],
+                        entities=[], date_constraints=[])
+    agent = AnalystAgent(model=model, resolver=FakeResolver(), memory=Memory(),
+                         searcher=FakeSearcher(), fetcher=FakeFetcher(), index=FakeIndex(),
+                         embedder=FakeEmbedder(), planner=controlled_planner(plan))
+    return agent
+
+
+def test_memory_context_is_capped_so_prompt_size_does_not_grow_with_memory():
+    records = [
+        _claim_record(f"Acme opened a Bengaluru office in 20{10 + n}.", "supported",
+                      verified=True)
+        for n in range(30)
+    ]
+    model = _PromptCapturingModel()
+    agent = _memory_agent(model, records)
+
+    asyncio.run(agent.run("Where is Acme based in Bengaluru?", "run-memory-budget"))
+
+    quoted = model.prompt.count("Memory:")
+    assert quoted <= agent.memory_context_limit
+    assert agent.metrics["memory_records_dropped"] > 0
+
+
+def test_memory_unrelated_to_the_question_is_not_quoted_at_all():
+    """Paying input tokens for irrelevant memory is the waste being removed."""
+    records = [_claim_record("Zepto was valued at 5 billion dollars.", "supported",
+                             verified=True)]
+    model = _PromptCapturingModel()
+    agent = _memory_agent(model, records)
+
+    asyncio.run(agent.run("What is the GST rate on restaurant services?",
+                          "run-memory-irrelevant"))
+
+    assert "Zepto" not in model.prompt
+
+
+def test_relevant_memory_is_still_quoted():
+    """The budget must not silently disable the feature it is trimming."""
+    records = [_claim_record("Acme opened 250 stores in Bengaluru.", "supported",
+                             verified=True)]
+    model = _PromptCapturingModel()
+    agent = _memory_agent(model, records)
+
+    asyncio.run(agent.run("How many stores did Acme open in Bengaluru?",
+                          "run-memory-relevant"))
+
+    assert "Memory: Acme opened 250 stores in Bengaluru." in model.prompt
+    assert agent.metrics["memory_records_dropped"] == 0

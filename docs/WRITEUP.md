@@ -62,11 +62,17 @@ while this project was measured. First, the Fetches column counts evidence
 fetches **plus** the auditor's independent re-fetches of every cited URL: on
 Q5–Q8 the analyst fetches nothing (0 evidence fetches — pure reuse) and all
 3–4 fetches are the auditor doing its job. Second, neither column counts the
-cross-check: corroboration adds 14 searches and 24 fetches across the suite
-(analyst metrics `corroboration_searches`/`corroboration_fetches`), accepting
-10 claims and rejecting 4, and every one of those decisions is now a
-`claim_corroborated` trace event naming the confirming source or the reason
-there wasn't one. Section 4.7 has the detail.
+cross-check: corroboration adds its own searches and fetches across the suite
+(analyst metrics `corroboration_searches`/`corroboration_fetches`), and every
+one of those decisions is a `claim_corroborated` trace event naming the
+confirming source or the reason there wasn't one — 14 in the committed traces,
+against 4 `claim_rejected`. Section 4.7 has the detail.
+
+The cross-check now reads *every* candidate rather than stopping at the first
+agreeing one, which costs more fetches and is the only way a disagreement
+ranked below a corroboration can be seen at all (§4.10). One
+`disagreement_resolved` event appears in the committed traces: the planted
+Infosys revenue conflict, resolved in favour of the filing over the summary.
 
 Full logs, one file per question, with the plan, every tool call, every result
 and every course correction: `runs/reuse/qNN-*.jsonl`. The `--no-reuse` baseline
@@ -77,43 +83,74 @@ is in `runs/no-reuse/`. Cost tables: `reports/evaluation.md`. Auditor findings:
 
 ## 2. Cost per question, and the trend
 
-Cost is reported in tokens and in rupees. It is reported here as `unpriced`,
-and that is deliberate — see 2.2.
+Cost is reported in tokens, in rupees, and — because the model that ran has no
+published price — in a clearly-labelled **projection** onto a model that does.
+See 2.2 and 2.3.
 
 ### 2.1 The trend
 
 Total tokens per question (input + output + **embedding**), reuse vs baseline:
 
-| Q | Baseline | With memory | Change | Searches | Fetches |
-|---|---|---|---|---|---|
-| 1 | 910 | 910 | — | 1→1 | 8→8 |
-| 2 | 1014 | 1014 | — | 1→1 | 9→9 |
-| 3 | 1427 | 1427 | — | 3→3 | 9→9 |
-| 4 | 1200 | 1200 | — | 1→1 | 8→8 |
-| 5 | 981 | 828 | −16% | 3→**0** | 7→4 |
-| 6 | 1132 | 686 | −39% | 4→**0** | 8→3 |
-| 7 | 1032 | 641 | −38% | 2→**0** | 8→3 |
-| 8 | 1916 | 1684 | −12% | 4→**0** | 8→3 |
-| **All 8** | **9612** | **8390** | **−12.7%** | 19→6 (−68%) | 65→47 (−28%) |
-| **Q5–8 only** | **5061** | **3839** | **−24.1%** | 13→0 (−100%) | 31→13 (−58%) |
+| Q | Baseline | With memory | Change | Searches | Fetches | Projected ₹ |
+|---|---|---|---|---|---|---|
+| 1 | 910 | 910 | — | 1→1 | 8→8 | ₹0.0126 |
+| 2 | 1014 | 1014 | — | 1→1 | 9→9 | ₹0.0138 |
+| 3 | 1427 | 1427 | — | 3→3 | 9→9 | ₹0.0190 |
+| 4 | 1200 | 1200 | — | 1→1 | 8→8 | ₹0.0172 |
+| 5 | 981 | 828 | −16% | 3→**0** | 7→4 | ₹0.0151 |
+| 6 | 1132 | 686 | −39% | 4→**0** | 8→3 | ₹0.0133 |
+| 7 | 1032 | 534 | −48% | 2→**0** | 8→3 | ₹0.0115 |
+| 8 | 1916 | 1290 | −33% | 4→**0** | 8→3 | ₹0.0227 |
+| **All 8** | **9612** | **7889** | **−17.9%** | 19→6 (−68%) | 65→47 (−28%) |
+| **Q5–8 only** | **5061** | **3338** | **−34.0%** | 13→0 (−100%) | 31→13 (−58%) |
 
 The trend is flat for the first four questions and then steps down, which is
 what transferable memory should look like: nothing to transfer until something
 has been learned.
 
-These numbers moved since the last write-up (13.5% → 12.7%, 27.8% → 24.1%),
-and the reason is worth stating because it is a behaviour change, not a
-measurement change: durable memory used to hold only the previous run's claims
-— every run overwrote the last run's rows under the same bare `c1`..`cN` IDs —
-and now it holds all of them (`memory_hits` 7 → 61 per suite). The planner
-reads that memory and expands entity-prefixed subqueries from it, so both
-modes plan more searches than before (Q3: 1 → 3) while reuse still skips every
-search from Q5 on. Memory that actually remembers costs a little more to
-consult and saves a little less in net terms. That is the honest direction for
-a memory feature to move the numbers: the old saving was measured against a
-memory that forgot.
+These numbers moved twice, and both moves are behaviour changes rather than
+measurement changes.
 
-### 2.2 Why rupees says `unpriced`
+**First move (13.5% → 12.7%, 27.8% → 24.1%): memory started remembering.**
+Durable memory used to hold only the previous run's claims — every run
+overwrote the last run's rows under the same bare `c1`..`cN` IDs — and now it
+holds all of them (`memory_hits` 7 → 61 per suite). The planner reads that
+memory and expands entity-prefixed subqueries from it, so both modes plan more
+searches than before (Q3: 1 → 3) while reuse still skips every search from Q5
+on. Memory that actually remembers costs a little more to consult and saves a
+little less in net terms. That is the honest direction for a memory feature to
+move the numbers: the old saving was measured against a memory that forgot.
+
+**Second move (12.7% → 17.9%, 24.1% → 34.0%): the prompt stopped growing with
+memory.** See §3.
+
+### 2.2 Q8, and the cost of remembering everything
+
+Q8 is the most expensive question in the suite, and until this session it was
+the one question where **reuse made things worse**: 1,534 input tokens with
+memory against a 1,485-token no-memory baseline. A feature sold as a cost
+reduction was, on the single most expensive question, a cost increase.
+
+The cause was that every retrieved memory record was pasted into the prompt
+verbatim. Q8 asks about four companies at once, so it retrieved 20–30 records
+and paid input tokens for all of them — including records about entities the
+question does not ask about. The saving on searches was real and was being
+eaten by the prompt.
+
+This is the shape of bug that hides inside a favourable average. The suite-wide
+figure was a respectable −12.7% while the most expensive question was
+regressing, and no unit test could see it: each component behaved correctly,
+and only the end-to-end token count across a *sequence* of questions showed the
+interaction. It is the same failure mode as the three bugs in §3, and the same
+thing found it — running all eight questions in order and reading the numbers
+per question rather than in aggregate.
+
+The fix is in §3. Q8 is now −33% against baseline, and its projected cost fell
+from **2.24× Q1 to 1.79× Q1**. It is still the most expensive question, which
+is correct: it is a four-entity question and should cost more than a
+one-entity question.
+
+### 2.3 Why the measured rupee column says `unpriced`
 
 The repository previously multiplied an internal "adapter unit" by a constant
 `0.8` and printed the product as rupees. That constant was invented. It was not
@@ -136,14 +173,48 @@ DYLA_PRICE_INPUT_PER_MTOK_USD=0.15 DYLA_PRICE_OUTPUT_PER_MTOK_USD=0.60 \
   .venv/bin/python scripts/run_suite.py --live
 ```
 
+### 2.4 The counterfactual column
+
+Refusing to invent a price is right. But a rupee column reading `unpriced` in
+all eight rows answers the brief's "report your cost per question in tokens and
+rupees, and show the trend" with silence, and silence is not the same as
+honesty. The gap was real: there was no rupee trend at all.
+
+So the report now carries a second column, **Projected ₹**: what these exact
+token counts would have cost on `gpt-4o-mini` at its published rate
+($0.15/$0.60 per 1M, 94.5 INR/USD).
+
+The distinction is enforced in code, not just in prose. `cost_in_rupees` is
+only ever populated from the model that actually ran; `counterfactual_inr` is
+arithmetic on real token counts at a real published rate for a model that did
+not run. They are separate keys with separate names, and every renderer prints
+the reference model's name beside the projection. `DYLA_PRICE_*` deliberately
+does *not* feed the projection — letting it would silently reprice the
+reference and make the two columns compare a model against itself.
+
+The whole suite projects to **₹0.1252**, and the reference model is the
+cheapest widely-used hosted option in the table on purpose: the projection
+should read as a floor, not a flattering mid-range guess.
+
+What this column is not: evidence about what a live run would cost. The token
+counts come from an extractive model that quotes evidence rather than reasoning
+over it. A real model on these questions would emit more output tokens and
+probably take more turns. The arithmetic is exact; the input to it is a
+harness. Both halves of that need saying together.
+
 ---
 
 ## 3. The extra credit: halve cost per question via transferable memory
 
 **I did not achieve it as specified, and I am not going to round up to it.**
 
-Target: 50% reduction in cost per question. Measured: **12.7% across all eight
-questions, 24.1% across the four that could reuse anything.** Searches fell 68%.
+Target: 50% reduction in cost per question. Measured: **17.9% across all eight
+questions, 34.0% across the four that could reuse anything.** Searches fell 68%.
+
+Those figures were 12.7% and 24.1% before this session. What moved them is
+described in "the prompt budget" below, and it is worth reading as a method
+rather than a number: the gain came from noticing that the feature was
+*spending* on the question where it should have saved most.
 
 ### Why it falls short, precisely
 
@@ -155,7 +226,7 @@ qualify:
 - Q2, Q3, Q4 are the *first* questions about their entities. There is nothing
   to transfer to them by construction.
 
-So the honest denominator is Q5–Q8, where the reduction is 24.1%. Even there,
+So the honest denominator is Q5–Q8, where the reduction is 34.0%. Even there,
 50% is out of reach because **the analyst still fetches the cited sources to
 answer**. Memory removes the *search* step entirely (13→0) and more than halves
 fetches (31→13), but the answer still has to be grounded in retrieved text, and
@@ -166,6 +237,48 @@ To halve total cost, memory would need to serve the *answer*, not just the
 a different and much less safe design, because it means trusting a prior
 conclusion rather than the evidence under it. I did not build it, and I would
 argue against building it for a system whose entire point is being auditable.
+
+### The prompt budget: 24.1% → 34.0%
+
+The three bugs below explain how the saving got off the floor. This one
+explains why it was capped, and it is the most recent thing I found.
+
+Every memory record the store returned was pasted into the prompt as its own
+`Memory: ...` line. That is fine while memory is small and quietly
+self-defeating once it is not. Memory grows monotonically across runs, so the
+prompt grew with it — and the questions with the most memory to draw on are
+exactly the multi-entity ones that were already the most expensive. On Q8 it
+crossed over: 30 records, 1,534 input tokens, against a 1,485-token no-memory
+baseline (§2.2).
+
+Two rules, both cheap, in `AnalystAgent._memory_context`:
+
+* **Relevance.** Keep only records sharing a content word with the question. A
+  stored claim about Zepto's valuation cannot help answer a question about
+  Infosys's revenue, and paying input tokens to include it is pure waste.
+* **A budget.** Keep at most six records, ranked by overlap. This is what stops
+  prompt size tracking memory size.
+
+Records still reach corroboration and the audit-feedback filter — this trims
+only what is *quoted to the model*. Dropped records are counted into a
+`memory_context_trimmed` trace event, so the saving reads as a decision with a
+number attached rather than a figure that improved for unstated reasons.
+
+Result: Q5–8 from −24.1% to −34.0%, Q8 from +3% to −33%, with 8/8 complete,
+28/28 claims supported and 20/20 seeded defects caught — unchanged.
+
+**And the part I want to be explicit about.** I swept the limit over 3, 4, 6, 8
+and 12. Accuracy was *identical* at every setting; only cost moved (−36.9% at a
+limit of 3, −31.1% at 12). The cheapest measured value is 3. **I kept 6.**
+
+Tuning to 3 would be overfitting to a fixture corpus that cannot tell these
+settings apart. The offline model is extractive: it quotes evidence and barely
+uses memory as context, so this sweep does not measure what a real model would
+lose when starved of it. A flat accuracy curve across a 4× range of context
+budgets is not evidence that context is free — it is evidence that *this
+harness cannot see the cost of removing it*. So the extra ~3 points are left
+on the table and named here rather than banked. Had accuracy varied, the
+cheapest non-degrading value would have been the honest pick.
 
 ### What made the difference between 0% and 24.1%
 
@@ -358,7 +471,15 @@ it should have been 100%. The comparator now reads memory per comparison.
 - **Regex sentence segmentation**, which mis-splits on abbreviations.
 - **A fixed antonym/negation table.** Paraphrased reversals are missed.
 - **Two-entity sentences can false-positive** when a number belongs to the other
-  entity.
+  entity. The disagreement resolver (§4.10) hits the same limit from the other
+  side: a sentence naming two companies satisfies the subject gate for both, so
+  a figure belonging to one can be paired with a claim about the other.
+- **Authority tiers are substring matches on URLs** (§4.10). A URL that merely
+  contains a marker word is misgraded, and the tier table is hand-built and
+  specific to Indian filings and press. It encodes my judgement about which
+  sources outrank which; that judgement is visible in
+  `resolution.AUTHORITY_TIERS` and is meant to be argued with, but it is not
+  derived from anything.
 - **A deliberate blind zone**: numeric differences between 1% and 5% are
   reported as unverified, neither confirmed nor contradicted. An auditor that
   cries contradiction over rounding is useless; one that forgives 5% is
@@ -537,6 +658,95 @@ retrieves evidence and produces claims. So this is not a live defect. It is a
 branch that was untested and undocumented, and the offline harness's most
 likely real-world failure mode.
 
+### 4.10 Sources that disagree: resolved on provenance, not dropped (P3-2)
+
+This was previously **deferred**, and deferring it was hiding a defect rather
+than scoping one out.
+
+**What the agent used to do.** The cross-check had two outcomes: a second source
+restated the figure (accept), or it did not (reject). A source that addressed
+the claim and stated a *different* number fell into the second bucket. So the
+agent's response to genuine disagreement was to drop the claim and report that
+"independent sources … none states the claim's figure".
+
+That is worse than the "reports both figures and shrugs" failure the brief
+names. It does not report both — it silently discards the better-sourced figure
+because a worse-sourced one exists. A regulatory filing loses to a blog post
+that contradicts it. Phrased as caution, it is a bug with good manners.
+
+**The policy: authority first, recency within a tier.** In
+`src/dyla/resolution.py`:
+
+1. **Authority wins outright.** Sources grade into four tiers — primary
+   filing/regulator, exchange disclosure, established press, aggregator or
+   summary. A higher tier beats a lower one *regardless of date*, because a
+   preliminary summary does not overturn an audited annual report by being
+   published later.
+2. **Recency breaks ties within a tier.** Same authority usually means one
+   source is a restatement of the other, so the later one wins. Undated loses
+   to dated: an undated page cannot be shown to be the newer one, and treating
+   it as newest would let any unstamped page overturn a dated peer.
+3. **Neither: say so.** Same tier, same date is a real standoff. The resolver
+   returns `unresolved` and the figure is not asserted. This case is
+   deliberately reachable and directly tested — a resolver that always produces
+   a winner is exactly as uninformative as an auditor that approves everything.
+
+It ranks *provenance*, not plausibility. It never reads the figures to decide
+which looks more reasonable and never averages them; both would be inventing a
+fact. Every resolution emits a `disagreement_resolved` trace event naming the
+winner, the rule that fired, both tiers, both dates and both values, so the
+choice is arguable rather than a black box.
+
+**On the corpus.** The planted conflict is two sources on Infosys FY2025
+revenue: the annual report (₹1,62,990 crore, tier 4, 2025-04-17) and a
+"preliminary summary" note (₹1,53,670 crore, tier 1, 2024-12-30). The agent now
+keeps the filing's figure and records why:
+
+> Authority: `…/exchange/infosys-annual-report-fy25` is a primary filing or
+> regulator (tier 4) while `…/quick-summaries/infosys-revenue-note` is an
+> aggregator, summary or unclassified (tier 1), so the higher-authority figure
+> is preferred regardless of publication date.
+
+**Two things I got wrong on the way, both caught by reading the trace.**
+
+*First: the detector was far too loose.* The initial version gated only on word
+overlap and reported **six** disagreements across the suite — of which exactly
+**one** was real. The other five paired a company's profit against a different
+company's revenue: both large rupee figures, neither in conflict with the
+other. Three gates now apply, and each one exists because of a specific false
+positive: the rival sentence must restate a third of the claim, must name every
+subject the claim names, and must discuss the same *measured quantity*
+(revenue ≠ profit ≠ valuation ≠ raise amount).
+
+*Second, and worse: a correct claim got rejected.* Adding the subject gate made
+the true Infosys claim fail. The subject of "Infosys Limited reported…"
+extracted as `{"limited"}` — the existing `named_entities` drops
+sentence-initial capitals (right for misattribution checking, where
+"Restaurant services…" must not read as an entity) leaving only the corporate
+suffix. And "Wipro Limited" satisfies `{"limited"}`. So a fix aimed at removing
+false conflicts introduced a false rejection of the one true positive.
+`claim_subjects` now handles this case separately and strips corporate
+suffixes. Both behaviours are pinned in `tests/unit/test_rival_figure.py`,
+where every negative case is a false positive the first implementation actually
+produced.
+
+**A structural fix this exposed.** The cross-check used to `return` at the first
+corroborating source. That means a source flatly contradicting the claim went
+unexamined purely because an agreeing one ranked above it — the agent could not
+resolve a disagreement it never looked at. All candidates are now scanned,
+disagreements are adjudicated *before* corroboration is credited, and "one
+source agreed" is no longer treated as an answer to "another disagreed". Where
+provenance genuinely ties, an independent third source stating the figure
+carries the claim 2–1, reported as weight of agreement rather than as clean
+confirmation.
+
+**Limits.** Tiering is substring matching on URLs, so a URL merely containing a
+marker word is misgraded; the tier table is hand-built and Indian-market
+specific. A claim naming no subject at all ("The company reported…") is never
+adjudicated — the co-reference limit in §4.6, failing safe, since a
+disagreement that cannot be attributed cannot be resolved. And on this corpus
+the policy fires exactly once, so it is demonstrated, not validated at scale.
+
 ---
 
 ## 5. What changed between runs, and why
@@ -569,6 +779,10 @@ a per-question verdict trend across the last 16 full-suite runs.
 | Committed artifacts regenerated (P5-2) | `runs/` and `reports/` predated the §4.2 and P4-2 fixes (7/8, 19/20); now 8/8 + 20/20 both modes, reproducible with one command again |
 | Provider-independence pins (P5-1) | 10 test functions / 16 collected cases: fresh-checkout local defaults, no-secret builds, any-URL `compatible` adapter, vendor names rejected |
 | Dead `add_memory` API removed (P5-6) | Zero production callers; `save_claim` is now the store's only writer and all fixtures seed through it. Same precedent as the Azure and P4-4 deletions |
+| Counterfactual rupee column (§2.4) | The rupee half of the brief's cost question had no answer at all — eight rows of `unpriced`. Real token counts are now projected onto `gpt-4o-mini` list rates in a separately-named column, with the measured column left empty rather than backfilled |
+| Memory context budgeted and relevance-filtered (§3) | Every retrieved record used to be pasted into the prompt, so prompt size grew with memory. On Q8 that made reuse a net *cost*: 1,534 input tokens vs a 1,485 baseline. Now ≤6 relevant records: Q5–8 savings 24.1% → **34.0%**, Q8 +3% → −33%, accuracy unchanged at 8/8, 28/28, 20/20 |
+| Source disagreement resolved instead of dropped (P3-2, §4.10) | A source stating a *different* figure and a source saying nothing used to be handled identically — both "no corroboration", claim dropped. A tier-1 summary could veto a tier-4 filing. Now adjudicated on authority-then-recency with a traced justification, and the standoff case stays reachable |
+| Cross-check scans all candidates before deciding (§4.10) | It used to `return` at the first corroborating source, so a contradicting source ranked below it was never read. A disagreement the agent never saw cannot be resolved |
 
 Two rows are worth pausing on.
 
@@ -637,7 +851,13 @@ Ranked by how much they would bother me in review.
    adapters. Nobody here was, and the alternative was carrying ~830 lines of
    knowingly-broken, untestable, credential-gated code — but it is a break and
    it belongs on this list rather than in a footnote.
-5. **Extra credit not achieved** — 24.1%, not 50% (§3).
+5. **Extra credit not achieved** — 34.0%, not 50% (§3). Closer than the 24.1%
+   it was, and I know where the remaining gap is: the answer is still grounded
+   in freshly-fetched source text, and cutting that means answering from stored
+   conclusions instead of evidence. I argue against that in §3 and still do.
+   There is also ~3 points I measured and deliberately did not take — the
+   memory budget sweep in §3 — because taking it would be tuning to a harness
+   that cannot see what the setting costs.
 6. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
    pre-registers Zerodha, Infosys, Wipro and Zepto, because entity resolution is
    deterministic and does not invent entities from free text. Without it the
@@ -655,12 +875,27 @@ Ranked by how much they would bother me in review.
    The scan is now documented as deliberate (the dead `memory_records_text`
    index was removed rather than kept as decoration); the replacement is FTS5
    or the embedding store when the corpus outgrows it.
-9. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
+9. **The disagreement resolver fires exactly once on this corpus** (§4.10). One
+   planted conflict, correctly resolved on authority. That demonstrates the
+   mechanism; it does not validate the tier table, and a single positive is not
+   a measurement. The two false-positive classes I found and fixed on the way
+   are pinned as tests, but I found them by reading a trace, not by having a
+   labelled disagreement set to score against. Its authority ordering is my
+   judgement written down (`resolution.AUTHORITY_TIERS`) — legible and
+   arguable, but not derived from anything.
+10. **The counterfactual column prices a harness, not a run** (§2.4). The
+   arithmetic is exact and the rates are real, but the token counts come from
+   an extractive model that quotes rather than reasons. A live model would emit
+   more output tokens and likely take more turns, so ₹0.1252 is a floor on a
+   floor. It answers "show the trend in rupees"; it does not answer "what does
+   this agent cost".
+11. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
    overwrite (memory now holds all eight answers, not one) raised retrieval
    searches in *both* modes — Q3 plans 3 subqueries where it planned 1 —
    because the planner expands entity-prefixed subqueries from everything it
    remembers. Reuse still skips every Q5–Q8 search, so the net effect is a
-   smaller saving (24.1%, not 27.8%), but the coupling is one-directional:
+   smaller saving than the pre-fix illusion suggested, but the coupling is
+   one-directional:
    nothing tells the planner when extra breadth stops paying. A subquery
    budget, or reuse assessment *before* expansion rather than after, is the
    obvious next control.

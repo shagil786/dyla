@@ -16,6 +16,21 @@ this project exists to catch, and it would be dishonest to commit one here.
 Rates are list prices in USD per million tokens, recorded with the date they
 were checked. They go stale; ``DYLA_PRICE_*`` overrides them without a code
 change.
+
+The counterfactual column
+-------------------------
+Refusing to invent a price is right, but a cost table that says ``unpriced``
+in every row answers the brief's "report your cost in rupees" with silence.
+So the report carries a *second*, explicitly labelled column: what this exact
+token count would have cost on a named reference model at its published rate.
+
+The distinction the code enforces is between a **measurement** and a
+**projection**. ``cost_in_rupees`` is only ever populated from the model that
+actually ran. ``counterfactual_inr`` is arithmetic on real token counts at a
+real published rate for a model that did *not* run, and every renderer must
+name that model next to the number. Both are honest; conflating them would
+not be, which is why they are separate keys with separate names rather than
+one column that quietly changes meaning when a price is missing.
 """
 
 from __future__ import annotations
@@ -51,6 +66,13 @@ DEFAULT_USD_TO_INR = 94.5
 _ENV_INPUT = "DYLA_PRICE_INPUT_PER_MTOK_USD"
 _ENV_OUTPUT = "DYLA_PRICE_OUTPUT_PER_MTOK_USD"
 _ENV_FX = "DYLA_USD_TO_INR"
+_ENV_REFERENCE = "DYLA_COUNTERFACTUAL_MODEL"
+
+# The reference model for the counterfactual column. gpt-4o-mini is chosen
+# because it is the cheapest widely-used hosted model in the table, so the
+# projection is a floor rather than a flattering mid-range guess: a real
+# deployment of this agent would cost at least this much, probably more.
+DEFAULT_COUNTERFACTUAL_MODEL = "gpt-4o-mini"
 
 
 @dataclass(frozen=True)
@@ -114,6 +136,56 @@ def resolve_pricing(model: str | None) -> Pricing | None:
         rates = KNOWN_MODEL_PRICING[matches[0]]
         return Pricing(model, rates[0], rates[1], usd_to_inr, f"table (matched {matches[0]})")
     return None
+
+
+def counterfactual_model() -> str:
+    """The reference model used for projected costs. Overridable per run."""
+    return os.environ.get(_ENV_REFERENCE, "").strip() or DEFAULT_COUNTERFACTUAL_MODEL
+
+
+def price_counterfactual(input_tokens: int, output_tokens: int) -> dict[str, object]:
+    """Project what ``input_tokens``/``output_tokens`` would cost on a reference model.
+
+    This is deliberately independent of ``resolve_pricing``'s override path.
+    ``DYLA_PRICE_*`` describes the model that *ran*; letting it leak in here
+    would silently reprice the projection and make the two columns compare a
+    model against itself. The reference rate always comes from the table.
+
+    Returns ``priced: False`` only when the configured reference model is not
+    in the table -- the same no-inventing rule as everywhere else.
+    """
+    model = counterfactual_model()
+    name = _normalise(model)
+    rates = KNOWN_MODEL_PRICING.get(name)
+    if rates is None:
+        matches = sorted(
+            (key for key in KNOWN_MODEL_PRICING if key in name), key=len, reverse=True
+        )
+        rates = KNOWN_MODEL_PRICING[matches[0]] if matches else None
+    if rates is None:
+        return {
+            "priced": False,
+            "model": model,
+            "cost_usd": None,
+            "cost_inr": None,
+            "note": (
+                f"Counterfactual model {model!r} is not in "
+                f"dyla.pricing.KNOWN_MODEL_PRICING. Set {_ENV_REFERENCE} to a "
+                "model that is."
+            ),
+        }
+    usd_to_inr = _float_env(_ENV_FX) or DEFAULT_USD_TO_INR
+    pricing = Pricing(model, rates[0], rates[1], usd_to_inr, "table (counterfactual)")
+    return {
+        "priced": True,
+        "model": model,
+        "cost_usd": round(pricing.usd(input_tokens, output_tokens), 8),
+        "cost_inr": round(pricing.inr(input_tokens, output_tokens), 6),
+        "input_per_mtok_usd": pricing.input_per_mtok_usd,
+        "output_per_mtok_usd": pricing.output_per_mtok_usd,
+        "usd_to_inr": pricing.usd_to_inr,
+        "rate_source": pricing.source,
+    }
 
 
 def price_run(model: str | None, input_tokens: int, output_tokens: int) -> dict[str, object]:

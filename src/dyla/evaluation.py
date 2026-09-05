@@ -15,7 +15,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .pricing import price_run, resolve_pricing
+from .pricing import (
+    counterfactual_model,
+    price_counterfactual,
+    price_run,
+    resolve_pricing,
+)
 
 # Assignment suite: eight questions of increasing difficulty; questions after the
 # first four deliberately reuse entities introduced earlier so durable memory is
@@ -81,6 +86,13 @@ def _cost_row(item: dict[str, Any], model: str | None = None) -> dict[str, Any]:
     row["cost_in_rupees"] = priced["cost_inr"]
     row["cost_in_usd"] = priced["cost_usd"]
     row["priced"] = priced["priced"]
+    # Projected cost on a reference model, always computed, always labelled as a
+    # projection. Kept in separate keys so a consumer can never mistake it for
+    # what the run actually cost.
+    projected = price_counterfactual(int(row["input_tokens"]), int(row["output_tokens"]))
+    row["counterfactual_inr"] = projected["cost_inr"]
+    row["counterfactual_usd"] = projected["cost_usd"]
+    row["counterfactual_priced"] = projected["priced"]
     return row
 
 
@@ -93,6 +105,14 @@ def _cost_report(results: list[dict[str, Any]], model: str | None = None) -> dic
     priced_rows = [row for row in rows if row["priced"]]
     totals["cost_in_rupees"] = round(sum(row["cost_in_rupees"] for row in priced_rows), 6) if priced_rows else None
     totals["cost_in_usd"] = round(sum(row["cost_in_usd"] for row in priced_rows), 8) if priced_rows else None
+    projected_rows = [row for row in rows if row["counterfactual_priced"]]
+    totals["counterfactual_inr"] = (
+        round(sum(row["counterfactual_inr"] for row in projected_rows), 6) if projected_rows else None
+    )
+    totals["counterfactual_usd"] = (
+        round(sum(row["counterfactual_usd"] for row in projected_rows), 8) if projected_rows else None
+    )
+    reference = price_counterfactual(0, 0)
     pricing = resolve_pricing(model)
     return {
         "estimated_cost_unit": ESTIMATED_COST_UNIT,
@@ -107,27 +127,37 @@ def _cost_report(results: list[dict[str, Any]], model: str | None = None) -> dic
             "rate_source": pricing.source if pricing else None,
             "note": None if pricing else price_run(model, 0, 0)["note"],
         },
+        "counterfactual": {
+            "model": counterfactual_model(),
+            "resolved": bool(reference["priced"]),
+            "input_per_mtok_usd": reference.get("input_per_mtok_usd"),
+            "output_per_mtok_usd": reference.get("output_per_mtok_usd"),
+            "usd_to_inr": reference.get("usd_to_inr"),
+            "note": reference.get("note"),
+        },
     }
 
 
 def _md_cost_table(cost: dict[str, Any]) -> list[str]:
     lines = [
         "## Cost per question", "",
-        "| # | Question | Status | Input tok | Output tok | Embed tok | Searches | Fetches | Skipped | Duration (ms) | Cost (rupees) |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| # | Question | Status | Input tok | Output tok | Embed tok | Searches | Fetches | Skipped | Duration (ms) | Cost (rupees) | Projected ₹ |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for index, row in enumerate(cost["questions"], start=1):
         question = _md_escape(row["question"])
         lines.append(
             f"| {index} | {question} | {row['status']} | {row['input_tokens']} | {row['output_tokens']}"
             f" | {row['embedding_tokens']} | {row['searches']} | {row['fetches']} | {row['searches_skipped']}"
-            f" | {row['duration_ms']} | {_rupees(row['cost_in_rupees'])} |"
+            f" | {row['duration_ms']} | {_rupees(row['cost_in_rupees'])}"
+            f" | {_rupees(row.get('counterfactual_inr'))} |"
         )
     totals = cost["totals"]
     lines.append(
         f"| | **Total** | | {totals['input_tokens']} | {totals['output_tokens']}"
         f" | {totals['embedding_tokens']} | {totals['searches']} | {totals['fetches']} | {totals['searches_skipped']}"
-        f" | {totals['duration_ms']} | {_rupees(totals.get('cost_in_rupees'))} |"
+        f" | {totals['duration_ms']} | {_rupees(totals.get('cost_in_rupees'))}"
+        f" | {_rupees(totals.get('counterfactual_inr'))} |"
     )
     pricing = cost.get("pricing") or {}
     lines.append("")
@@ -138,7 +168,22 @@ def _md_cost_table(cost: dict[str, Any]) -> list[str]:
             f"({pricing['rate_source']}), converted at {pricing['usd_to_inr']} INR/USD."
         )
     else:
-        lines.append(f"**Cost in rupees is unavailable.** {pricing.get('note', '')}")
+        lines.append(f"**Cost (rupees) is unavailable.** {pricing.get('note', '')}")
+
+    reference = cost.get("counterfactual") or {}
+    lines.append("")
+    if reference.get("resolved"):
+        lines.append(
+            f"**Projected ₹** is not a measurement. It is what these exact token "
+            f"counts would have cost on `{reference['model']}` at "
+            f"${reference['input_per_mtok_usd']}/1M input and "
+            f"${reference['output_per_mtok_usd']}/1M output, converted at "
+            f"{reference['usd_to_inr']} INR/USD. The tokens are real; the model "
+            f"that would have charged for them did not run. Override the "
+            f"reference with `DYLA_COUNTERFACTUAL_MODEL`."
+        )
+    else:
+        lines.append(f"**Projected ₹ is unavailable.** {reference.get('note', '')}")
     return lines
 
 
@@ -211,6 +256,37 @@ def _md_trend(cost: dict[str, Any]) -> list[str]:
         f"- Total duration: {totals['duration_ms']} ms",
         f"- Memory hits by question: {hits}"
         f" (first-question baseline: {baseline}; later questions total: {sum(hits[1:])})",
+        *_md_counterfactual_trend(cost),
+    ]
+
+
+def _md_counterfactual_trend(cost: dict[str, Any]) -> list[str]:
+    """The rupee trend the brief asks for, on the reference model.
+
+    Reported separately from the token trend and named as a projection every
+    time it appears. Without this the rupee half of "report your cost per
+    question in tokens and rupees, and show the trend" has no answer at all
+    for a run whose model has no price.
+    """
+    reference = cost.get("counterfactual") or {}
+    rows = [row for row in cost["questions"] if row.get("counterfactual_priced")]
+    if not reference.get("resolved") or not rows:
+        return []
+    values = [row["counterfactual_inr"] for row in rows]
+    first, last = values[0], values[-1]
+    delta = ((last - first) / first * 100) if first else 0.0
+    peak = max(values)
+    peak_index = values.index(peak) + 1
+    ratio = (peak / first) if first else 0.0
+    return [
+        "",
+        f"**Projected rupee trend on `{reference['model']}`** (a projection over "
+        "real token counts, not a measured charge):",
+        "",
+        f"- Per question: {', '.join(f'₹{value:.4f}' for value in values)}",
+        f"- Q1 ₹{first:.4f} → Q{len(values)} ₹{last:.4f} ({delta:+.1f}%)",
+        f"- Most expensive: Q{peak_index} at ₹{peak:.4f} ({ratio:.2f}× Q1)",
+        f"- Suite total: ₹{sum(values):.4f}",
     ]
 
 

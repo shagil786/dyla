@@ -2,30 +2,30 @@
   "mode": "offline-fixtures",
   "reuse_enabled": false,
   "model": "offline-extractive",
-  "total_wall_seconds": 0.25,
+  "total_wall_seconds": 0.24,
   "questions": [
     {
       "question": "What is the current goods and services tax (GST) rate applied to restaurant services in India?",
-      "run_id": "3e8de21f52fe47d1805dbcd53d4496f4",
-      "wall_seconds": 0.028,
+      "run_id": "2eb5e7791b904cd6b95710563bed3b97",
+      "wall_seconds": 0.029,
       "web_searches": 4,
-      "web_fetches": 11,
+      "web_fetches": 18,
       "searches_skipped": 0,
       "status": "complete"
     },
     {
       "question": "Who is the current chief executive officer of Zerodha, and in which year did they take the role?",
-      "run_id": "4e2ea7c2f7e4422590dc13bf8d4bb938",
-      "wall_seconds": 0.027,
+      "run_id": "0a6971cd54714633a36fe6be04940659",
+      "wall_seconds": 0.022,
       "web_searches": 3,
-      "web_fetches": 11,
+      "web_fetches": 17,
       "searches_skipped": 0,
       "status": "complete"
     },
     {
       "question": "List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each.",
-      "run_id": "fef8f3364eec4036b7cc5371e5b09fbe",
-      "wall_seconds": 0.028,
+      "run_id": "9ce5778f315b49a7a19581cc9d64723b",
+      "wall_seconds": 0.025,
       "web_searches": 3,
       "web_fetches": 9,
       "searches_skipped": 0,
@@ -33,17 +33,17 @@
     },
     {
       "question": "Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors?",
-      "run_id": "5e9e36b0558c4fce82d8b3fcfff5af13",
-      "wall_seconds": 0.024,
+      "run_id": "5b23bdd9da0f414a9d9d7c84f12d1a72",
+      "wall_seconds": 0.022,
       "web_searches": 5,
-      "web_fetches": 15,
+      "web_fetches": 22,
       "searches_skipped": 0,
       "status": "complete"
     },
     {
       "question": "Who is the chief technology officer of Zerodha, and what is their academic background?",
-      "run_id": "af76c4695f4b46be8cbe1010cbf68983",
-      "wall_seconds": 0.023,
+      "run_id": "ccbb21a7be944bbb98c99dc474d5a327",
+      "wall_seconds": 0.021,
       "web_searches": 3,
       "web_fetches": 7,
       "searches_skipped": 0,
@@ -51,17 +51,17 @@
     },
     {
       "question": "Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure.",
-      "run_id": "33b0f5e4719b475d98e3b25d11c6199e",
-      "wall_seconds": 0.024,
+      "run_id": "676122d440154deb84319551a43d572c",
+      "wall_seconds": 0.025,
       "web_searches": 7,
-      "web_fetches": 16,
+      "web_fetches": 20,
       "searches_skipped": 0,
       "status": "complete"
     },
     {
       "question": "How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round?",
-      "run_id": "312c6f70870b49459d9da5ba449736d3",
-      "wall_seconds": 0.023,
+      "run_id": "6a5f863f621e4d65a0b535ffd815b0e5",
+      "wall_seconds": 0.021,
       "web_searches": 2,
       "web_fetches": 8,
       "searches_skipped": 0,
@@ -69,7 +69,7 @@
     },
     {
       "question": "State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each.",
-      "run_id": "f9a7906cf5494396bb52e11f19b51b5c",
+      "run_id": "d00b6d79748a4a9a8c38ba4d1bad2d9e",
       "wall_seconds": 0.025,
       "web_searches": 5,
       "web_fetches": 12,
@@ -78,17 +78,19 @@
     }
   ],
   "totals": {
-    "input_tokens": 6637,
+    "input_tokens": 6135,
     "output_tokens": 810,
     "embedding_tokens": 2165,
     "estimated_cost": 0.0,
-    "duration_ms": 189,
+    "duration_ms": 179,
     "memory_hits": 61,
     "searches": 19,
     "fetches": 65,
     "searches_skipped": 0,
     "cost_in_rupees": null,
-    "cost_in_usd": null
+    "cost_in_usd": null,
+    "counterfactual_inr": 0.132892,
+    "counterfactual_usd": 0.00140625
   },
   "pricing": {
     "model": "offline-extractive",

@@ -694,6 +694,127 @@ def corroborates(
     return best >= LEXICAL_SUPPORT_FLOOR
 
 
+# Words naming *what is being measured*. Two numbers are only in disagreement
+# if they measure the same thing about the same subject; a company's profit and
+# another company's revenue are both large rupee figures and are not in
+# conflict. Grouped by measure so the comparison is between groups, not words.
+_MEASURE_TERMS: tuple[tuple[str, ...], ...] = (
+    ("revenue", "revenues", "turnover", "sales", "topline"),
+    ("profit", "profits", "earnings", "pat", "bottomline"),
+    ("loss", "losses", "lossmaking"),
+    ("valuation", "valued", "worth"),
+    # "round" and "investment" are deliberately absent: they co-occur with both
+    # valuations and raise amounts ("the round valued Zepto at..."), so
+    # including them put a valuation claim and a funding sentence in the same
+    # group and produced a false conflict between $5bn and $100m.
+    ("raised", "raising", "funding"),
+    ("rate", "tax", "gst", "levy"),
+    ("stores", "outlets", "branches"),
+    ("employees", "headcount", "staff"),
+)
+
+
+# Corporate and generic suffixes that are capitalised but name nobody. Without
+# this, "Infosys Limited reported..." yielded the subject {"limited"}, which
+# "Wipro Limited reported..." satisfies -- so a Wipro figure was ruled to
+# contradict an Infosys claim.
+_SUBJECT_SUFFIXES = frozenset({
+    "limited", "ltd", "inc", "incorporated", "corp", "corporation", "plc",
+    "llp", "llc", "pvt", "private", "group", "holdings", "technologies",
+    "services", "solutions", "industries", "enterprises", "systems",
+})
+
+
+def claim_subjects(text: str) -> set[str]:
+    """Who a claim is about, for the purpose of matching disagreeing sources.
+
+    Deliberately not :func:`named_entities`, which drops sentence-initial
+    capitals unless they are already known entities. That rule is right for
+    misattribution checking -- it avoids flagging "Restaurant services..." --
+    but here it is actively harmful: claims overwhelmingly *begin* with their
+    subject, so it discarded the one token that identifies who the figure
+    belongs to and left only a corporate suffix shared by every other company.
+
+    Uses :func:`proper_nouns` (every capitalised token) minus suffixes that
+    name nobody. Over-inclusive by design: a spurious extra subject makes a
+    disagreement harder to establish, which fails towards not adjudicating.
+    """
+    return {
+        token for token in proper_nouns(text)
+        if token not in _SUBJECT_SUFFIXES
+        and not any(character.isdigit() for character in token)
+        and token not in _ATTRIBUTION_IGNORED
+    }
+
+
+def _measures(text: str) -> frozenset[int]:
+    """Indices of the measure groups mentioned in ``text``."""
+    words = content_words(text)
+    return frozenset(
+        index for index, group in enumerate(_MEASURE_TERMS)
+        if words & set(group)
+    )
+
+
+def rival_figure(claim_text: str, source_text: str) -> NumericFact | None:
+    """A number in ``source_text`` that clearly contradicts a figure in ``claim_text``.
+
+    The public form of the disagreement test, used by the analyst's cross-check
+    to tell "this source disagrees with me" apart from "this source is silent".
+    Those two need different handling -- silence is weak evidence, disagreement
+    is a conflict to resolve on provenance -- and before this existed the
+    cross-check treated them identically.
+
+    A rival sentence must clear three gates, and all three were added because
+    the loose version produced false conflicts on the project's own fixtures:
+
+    1. **Context.** It restates ``CONFLICT_CONTEXT_FLOOR`` of the claim's
+       content words, so an unrelated figure elsewhere on the page cannot
+       manufacture a disagreement.
+    2. **Subject.** The claim must name a subject, and the sentence must name
+       all of them. Without this, "Wipro reported 13,135 crore" was ruled to be
+       in conflict with a *Zerodha* filing stating 4,700 crore.
+
+       A claim naming no subject at all ("The company reported a net profit of
+       13,135 crore") returns ``None`` rather than being adjudicated against
+       anything. This is the co-reference limit stated in WRITEUP 4.6, and the
+       safe direction to fail: without knowing who "the company" is, no source
+       can be shown to be talking about the same subject, and a disagreement
+       that cannot be attributed is not a disagreement that can be resolved.
+    3. **Measure.** It talks about the same measured quantity. Without this,
+       one company's profit contradicted another's revenue purely by being a
+       different large number.
+
+    The first draft of this function applied only gate 1 and reported six
+    disagreements on the eight-question suite, of which exactly one was real.
+    """
+    claim_facts = extract_numbers(claim_text)
+    if not claim_facts:
+        return None
+    claim_words = content_words(claim_text)
+    subjects = claim_subjects(claim_text)
+    if not subjects:
+        return None
+    claim_measures = _measures(claim_text)
+
+    context: list[str] = []
+    for sentence in sentences(source_text):
+        if _overlap(claim_words, sentence) < CONFLICT_CONTEXT_FLOOR:
+            continue
+        if not subjects <= claim_subjects(sentence):
+            continue
+        if claim_measures and not (claim_measures & _measures(sentence)):
+            continue
+        context.append(sentence)
+    if not context:
+        return None
+    for fact in claim_facts:
+        rival = _find_conflicting_value(fact, context)
+        if rival is not None:
+            return rival
+    return None
+
+
 def _find_conflicting_value(fact: NumericFact, context: list[str]) -> NumericFact | None:
     """Find a same-kind number in on-topic text that clearly differs from ``fact``.
 

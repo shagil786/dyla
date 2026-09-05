@@ -64,9 +64,17 @@ def test_run_evaluation_reports_per_question_costs_totals_and_trend(tmp_path):
         # No model name is supplied here, so no price can be established. The
         # report says so rather than reporting 0, which would read as "free".
         "cost_in_rupees": None, "cost_in_usd": None,
+        # The counterfactual is always computable: it prices real token counts
+        # at a reference model's published rate, independent of what ran.
+        # 180 input @ $0.15/1M + 110 output @ $0.60/1M = $9.3e-05, x94.5 INR.
+        "counterfactual_inr": 0.008789, "counterfactual_usd": 9.3e-05,
     }
     assert cost["pricing"]["resolved"] is False
     assert "DYLA_PRICE_INPUT_PER_MTOK_USD" in cost["pricing"]["note"]
+    # The measured column stays empty while the projection is populated: the
+    # two must never collapse into one another.
+    assert cost["counterfactual"]["resolved"] is True
+    assert cost["counterfactual"]["model"] == "gpt-4o-mini"
 
     stored = json.loads(Path(tmp_path, "evaluation.json").read_text())
     assert stored["total"] == 2
@@ -110,8 +118,14 @@ def test_run_evaluation_cost_rows_default_to_zero_without_metrics(tmp_path):
         "duration_ms": 0, "memory_hits": 0,
         "embedding_tokens": 0, "searches": 0, "fetches": 0, "searches_skipped": 0,
         "cost_in_rupees": None, "cost_in_usd": None,
+        # Zero tokens genuinely cost zero on the reference model, so 0.0 here is
+        # a measurement and not the "unpriced rendered as free" failure.
+        "counterfactual_inr": 0.0, "counterfactual_usd": 0.0,
     }
-    assert "| | **Total** | | 0 | 0 | 0 | 0 | 0 | 0 | 0 | unpriced |" in Path(tmp_path, "evaluation.md").read_text()
+    assert (
+        "| | **Total** | | 0 | 0 | 0 | 0 | 0 | 0 | 0 | unpriced | 0.0000 |"
+        in Path(tmp_path, "evaluation.md").read_text()
+    )
 
 
 def test_every_module_imports_on_this_interpreter():

@@ -2,30 +2,30 @@
   "mode": "offline-fixtures",
   "reuse_enabled": true,
   "model": "offline-extractive",
-  "total_wall_seconds": 0.23,
+  "total_wall_seconds": 0.19,
   "questions": [
     {
       "question": "What is the current goods and services tax (GST) rate applied to restaurant services in India?",
-      "run_id": "7c10078025454ef0b48a1df313653e96",
-      "wall_seconds": 0.029,
+      "run_id": "9fcae4e8fb7d4d539d7ad4f708af4559",
+      "wall_seconds": 0.023,
       "web_searches": 4,
-      "web_fetches": 11,
+      "web_fetches": 18,
       "searches_skipped": 0,
       "status": "complete"
     },
     {
       "question": "Who is the current chief executive officer of Zerodha, and in which year did they take the role?",
-      "run_id": "b7b1965f524a44c2961c09ac8926a240",
-      "wall_seconds": 0.026,
+      "run_id": "aa8a05bf45504dcd857c2da3e3a792f2",
+      "wall_seconds": 0.019,
       "web_searches": 3,
-      "web_fetches": 11,
+      "web_fetches": 17,
       "searches_skipped": 0,
       "status": "complete"
     },
     {
       "question": "List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each.",
-      "run_id": "ba7b6398ff99467dbf3a3f785ec76416",
-      "wall_seconds": 0.025,
+      "run_id": "1038384ab25249e298011a67c1934126",
+      "wall_seconds": 0.021,
       "web_searches": 3,
       "web_fetches": 9,
       "searches_skipped": 0,
@@ -33,17 +33,17 @@
     },
     {
       "question": "Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors?",
-      "run_id": "83c51c1fb25145daae77daf41452ee17",
+      "run_id": "588438aec8c04866aca611baf88dd5ad",
       "wall_seconds": 0.021,
       "web_searches": 5,
-      "web_fetches": 15,
+      "web_fetches": 22,
       "searches_skipped": 0,
       "status": "complete"
     },
     {
       "question": "Who is the chief technology officer of Zerodha, and what is their academic background?",
-      "run_id": "6d58e13dbb884c578e16ef6a9a80c4dc",
-      "wall_seconds": 0.019,
+      "run_id": "2fa822d5c78b4617a65b5a9e034487ae",
+      "wall_seconds": 0.016,
       "web_searches": 0,
       "web_fetches": 4,
       "searches_skipped": 3,
@@ -51,17 +51,17 @@
     },
     {
       "question": "Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure.",
-      "run_id": "947e9c9f0cad45718fb7598f5fdd02b2",
-      "wall_seconds": 0.018,
+      "run_id": "5ed7648693694fbbb5f9399415d35419",
+      "wall_seconds": 0.017,
       "web_searches": 3,
-      "web_fetches": 11,
+      "web_fetches": 15,
       "searches_skipped": 7,
       "status": "complete"
     },
     {
       "question": "How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round?",
-      "run_id": "089e548c72de4cf69cfb02f43704abef",
-      "wall_seconds": 0.017,
+      "run_id": "6e9edc29edd849eda417cbee873b78c6",
+      "wall_seconds": 0.015,
       "web_searches": 1,
       "web_fetches": 5,
       "searches_skipped": 9,
@@ -69,8 +69,8 @@
     },
     {
       "question": "State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each.",
-      "run_id": "a582bece37d04bc0aec08ec866874f77",
-      "wall_seconds": 0.02,
+      "run_id": "8a2b69d4d71f4fc5bdf482540c0ed9f0",
+      "wall_seconds": 0.017,
       "web_searches": 1,
       "web_fetches": 5,
       "searches_skipped": 13,
@@ -78,17 +78,19 @@
     }
   ],
   "totals": {
-    "input_tokens": 6326,
+    "input_tokens": 5825,
     "output_tokens": 752,
     "embedding_tokens": 1312,
     "estimated_cost": 0.0,
-    "duration_ms": 164,
+    "duration_ms": 138,
     "memory_hits": 61,
     "searches": 6,
     "fetches": 47,
     "searches_skipped": 13,
     "cost_in_rupees": null,
-    "cost_in_usd": null
+    "cost_in_usd": null,
+    "counterfactual_inr": 0.125209,
+    "counterfactual_usd": 0.00132495
   },
   "pricing": {
     "model": "offline-extractive",
