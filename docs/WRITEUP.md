@@ -470,6 +470,9 @@ Ranked by how much they would bother me in review.
    rejects genuine single-source claims it cannot confirm. Live search is the
    real test and remains unavailable.
 7. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
+   The scan is now documented as deliberate (the dead `memory_records_text`
+   index was removed rather than kept as decoration); the replacement is FTS5
+   or the embedding store when the corpus outgrows it.
 
 ---
 

@@ -103,7 +103,7 @@ class MemoryStore:
                 warning TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE TABLE IF NOT EXISTS memory_records (
+                CREATE TABLE IF NOT EXISTS memory_records (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
                 text TEXT NOT NULL,
@@ -111,7 +111,6 @@ class MemoryStore:
                 source_ids_json TEXT NOT NULL,
                 verified INTEGER NOT NULL DEFAULT 0
             );
-            CREATE INDEX IF NOT EXISTS memory_records_text ON memory_records(text);
             """
         )
         self._migrate()
@@ -125,6 +124,10 @@ class MemoryStore:
         }
         if "verdict_status" not in columns:
             self.connection.execute("ALTER TABLE memory_records ADD COLUMN verdict_status TEXT")
+        # memory_records_text indexed a free-text column no query can use:
+        # search_memory full-scans deliberately (see its docstring). Drop it for
+        # databases created before the index was removed.
+        self.connection.execute("DROP INDEX IF EXISTS memory_records_text")
 
     @_synchronized
     def upsert_entity(self, canonical_name: str, entity_type: str) -> str:
@@ -272,6 +275,16 @@ class MemoryStore:
 
     @_synchronized
     def search_memory(self, query: str, limit: int = 10) -> list[MemoryRecord]:
+        """Full-text-style search over every stored record.
+
+        The scan is deliberate and documented, not an omission: scoring is a
+        normalized substring count over Python-normalized text, so a SQLite
+        B-tree index on ``text`` cannot serve it, and the corpus is small
+        enough that a per-query table scan is cheaper than maintaining a real
+        full-text index. At thousands of records this should be replaced by
+        FTS5 or the embedding store; until then the schema intentionally
+        carries no ``memory_records_text`` index that nothing can use.
+        """
         if limit < 1:
             return []
         terms = _query_terms(query)

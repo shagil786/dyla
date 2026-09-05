@@ -249,3 +249,45 @@ def test_initialize_is_safe_to_call_more_than_once(tmp_path):
     store.initialize()
 
     assert store.connection.execute("SELECT 1").fetchone()[0] == 1
+
+
+def test_memory_records_carry_no_free_text_index(tmp_path):
+    """The schema must not index text no query can use.
+
+    search_memory normalizes and scores every row in Python, so a B-tree index
+    on the text column serves nothing — it only taxes every write. The linear
+    scan is deliberate (documented on search_memory); this test pins the
+    absence of the dead index, including for databases created before it was
+    removed.
+    """
+    path = tmp_path / "memory.db"
+
+    store = MemoryStore(path)
+    store.initialize()
+
+    names = {
+        row[0]
+        for row in store.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        )
+    }
+    assert "memory_records_text" not in names
+    store.add_memory("Zerodha is an Indian stockbroker.", kind="fact")
+    assert store.search_memory("stockbroker")  # the scan still works
+
+    # Simulate a database created by an older version, then re-initialize:
+    # the migration must drop the leftover index.
+    store.connection.execute(
+        "CREATE INDEX IF NOT EXISTS memory_records_text ON memory_records(text)"
+    )
+    store.connection.commit()
+    reopened = MemoryStore(path)
+    reopened.initialize()
+    names = {
+        row[0]
+        for row in reopened.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        )
+    }
+    assert "memory_records_text" not in names
+    assert reopened.search_memory("stockbroker")
