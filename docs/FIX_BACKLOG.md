@@ -310,6 +310,20 @@ confidence, all fixed here:
    disables reuse is now classified as never skipping anything, matching what
    that policy would actually decide.
 
+**Found by running the suite live (2026-09-06, the first full live run):**
+the Qdrant adapter indexed `published_at` but never `entity_ids`, and Qdrant
+rejects an unindexed field in a filtered query with a 400 — so the reuse
+probe's entity filter killed the analyst stage on five of eight questions.
+No offline test could see it: the offline suite runs `LocalVectorStore`.
+Fixed in `ensure_collection` (keyword index created on fresh and existing
+collections, missing fields only); three adapter tests pin it. Post-fix live
+run: 2/8 complete, 4 `incomplete` (the live auditor honestly rejecting real
+claims), 2 `unaudited` (the analyst declined to answer — the audit-feedback
+loop blocked a restated claim from the previous run, which is the loop
+working), searches_skipped 0→16 across the suite as reuse engaged,
+seeded-defect audit 18/20 live. Model: nemotron-3.5-lightning via the
+compatible adapter; stack: You.com search, real embeddings, Qdrant Cloud.
+
 Doc corrections from the same review: the dangling "§6.1's caveat" reference
 in WRITEUP §6 (an earlier automated fix had silently failed on a line-wrap
 mismatch — lesson recorded: assert your replacements), the P7-1 claim that

@@ -83,21 +83,33 @@ def test_ensure_collection_creates_missing_collection_with_configured_dimensions
     assert vector_config.size == 3
 
 
-def test_ensure_collection_creates_datetime_index_for_fresh_collection():
+def test_ensure_collection_indexes_both_filtered_fields_on_fresh_collection():
+    """The entity filter is what the memory-reuse probe queries with; without
+    the keyword index Qdrant 400s it and the analyst stage dies. Found live."""
     client = FakeClient()
 
     QdrantVectorStore(settings(), client=client)
 
     assert client.created[0]["collection_name"] == "evidence"
-    assert client.indexes == [{
-        "collection_name": "evidence",
-        "field_name": "published_at",
-        "field_schema": models.PayloadSchemaType.DATETIME,
-    }]
+    assert client.indexes == [
+        {
+            "collection_name": "evidence",
+            "field_name": "published_at",
+            "field_schema": models.PayloadSchemaType.DATETIME,
+        },
+        {
+            "collection_name": "evidence",
+            "field_name": "entity_ids",
+            "field_schema": models.PayloadSchemaType.KEYWORD,
+        },
+    ]
 
 
 def test_ensure_collection_skips_index_when_collection_already_has_it():
-    client = FakeClient(collection_exists=True, payload_schema={"published_at": {"data_type": "datetime"}})
+    client = FakeClient(collection_exists=True, payload_schema={
+        "published_at": {"data_type": "datetime"},
+        "entity_ids": {"data_type": "keyword"},
+    })
 
     QdrantVectorStore(settings(), client=client)
 
@@ -105,14 +117,16 @@ def test_ensure_collection_skips_index_when_collection_already_has_it():
 
 
 def test_ensure_collection_adds_missing_index_to_existing_collection():
-    client = FakeClient(collection_exists=True)
+    """Existing deployments created before the entity_ids index only have the
+    datetime one; startup must add the missing index, not skip."""
+    client = FakeClient(collection_exists=True, payload_schema={"published_at": {"data_type": "datetime"}})
 
     QdrantVectorStore(settings(), client=client)
 
     assert client.indexes == [{
         "collection_name": "evidence",
-        "field_name": "published_at",
-        "field_schema": models.PayloadSchemaType.DATETIME,
+        "field_name": "entity_ids",
+        "field_schema": models.PayloadSchemaType.KEYWORD,
     }]
 
 
