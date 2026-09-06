@@ -44,12 +44,41 @@ reuse cuts total tokens 12.5% (including embedding tokens; model tokens alone
 filing. The saving is real and so is the price — [WRITEUP §3](docs/WRITEUP.md)
 explains the mechanism and why neither number is 50%.
 
-**Live results** (real web search, real model, real Qdrant — committed in
-`reports-live/` and `runs/live-*/`): memory reuse cut web searches 15 → 9 and
-pages fetched 73 → 32, with per-question wall time *falling* (Q8: 82s → 29s)
-while the baseline's climbs, and accuracy holding. The live runs also found
-two defects the offline suite structurally could not (a missing Qdrant index,
-and live mode never creating entities) — both fixed, both written up.
+### Run the evaluation live (real providers)
+
+Once `.env` is configured — minimum: `DYLA_MODEL_PROVIDER=compatible` with
+`DYLA_MODEL_BASE_URL` / `DYLA_MODEL_API_KEY` / `DYLA_MODEL_NAME`,
+`DYLA_WEB_PROVIDER=you` with `YOU_API_KEY`, and (for memory) the
+`DYLA_EMBEDDING_*` and `QDRANT_*` sets — the same suite runs against real
+search, a real model, and Qdrant:
+
+```bash
+# 1. Baseline: memory reuse off, fresh memory database
+.venv/bin/python scripts/run_suite.py --live --no-reuse --out reports-live
+
+# 2. Reuse arm: keeps the baseline's memory, so later questions reuse it
+.venv/bin/python scripts/run_suite.py --live --out reports-live --keep
+```
+
+Run them in that order — the reuse arm inherits the baseline's memory, which
+is the mechanism the comparison measures. Live logs land in
+`runs/live-no-reuse/` and `runs/live-reuse/`, reports in `reports-live/`
+(keep `--out reports-live`; the default `reports/` is the committed offline
+evidence). Each question has a hard 120-second wall-clock ceiling; a full
+suite takes 6–8 minutes and roughly ₹0.6 in projected model tokens (plus
+You.com search and embedding usage), and the seeded-defect audit runs live at
+the end at no extra configuration.
+
+Note the flag: `--fresh` (the default) wipes `dyla.db` and `logs/` at the
+start; `--keep` retains prior memory — that is what lets the reuse arm build
+on the baseline.
+
+**Live results** (committed from exactly the commands above): memory reuse
+cut web searches 15 → 9 and pages fetched 73 → 32, with per-question wall
+time *falling* (Q8: 82s → 29s) while the baseline's climbs, and accuracy
+holding. The live runs also found two defects the offline suite structurally
+could not (a missing Qdrant index, and live mode never creating entities) —
+both fixed, both written up.
 
 **Read [`docs/WRITEUP.md`](docs/WRITEUP.md) first.** It states up front what
 each evidence base is and exactly which conclusions each does and does not
@@ -76,12 +105,8 @@ Run: dfe2657ee0c44e9f9b3971f80f0f20cf
 Trace: logs/dfe2657ee0c44e9f9b3971f80f0f20cf.jsonl
 ```
 
-Minimum live configuration in `.env`: `DYLA_MODEL_PROVIDER=compatible` plus
-`DYLA_MODEL_BASE_URL`, `DYLA_MODEL_API_KEY`, `DYLA_MODEL_NAME`, and
-`DYLA_WEB_PROVIDER=you` plus `YOU_API_KEY`. Auditing with a model instead of
-the deterministic local auditor adds the `DYLA_AUDITOR_*` set; durable memory
-adds `DYLA_EMBEDDING_*` and the `QDRANT_*` set (`.env.example` documents all
-of them).
+This needs the live configuration from the previous section in `.env`
+(`.env.example` documents every variable).
 
 Status meanings: `complete` — every claim audited, no issues. `incomplete` —
 the auditor flagged issues (an unsupported claim, for example); the answer is
