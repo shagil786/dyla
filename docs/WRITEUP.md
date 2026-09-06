@@ -8,82 +8,47 @@ artifacts (`reports/`, `runs/`) and can be regenerated with one command.
 
 ## 0. The thing you should know before anything else
 
-**Every number about answer quality in this repository comes from a recorded
-fixture corpus, not from a live LLM.** Rather than fake a run, the suite ships
-an offline harness: 14 recorded pages, a hashed bag-of-words embedder, and an
-*extractive* model that answers by quoting source sentences verbatim.
+**The live runs exist, and they are committed.** On 2026-09-06 the full suite
+ran against real providers from this machine: NVIDIA `nemotron-3.5-lightning`
+through the `compatible` adapter (model and auditor), real You.com search and
+page fetches, real embeddings, Qdrant Cloud as the vector store. Two full
+eight-question runs (baseline, then memory-reuse on the baseline's memory) are
+committed under `runs/live-no-reuse/`, `runs/live-reuse/` and `reports-live/`,
+with the seeded-defect audit run live too (18/20 on the first reuse run, 15/20
+on the second — the live model's verdicts vary run to run, which is itself a
+finding the offline replay cannot produce). The adversarial-analyst experiment
+(§4.8) was also re-run live, both arms, with the traces committed under
+`runlogs/P3-3-live-traces/`.
 
-**Why there is no live run — the accurate version.** I previously wrote "no API
-keys were available", which was true but incomplete, and incomplete in the
-direction that flatters me: it implies a key is the only thing standing between
-this repo and live results. It is not. The build environment has **no general
-outbound internet**. Measured, not assumed:
+Two defects that no offline test could ever see were found by these runs and
+fixed before the committed artifacts were generated: the Qdrant adapter had
+never created the `entity_ids` payload index, so the reuse probe's entity
+filter died with a 400 on five of eight questions (offline runs
+`LocalVectorStore`, which needs no index); and the live path never seeded
+entities, so on a fresh database the resolver returned "unknown" for
+everything and reuse measured a deployment that cannot learn (0 skips in all
+eight questions). Both stories are in `FIX_BACKLOG.md` Part 5.
 
-| Target | Result |
-|---|---|
-| `files.pythonhosted.org`, `pypi.org` | HTTP 200 |
-| `en.wikipedia.org`, `example.com`, `google.com` | connection closed at TLS |
-| `api.openai.com`, `api.you.com` | connection closed at TLS |
+**The offline replay is still here, and still matters.** `reports/` and
+`runs/` hold the deterministic fixture run: 14 recorded pages, a hashed
+bag-of-words embedder, an *extractive* model that answers by quoting source
+sentences verbatim. It exists because a live run is not reproducible — the
+same question asked twice already returns different verdicts (see the two
+seeded-audit scores above) — and because several of the measurements in this
+write-up need a model whose behaviour is pinned. Every claim the offline
+corpus supports is labelled as offline. What the offline harness can never
+show — a model that must be *persuaded*, sources that disagree in the wild,
+latency dominated by a real network — the live runs now show, and §3 and §4.8
+read both.
 
-DNS resolves and `validate_external_url` passes; the TLS handshake is then
-terminated. Egress is allowlisted to the package index. So a You.com key would
-authenticate against a host this sandbox cannot reach, and **the missing
-ingredient is network egress, not a credential**. Both are needed; only one was
-named before.
-
-**Update: live mode has since been run once, off this machine.** The project
-owner executed `dyla ask "Who is the current CEO of Microsoft?"` in an
-environment with both keys and egress. It returned *Satya Nadella* with one
-citation and one supported verdict, against real You.com search, a real
-Wikipedia and microsoft.com fetch, NVIDIA `nemotron-3-embed-1b` embeddings and
-Qdrant Cloud. The plumbing described in this section is therefore no longer
-only *argued* to be real — it has carried one real question end to end.
-
-Three qualifications, because one question is one question:
-
-- **The suite has still never run live.** There are no live cost, recall or
-  auditor-accuracy numbers, and every measurement below remains an
-  offline-fixture measurement. Nothing in §2, §3 or §4 changes.
-- **It immediately found a bug that only live mode could expose.**
-  `_build_orchestrator` took no reuse flag, so `run_suite.py --live --no-reuse`
-  would have built a reuse-enabled analyst, written the result to
-  `evaluation-no-reuse.*` and compared it against an identical configuration —
-  reporting a fabricated saving near zero in the one table §3 is built on. The
-  offline builder had always threaded `reuse` through; the live one silently
-  did not, and no test covered the live path because the live path had never
-  been run. Fixed, with a regression test.
-- **That bug is the argument for the rest.** The single most valuable thing one
-  live execution produced was not the answer; it was the discovery that a
-  documented flag did nothing. Anything still unexercised should be assumed to
-  contain something similar.
-
-This matters for reading §4: the analyst's own cross-check and the auditor's
-independent re-fetch both do real HTTP through the same `PageFetcher` in live
-mode. They are exercised here against the fixture provider, which implements
-the identical `SearchProvider` interface. The plumbing is real and the wire is
-not.
-
-That choice has a consequence I want stated before the good numbers, not after:
-
-> The offline model **cannot hallucinate**. It quotes. So a 97% "supported" rate
-> from the auditor measures the model's inability to lie, not the auditor's
-> ability to detect lying.
-
-Everything in this write-up is scoped accordingly. Claims about *plumbing* —
-planning, parallelism, memory transfer, deadline enforcement, cost accounting,
-auditor logic — are backed by the harness and are real. Claims about *model
-honesty* are not made, because the harness cannot test them. Section 4 explains
-what was done instead to get a real measurement of the auditor.
-
-Run it yourself:
-
-```bash
-python -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python scripts/run_suite.py            # 8 questions, ~0.3s, no keys
-.venv/bin/python scripts/run_suite.py --no-reuse # the baseline it is compared to
-```
-
----
+**Honest account of how this changed.** The first version of this section
+said "no API keys were available", which understated the problem in the
+direction that flattered the work; the second said the build environment had
+no outbound internet beyond the package index, which was true of the machine
+the project started on and false of the machine it finished on. Neither
+version should have survived as long as it did. The live runs above are the
+correction, and they cost roughly ₹0.63 in projected tokens per suite (see
+§2.4 for what that projection does and does not price).
 
 ## 1. What the run actually did
 
@@ -676,6 +641,34 @@ configuration a new reader got was one that could not possibly work. Every role
 now defaults to `local`, which is the configuration the tests actually
 exercise.
 
+### The live measurement (2026-09-06)
+
+The same comparison, run against real providers (`reports-live/`,
+`runs/live-no-reuse/`, `runs/live-reuse/`), with both arms seeded and the
+reuse arm inheriting the baseline's memory:
+
+| | baseline (no reuse) | reuse | delta |
+|---|---|---|---|
+| web searches | 15 | 9 | −40% |
+| pages fetched | 73 | 32 | −56% |
+| subqueries skipped | 0 | 18 (0, 4, 4, 4, 8, 12, 14, 18) | — |
+| model tokens (in+out) | 29,114 | 30,183 | +3.7% |
+| total wall clock | 391.6s | 357.6s | −9% |
+| per-question wall trend | climbs: 24s → 82s by Q8 | falls: Q7 58→16s, Q8 82→29s | — |
+| answers complete | 4/8 | 5/8 | holds |
+| seeded-defect audit | 14/20 | 15/20 | holds |
+
+The shape matches the offline finding exactly, now on real traffic: reuse
+removes the *search* step (skips grow as the shared entity pool fills) and
+the *fetch* step with it, while model tokens stay flat because the grounding
+step remains — memory context is new input tokens. The wall-clock trend is
+the part a fixed table cannot show: the baseline gets slower as questions
+lean harder on fresh search (Q8: 82s), the reuse run gets faster as the same
+questions lean on accumulated evidence (Q8: 29s). Roughly ₹0.64 projected per
+suite either way — the saving lands in web calls and latency, not model
+tokens, which is why §2.4's counterfactual column moves less than the fetch
+count does.
+
 ---
 
 ## 4. The auditor — Part B
@@ -900,6 +893,19 @@ distribution — so it was run, and the offline result is exactly nothing:
 **all eight questions byte-identical** (answers, claims, citations, verdicts)
 in both reuse and no-reuse modes (`runlogs/P3-3-result-*.txt`,
 `scripts/experiment_adversarial_analyst.py`).
+
+**Live result (2026-09-06, both arms, same eight questions,
+`runlogs/P3-3-live-result.txt`, traces in `runlogs/P3-3-live-traces/`):**
+4 of 8 questions changed behaviour under the threat, in both directions.
+Q3 improved — 1 of 3 claims supported became 3 of 3. Q8 collapsed — 4 claims
+(with one supported) became zero claims: the analyst declined to answer
+rather than ship claims it could not defend. Q7 got *worse* — 1 claim became
+3, all unsupported, so the threat did not uniformly induce care. Totals:
+13 claims/6 supported (baseline) against 12 claims/7 supported (adversarial),
+quality 3/8 complete in both arms. With n=8 and a nondeterministic model this
+is a signal, not a measurement: the honest summary is that the threat changes
+behaviour, that the change is not uniformly towards more care, and that the
+offline invariance below is what makes the *mechanism* claims testable at all.
 
 That nothing is the *expected* negative result, and claiming it as evidence
 about model honesty would be dishonest. `OfflineModel` is an extractive
@@ -1264,19 +1270,26 @@ was broken.** If I had trusted the report I would have reverted working code.
 
 Ranked by how much they would bother me in review.
 
-1. **No live run.** Everything is a replay. Stated in section 0 and repeated in
-   every artifact header. The blocker is **network egress, not just a missing
-   key** — the sandbox reaches the package index and nothing else, so even a
-   valid You.com key would authenticate against an unreachable host (§0 has the
-   measurements). I stated the key-only version for several sessions, which
-   understated the problem in the direction that flattered the work.
+1. **The live runs are few, single-model, and nondeterministic.** This used to
+   read "No live run — everything is a replay"; §0's live suites retired that
+   version, and it should not have survived as long as it did. What remains
+   honest to say: the committed live evidence is four suite runs and one
+   experiment on one model (`nemotron-3.5-lightning`) on one day; the offline
+   artifacts still carry every measurement that needs pinned behaviour; and
+   the offline and live suites sometimes disagree about the same question
+   (offline Q1 is `incomplete`, live Q1 was `complete` twice), because a real
+   auditor reading real pages is not a deterministic comparator. Nothing in
+   the live runs has been rerun enough to call a trend — except the reuse
+   effect, which appeared in both live pairs that had entities to reuse.
 2. **No session logs.** The brief weighs three things: *"The session logs tell
    us how you work. The write-up tells us how you think. The code tells us what
    you can build. We weigh all three."* One of those three axes is not
-   represented in this repository. What is committed under that name is not it:
-   `runs/*.jsonl` are **agent** traces — the program's own tool calls — and
-   `.superpowers/sdd/` holds 11 implementation reports (`task-1`…`task-8` plus
-   three investigations) recording files changed and TDD history. Neither is a
+   represented in this repository. What the working tree holds under that name
+   is not it: `runs/*.jsonl` are **agent** traces — the program's own tool
+   calls — and `.superpowers/sdd/` holds 11 implementation reports
+   (`task-1`…`task-8` plus three investigations) recording files changed and
+   TDD history; those are kept locally and deliberately untracked, as tooling
+   notes rather than submission evidence. Neither is a
    record of the human↔AI working session, and no transcript is committed
    anywhere. `grep -ril "overruled\|I disagreed\|the tool suggested"
    .superpowers/ docs/superpowers/` returns nothing — this file is deliberately

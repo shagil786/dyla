@@ -78,11 +78,12 @@ class QdrantVectorStore:
                 )
             except Exception as exc:
                 raise self._safe_error("creating Qdrant collection", exc) from exc
-            self._create_published_at_index()
+            self._create_payload_indexes()
             return
         self._assert_dimensions_match(info)
-        if "published_at" not in (getattr(info, "payload_schema", None) or {}):
-            self._create_published_at_index()
+        schema = getattr(info, "payload_schema", None) or {}
+        if "published_at" not in schema or "entity_ids" not in schema:
+            self._create_payload_indexes(schema)
 
     def _assert_dimensions_match(self, info: Any) -> None:
         """Refuse to reuse a collection built for a different embedding model.
@@ -126,15 +127,32 @@ class QdrantVectorStore:
             f"not comparable even when their dimensions agree."
         )
 
-    def _create_published_at_index(self) -> None:
-        try:
-            self.client.create_payload_index(
-                collection_name=self.collection_name,
-                field_name="published_at",
-                field_schema=models.PayloadSchemaType.DATETIME,
-            )
-        except Exception as exc:
-            raise self._safe_error("creating Qdrant payload index", exc) from exc
+    def _create_payload_indexes(self, existing_schema: Any = None) -> None:
+        """Create the payload indexes the filters in ``_build_filter`` need.
+
+        ``entity_ids`` was missed when this adapter shipped: date filters were
+        indexed, but the entity filter — the one the memory-reuse probe issues
+        on almost every question with a resolved entity — was not. Qdrant
+        rejects an unindexed field in a filtered query with a 400 ("Index
+        required but not found"), so the first live run lost five of eight
+        questions to a missing index that no offline test could see: the
+        offline suite runs ``LocalVectorStore``. Found live, 2026-09-06.
+        """
+        present = existing_schema or {}
+        for field_name, field_schema in (
+            ("published_at", models.PayloadSchemaType.DATETIME),
+            ("entity_ids", models.PayloadSchemaType.KEYWORD),
+        ):
+            if field_name in present:
+                continue
+            try:
+                self.client.create_payload_index(
+                    collection_name=self.collection_name,
+                    field_name=field_name,
+                    field_schema=field_schema,
+                )
+            except Exception as exc:
+                raise self._safe_error("creating Qdrant payload index", exc) from exc
 
     def _embedder_fingerprint(self) -> str | None:
         """Identity of the embedding model, when the embedder reports one.

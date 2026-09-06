@@ -78,7 +78,7 @@ kept, corrected, or rejected with the code that decides it.
 | 2 | One `ThreadPoolExecutor(max_workers=1)` per auditor fetch | True, and inelegant — but each pool is shut down per fetch and every worker is bounded by `future.result(timeout=…)` plus the httpx-level timeout (20s web / 30s model), so threads linger briefly, they don't accumulate. "Exhaustion" is overstated; pooling the executor is still the obvious cleanup. |
 | 3 | SQLite: single connection, `check_same_thread=False`, lock-serialized | True, and fine at this scale: all access goes through the `_synchronized` RLock (concurrency test holds), the DB is a local durability file, and the linear scan is documented as deliberate with FTS5 named as the replacement. PostgreSQL/pooling solves a problem this program doesn't have. |
 | 4 | Auditor runs synchronously on a daemon thread | True — and it is the *documented fix* for `asyncio.run` joining the default executor (WRITEUP §5), not a regression: cooperative deadlines bound it between claims, a wedged fetch is bounded by its clamped timeout. The residual risk (an unkillable thread living out its timeout) is already named in the write-up's limits. |
-| 5 | Validated only against offline fixtures | True, and the write-up's §0 — no live run has ever happened. Keys close it. |
+| 5 | Validated only against offline fixtures | Was true when written; superseded 2026-09-06 — live suites (baseline + reuse), the live seeded-defect audit and the live adversarial experiment are committed (`reports-live/`, `runs/live-*/`, `runlogs/P3-3-live-traces/`), and running them live found two defects offline could not (FIX_BACKLOG Part 5). The offline artifacts remain the reproducible evidence base. |
 
 **Corrected (false on the code):**
 

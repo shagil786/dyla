@@ -1,0 +1,130 @@
+{
+  "mode": "live",
+  "reuse_enabled": true,
+  "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+  "total_wall_seconds": 357.55,
+  "questions": [
+    {
+      "question": "What is the current goods and services tax (GST) rate applied to restaurant services in India?",
+      "run_id": "291fa4a01f514da7a19fd1a82d6085e5",
+      "wall_seconds": 68.667,
+      "web_searches": null,
+      "web_fetches": null,
+      "searches_skipped": 0,
+      "status": "complete"
+    },
+    {
+      "question": "Who is the current chief executive officer of Zerodha, and in which year did they take the role?",
+      "run_id": "2e0d62497a3d4e6fa2c33f6d604ac39d",
+      "wall_seconds": 50.777,
+      "web_searches": null,
+      "web_fetches": null,
+      "searches_skipped": 4,
+      "status": "complete"
+    },
+    {
+      "question": "List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each.",
+      "run_id": "21509cdc91bb42a3a041adc98e6c48cb",
+      "wall_seconds": 35.098,
+      "web_searches": null,
+      "web_fetches": null,
+      "searches_skipped": 4,
+      "status": "complete"
+    },
+    {
+      "question": "Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors?",
+      "run_id": "0a668c1adce5439b9b9f074eb10febb2",
+      "wall_seconds": 11.842,
+      "web_searches": null,
+      "web_fetches": null,
+      "searches_skipped": 4,
+      "status": "unaudited"
+    },
+    {
+      "question": "Who is the chief technology officer of Zerodha, and what is their academic background?",
+      "run_id": "0a569fd9be494dc6934e4b5f7b72f2cb",
+      "wall_seconds": 46.664,
+      "web_searches": null,
+      "web_fetches": null,
+      "searches_skipped": 8,
+      "status": "complete"
+    },
+    {
+      "question": "Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure.",
+      "run_id": "b8851af7399c43e682c7556528ffa4a5",
+      "wall_seconds": 16.847,
+      "web_searches": null,
+      "web_fetches": null,
+      "searches_skipped": 12,
+      "status": "complete"
+    },
+    {
+      "question": "How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round?",
+      "run_id": "4bdacc5ab4bd48f3bf7594a4675de198",
+      "wall_seconds": 16.182,
+      "web_searches": null,
+      "web_fetches": null,
+      "searches_skipped": 14,
+      "status": "incomplete"
+    },
+    {
+      "question": "State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each.",
+      "run_id": "7a6ccc90430c440aa4eac61eeec0fd33",
+      "wall_seconds": 28.96,
+      "web_searches": null,
+      "web_fetches": null,
+      "searches_skipped": 18,
+      "status": "unaudited"
+    }
+  ],
+  "totals": {
+    "input_tokens": 25147,
+    "output_tokens": 5036,
+    "embedding_tokens": 123899,
+    "estimated_cost": 0.0,
+    "duration_ms": 275026,
+    "memory_hits": 95,
+    "searches": 9,
+    "fetches": 32,
+    "searches_skipped": 18,
+    "cost_in_rupees": null,
+    "cost_in_usd": null,
+    "counterfactual_inr": 0.642,
+    "counterfactual_usd": 0.00679365
+  },
+  "pricing": {
+    "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "resolved": false,
+    "input_per_mtok_usd": null,
+    "output_per_mtok_usd": null,
+    "usd_to_inr": null,
+    "rate_source": null,
+    "note": "No price known for model 'nvidia/nemotron-3.5-lightning-30b-a3b'. Set DYLA_PRICE_INPUT_PER_MTOK_USD and DYLA_PRICE_OUTPUT_PER_MTOK_USD (USD per 1M tokens), or add the model to dyla.pricing.KNOWN_MODEL_PRICING."
+  },
+  "auditor": {
+    "seeded_defects_planted": 20,
+    "seeded_defects_caught": 15,
+    "by_class": {
+      "inflated_figure": {
+        "caught": 2,
+        "planted": 4
+      },
+      "dropped_citation": {
+        "caught": 4,
+        "planted": 4
+      },
+      "negated_claim": {
+        "caught": 1,
+        "planted": 4
+      },
+      "fabricated_claim": {
+        "caught": 4,
+        "planted": 4
+      },
+      "swapped_entity": {
+        "caught": 4,
+        "planted": 4
+      }
+    }
+  }
+}

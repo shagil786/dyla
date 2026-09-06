@@ -17,11 +17,11 @@ The architecture is genuinely good and 195 tests pass — but **the shipped CLI 
 
 | Gate requirement | Result |
 |---|---|
-| `pip install -e '.[dev]'` per README | ✅ Passes |
-| `pytest -q` per README | ❌ **Interrupted — 3 collection errors, 0 tests run** |
-| `dyla ask "..."` (the documented main command) | ❌ **`SyntaxError` before any code executes** |
-| Run logs present in repo | ❌ `logs/` is gitignored and absent |
-| Write-up present in repo | ❌ Does not exist |
+| `pip install -e '.[dev]'` per README | Passes |
+| `pytest -q` per README | **Interrupted — 3 collection errors, 0 tests run** |
+| `dyla ask "..."` (the documented main command) | **`SyntaxError` before any code executes** |
+| Run logs present in repo | `logs/` is gitignored and absent |
+| Write-up present in repo | Does not exist |
 
 ### 2.1 The blocker
 
@@ -155,16 +155,16 @@ Consequences: no token budget enforcement, no cost ceiling, no request cap, no d
 
 | Brief requirement | Status |
 |---|---|
-| Eight questions of increasing difficulty | ✅ Well designed in `DEFAULT_QUESTIONS`, with an explicit difficulty/reuse map |
-| ≥2 questions reusing earlier entities | ✅ Q5–Q8 reuse Zerodha / Infosys / Wipro / Zepto |
-| **Actually run them and publish the trace** | ❌ No `logs/`, no `reports/`, both gitignored |
-| Full per-question trace (plan, every tool call, course corrections) | ⚠️ Tracing code is solid; no captured output committed |
-| Cost per question in tokens and rupees + trend | ⚠️ Table generator exists but cannot run; no data |
-| "What you changed between runs and why" | ❌ Absent |
-| Auditor run across analyst answers + "what it caught" | ❌ Absent |
-| Honest account of auditor limits | ❌ Absent |
-| Adversarial-analyst experiment | ❌ No such prompt anywhere (`grep -i adversarial` → nothing) |
-| Write-up | ❌ Absent |
+| Eight questions of increasing difficulty | Well designed in `DEFAULT_QUESTIONS`, with an explicit difficulty/reuse map |
+| ≥2 questions reusing earlier entities | Q5–Q8 reuse Zerodha / Infosys / Wipro / Zepto |
+| **Actually run them and publish the trace** | No `logs/`, no `reports/`, both gitignored |
+| Full per-question trace (plan, every tool call, course corrections) | Tracing code is solid; no captured output committed |
+| Cost per question in tokens and rupees + trend | Table generator exists but cannot run; no data |
+| "What you changed between runs and why" | Absent |
+| Auditor run across analyst answers + "what it caught" | Absent |
+| Honest account of auditor limits | Absent |
+| Adversarial-analyst experiment | No such prompt anywhere (`grep -i adversarial` → nothing) |
+| Write-up | Absent |
 
 The brief states plainly that the write-up carries more weight than most candidates assume, and that missing logs stop the read. This is the largest scoring gap in the project and it is not a coding problem.
 

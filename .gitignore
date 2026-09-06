@@ -30,3 +30,7 @@ dyla.db
 *.db
 skill-observations/
 .freebuff/
+
+# AI-tooling working notes: kept locally, not part of the submission
+.superpowers/
+docs/superpowers/
