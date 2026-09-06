@@ -44,6 +44,14 @@ class _CompatibleClient:
                 if retry < self.max_retries:
                     self.sleeper(0.25 * (2 ** retry)); continue
                 self._fail(operation, model, retry, None, "request timed out", started)
+            except httpx.TransportError as exc:
+                # Timeouts are TransportError subclasses and are handled above;
+                # this catches the remaining transient failures (ConnectError,
+                # ReadError — a DNS blip, a dropped connection) which otherwise
+                # left max_retries unused and failed the whole call.
+                if retry < self.max_retries:
+                    self.sleeper(0.25 * (2 ** retry)); continue
+                self._fail(operation, model, retry, None, f"connection error: {exc}", started)
             if response.status_code == 429 or response.status_code >= 500:
                 if retry < self.max_retries:
                     self.sleeper(0.25 * (2 ** retry)); continue
@@ -279,6 +287,17 @@ class CompatibleEmbeddingProvider:
                 result[index] = cached
         for start in range(0, len(missing), self.batch_size):
             self._embed_batch(missing[start : start + self.batch_size], result)
+        unfilled = sum(1 for vector in result if vector is None)
+        if unfilled:
+            # Batches either fill completely or raise, so an unfilled slot means
+            # a response omitted a vector. Returning the filtered list would
+            # silently misalign vectors with the caller's inputs and surface as
+            # a confusing count-mismatch error in the vector store; fail here,
+            # at the cause.
+            raise ModelCallError(
+                f"embedding response omitted {unfilled} of {len(texts)} requested vectors",
+                ModelTelemetry(model=self.model, deployment=self.model, retry_count=0, status_code=None, error="incomplete embedding response", latency_ms=0),
+            )
         return [vector for vector in result if vector is not None]
 
     def _embed_batch(self, batch: list[tuple[int, str, str]], result: list[list[float] | None]) -> None:

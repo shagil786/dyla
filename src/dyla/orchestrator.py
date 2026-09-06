@@ -14,11 +14,16 @@ Here each stage runs through ``AgentRuntime``, which wraps it in
 budget shrinks as stages consume it, so analyst plus auditor cannot jointly
 exceed the ceiling.
 
-Honest limitation: ``AuditorAgent.run`` is synchronous and is executed on a
-worker thread. Python cannot kill a thread, so on timeout the orchestrator stops
-waiting and reports a partial run, but the abandoned thread runs to completion in
-the background. The caller-visible ceiling holds; process-level CPU use may
-briefly overrun it. The analyst is genuinely async and is cancelled properly.
+Honest limitation: both stages run on daemon threads — the auditor because its
+``run`` is synchronous, the analyst because although its ``run`` is a coroutine,
+every blocking call inside it goes through ``asyncio.to_thread``, which
+``wait_for`` cannot stop and whose default-executor threads ``asyncio.run``
+joins at shutdown. Python cannot kill a thread, so on timeout the orchestrator
+stops waiting and reports a partial run, but the abandoned thread runs to
+completion in the background. The caller-visible ceiling holds; process-level
+CPU use may briefly overrun it. The auditor additionally checks the deadline
+cooperatively between claims; the analyst has no such internal check and is
+bounded only by the external ceiling.
 """
 
 from __future__ import annotations
@@ -66,12 +71,61 @@ async def _run_on_daemon_thread(function: Any) -> Any:
         try:
             value = function()
         except BaseException as exc:  # noqa: BLE001 - relayed to the awaiting task
-            loop.call_soon_threadsafe(lambda: None if future.done() else future.set_exception(exc))
+            # Bind the exception to a name that outlives the except block:
+            # Python deletes `exc` when the block exits, and the relay lambda
+            # runs later (scheduled via call_soon_threadsafe), so a free
+            # reference to `exc` raises NameError and the awaiting future never
+            # resolves — the stage then hung until the wall-clock ceiling
+            # instead of failing fast.
+            failure = exc
+            loop.call_soon_threadsafe(lambda: None if future.done() else future.set_exception(failure))
         else:
             loop.call_soon_threadsafe(lambda: None if future.done() else future.set_result(value))
 
     threading.Thread(target=target, daemon=True, name="dyla-stage").start()
     return await future
+
+
+class _BudgetedWebProvider:
+    """Count every search and fetch against the run's web-request budget.
+
+    The agents hold their own ``SearchProvider`` references and bypass the
+    ``ToolRegistry`` whose guarded handlers are the only place
+    ``BudgetLedger.before_web_request`` used to fire, so ``max_web_requests``
+    was decorative for exactly the stages that make the most web calls.
+    Corroboration fetches inside synthesis go through the same wrapped
+    providers, so they are counted too.
+    """
+
+    def __init__(self, provider: Any, ledger: BudgetLedger) -> None:
+        self._provider = provider
+        self._ledger = ledger
+
+    def search(self, *args: Any, **kwargs: Any) -> Any:
+        self._ledger.before_web_request()
+        return self._provider.search(*args, **kwargs)
+
+    def fetch(self, *args: Any, **kwargs: Any) -> Any:
+        self._ledger.before_web_request()
+        return self._provider.fetch(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._provider, name)
+
+
+def _unwrap_budgeted(value: Any) -> Any:
+    """Recover the underlying provider from a budget wrapper, if wrapped."""
+    if isinstance(value, BudgetedModel):
+        return value._model
+    if isinstance(value, _BudgetedWebProvider):
+        return value._provider
+    return value
+
+
+def _without_run_id(message: str, run_id: str) -> str:
+    """Strip the run-id prefix from a stage-failure message for user display."""
+    prefix = f"{run_id}: "
+    return message[len(prefix):] if message.startswith(prefix) else message
 
 
 @dataclass(frozen=True)
@@ -124,7 +178,14 @@ class _CoroutineAgent:
 
 
 class RunOrchestrator:
-    """Run analyst, independent audit, persistence, tracing, and quality gates."""
+    """Run analyst, independent audit, persistence, tracing, and quality gates.
+
+    Single-flight: one orchestrator instance runs one ``ask()`` at a time.
+    ``_run_issues`` is reset per ask on shared state and stage budgets are
+    attached by temporarily swapping the agents' ``model``/``searcher``/
+    ``fetcher`` attributes, so two concurrent asks would cross-contaminate
+    issues and share one ledger. The CLI builds one orchestrator per invocation.
+    """
 
     def __init__(
         self, *, analyst: Any, auditor: Any, memory: Any, trace_writer: Any,
@@ -158,21 +219,32 @@ class RunOrchestrator:
         runtime = AgentRuntime(trace_writer=self.trace_writer)
         ledger = BudgetLedger(self._budget(self.wall_clock_seconds))
 
-        answer = await self._run_stage(
+        answer, analyst_failure = await self._run_stage(
             runtime, ledger, run_id, "analyst", started,
-            lambda: self.analyst.run(question, run_id),
+            # The analyst's coroutine does all its blocking work via
+            # asyncio.to_thread, so waiting on it directly would leave abandoned
+            # default-executor threads that asyncio.run joins at shutdown —
+            # blocking process exit past the ceiling. Running its own loop on a
+            # daemon thread (as the auditor already does) keeps the caller's
+            # return and the interpreter's exit free of the abandoned stage.
+            lambda: _run_on_daemon_thread(
+                lambda: asyncio.run(self.analyst.run(question, run_id))
+            ),
         )
         if answer is None:
-            answer = AnalystAnswer(
-                answer="Insufficient evidence.", claims=[],
-                limitations=[
-                    "The analyst stage did not finish within the run's wall-clock budget "
-                    f"of {self.wall_clock_seconds:.0f}s."
-                ],
+            # The limitation must name the real cause. Before the stage-failure
+            # reasons were threaded through, every None payload — timeout,
+            # budget breach, crash — was reported to the user as a wall-clock
+            # overrun, contradicting the accurate run issues recorded for the
+            # same event.
+            reason = analyst_failure or (
+                "The analyst stage did not finish within the run's wall-clock budget "
+                f"of {self.wall_clock_seconds:.0f}s."
             )
+            answer = AnalystAnswer(answer="Insufficient evidence.", claims=[], limitations=[reason])
 
         deadline = started + self.wall_clock_seconds
-        report = await self._run_stage(
+        report, _ = await self._run_stage(
             runtime, ledger, run_id, "auditor", started,
             lambda: _run_on_daemon_thread(
                 lambda: AuditReport(verdicts=self._audit(answer, run_id, deadline))
@@ -250,12 +322,14 @@ class RunOrchestrator:
     async def _run_stage(
         self, runtime: AgentRuntime, ledger: BudgetLedger, run_id: str,
         stage: str, started: float, factory: Any,
-    ) -> Any:
+    ) -> tuple[Any, str | None]:
         """Run one stage under the remaining wall-clock budget.
 
-        Returns the stage payload, or None if it timed out or failed. A stage
-        that overruns degrades the run to a reported partial result rather than
-        raising, so a slow auditor still leaves the analyst's answer intact.
+        Returns ``(payload, failure_reason)``: the payload, or None if the
+        stage timed out or failed, with ``failure_reason`` carrying the
+        user-facing cause. A stage that overruns degrades the run to a reported
+        partial result rather than raising, so a slow auditor still leaves the
+        analyst's answer intact.
         """
         remaining = self._remaining(started)
         if remaining <= _MINIMUM_STAGE_SECONDS:
@@ -265,54 +339,100 @@ class RunOrchestrator:
             )
             self._run_issues.append(message)
             self._trace(run_id, "failed", {"stage": stage, "error": "wall clock exhausted"})
-            return None
+            return None, _without_run_id(message, run_id)
 
         runtime.model = None
         budget = self._budget(remaining)
         agent = _CoroutineAgent(factory, self.analyst if stage == "analyst" else self.auditor)
         restore = self._attach_ledger(stage, ledger)
+        timed_out = False
         try:
             result = await runtime.run(agent, AgentInput(question="", context={"run_id": run_id}), budget)
-            return result.data
+            return result.data, None
         except ValueError as exc:
-            # AgentRuntime converts a deadline overrun into ValueError.
+            # AgentRuntime converts a deadline overrun into
+            # ValueError("budget deadline exceeded") — but the ledger raises
+            # ValueError too ("web request budget exceeded", "cost budget
+            # exceeded", …), and labelling every ValueError as a wall-clock
+            # overrun turned a budget breach into a false timeout report.
+            if "deadline" not in str(exc).casefold():
+                message = f"{run_id}: {stage} stage failed: {exc}"
+                self._run_issues.append(message)
+                self._trace(run_id, "failed", {"stage": stage, "error": str(exc)})
+                return None, _without_run_id(message, run_id)
+            timed_out = True
             message = (
                 f"{run_id}: {stage} stage exceeded the {self.wall_clock_seconds:.0f}s "
                 f"wall-clock ceiling: {exc}"
             )
             self._run_issues.append(message)
             self._trace(run_id, "failed", {"stage": stage, "error": str(exc)})
-            return None
+            return None, _without_run_id(message, run_id)
         except Exception as exc:
-            self._run_issues.append(f"{run_id}: {stage} stage failed: {exc}")
+            message = f"{run_id}: {stage} stage failed: {exc}"
+            self._run_issues.append(message)
             self._trace(run_id, "failed", {"stage": stage, "error": str(exc)})
-            return None
+            return None, _without_run_id(message, run_id)
         finally:
-            restore()
+            # On a deadline timeout the stage's daemon thread is still running
+            # and re-reads the agent's attributes on every call, so restoring
+            # the raw providers here would let the abandoned stage's remaining
+            # calls bypass the budget wrappers entirely. Leave them attached —
+            # the abandoned work keeps being counted against this run's ledger
+            # — and the next stage's _attach_ledger unwraps and rewraps them
+            # against its own ledger.
+            if not timed_out:
+                restore()
 
     def _attach_ledger(self, stage: str, ledger: BudgetLedger) -> Any:
-        """Route the stage's model calls through the shared budget ledger.
+        """Route the stage's model and web calls through the shared budget ledger.
 
         The ledger only counts what passes through it, and the agents hold their
-        own provider reference rather than pulling one from the tool registry.
-        Swapping the attribute for the duration of the stage is what makes the
-        token and cost caps real instead of decorative; without it the runtime
-        would enforce the deadline only.
+        own provider references rather than pulling one from the tool registry.
+        Swapping the attributes for the duration of the stage is what makes the
+        token, cost, and web-request caps real instead of decorative; without it
+        the runtime would enforce the deadline only.
+
+        A previous stage that timed out deliberately leaves its wrappers
+        attached (see the finally in ``_run_stage``), so any wrapper found here
+        is unwrapped to its underlying provider and rewrapped against the new
+        ledger rather than skipped.
         """
         target = self.analyst if stage == "analyst" else self.auditor
-        original = getattr(target, "model", None)
-        if original is None or isinstance(original, BudgetedModel):
-            return lambda: None
-        try:
-            target.model = BudgetedModel(original, ledger)
-        except Exception:
+        restores: list[Any] = []
+
+        original_model = _unwrap_budgeted(getattr(target, "model", None))
+        if original_model is not None:
+            try:
+                target.model = BudgetedModel(original_model, ledger)
+            except Exception:
+                pass
+            else:
+                restores.append(lambda: setattr(target, "model", original_model))
+
+        for attribute in ("searcher", "fetcher"):
+            provider = _unwrap_budgeted(getattr(target, attribute, None))
+            if provider is None:
+                continue
+            if not (callable(getattr(provider, "search", None)) or callable(getattr(provider, "fetch", None))):
+                continue
+            try:
+                setattr(target, attribute, _BudgetedWebProvider(provider, ledger))
+            except Exception:
+                continue
+            restores.append(
+                lambda attribute=attribute, provider=provider: setattr(target, attribute, provider)
+            )
+
+        if not restores:
             return lambda: None
 
         def restore() -> None:
-            try:
-                target.model = original
-            except Exception:
-                pass
+            for step in restores:
+                try:
+                    step()
+                except Exception:
+                    pass
 
         return restore
 

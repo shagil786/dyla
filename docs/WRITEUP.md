@@ -638,24 +638,42 @@ Ranked by how much they would bother me in review.
    knowingly-broken, untestable, credential-gated code — but it is a break and
    it belongs on this list rather than in a footnote.
 5. **Extra credit not achieved** — 24.1%, not 50% (§3).
-6. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
+6. **Offline retrieval scores carry no quality signal — and the memory-reuse
+   gate sits on top of them.** The default `LocalEmbeddingProvider` maps text to
+   a two-dimensional hash (`[sum(bytes) mod 997, length]`), so offline cosine
+   similarity between two chunks is structurally meaningless: it measures byte
+   sums, not semantic proximity. The offline suite is a deterministic replay,
+   so this is fine for what it claims — but two things downstream of the scores
+   deserve the sharper statement. First, "hybrid search" was, until this
+   session, dense-only despite its name; a token-overlap lexical channel now
+   exists in `LocalVectorStore` (blended at 0.3, dense dominant) precisely so
+   retrieval is not solely a function of a noise embedding — and its rescue
+   behaviour is pinned by a test that flips a ranking dense-only scoring gets
+   wrong. Second, memory-reuse coverage decisions are gated on
+   `reuse_min_score`, which offline compares against noise; the gate is saved
+   by its other condition — two *distinct sources* — but a reader should know
+   that offline, the score half of that comparison filters nothing. A live run
+   with a real embedding model is the only setting in which retrieval-quality
+   numbers from this harness would mean anything (weakness 1's caveat, one level
+   deeper).
+7. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
    pre-registers Zerodha, Infosys, Wipro and Zepto, because entity resolution is
    deterministic and does not invent entities from free text. Without it the
    resolver returns "unknown" and reuse can never engage. A real deployment
    accumulates these over time; doing it up front keeps the harness honest about
    what it measures rather than silently measuring nothing. But it *is* a
    thumb on the scale and it belongs in this list.
-7. **The cross-check's notion of corroboration is lexical** (§4.7). The old
+8. **The cross-check's notion of corroboration is lexical** (§4.7). The old
    high-confidence bypass is closed — the gate is now model-independent — but
    "independently states the figure" is decided by numeric-fact and overlap
    matching, and the offline corpus is single-source-per-fact, so the cross-check
    rejects genuine single-source claims it cannot confirm. Live search is the
    real test and remains unavailable.
-8. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
+9. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
    The scan is now documented as deliberate (the dead `memory_records_text`
    index was removed rather than kept as decoration); the replacement is FTS5
    or the embedding store when the corpus outgrows it.
-9. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
+10. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
    overwrite (memory now holds all eight answers, not one) raised retrieval
    searches in *both* modes — Q3 plans 3 subqueries where it planned 1 —
    because the planner expands entity-prefixed subqueries from everything it

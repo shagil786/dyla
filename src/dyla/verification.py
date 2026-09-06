@@ -56,22 +56,26 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+from .policies import DEFAULT_POLICIES
+
 VerificationStatus = Literal["supported", "unsupported", "contradicted", "uncited"]
 
 # A fact is confirmed within 1%, contradicted beyond 5%, and reported as
 # unverified in between. See the module docstring for why these differ.
-MATCH_TOLERANCE = 0.01
-CONFLICT_TOLERANCE = 0.05
+# The values are owned by Policies (ADR-0001); these aliases keep the module's
+# public names stable for the tests and call sites that import them.
+MATCH_TOLERANCE = DEFAULT_POLICIES.match_tolerance
+CONFLICT_TOLERANCE = DEFAULT_POLICIES.conflict_tolerance
 
 # Below this share of claim content words appearing anywhere in the sources, the
 # documents are judged not to address the claim at all -> "uncited".
-TOPICALITY_FLOOR = 0.20
+TOPICALITY_FLOOR = DEFAULT_POLICIES.topicality_floor
 # A sentence must share this share of the claim's content words before a numeric
 # disagreement inside it is treated as a contradiction rather than a coincidence.
-CONFLICT_CONTEXT_FLOOR = 0.34
+CONFLICT_CONTEXT_FLOOR = DEFAULT_POLICIES.conflict_context_floor
 # For claims carrying no numbers or years, lexical entailment needs this much of
 # the claim present in a single sentence before it counts as supported.
-LEXICAL_SUPPORT_FLOOR = 0.70
+LEXICAL_SUPPORT_FLOOR = DEFAULT_POLICIES.lexical_support_floor
 
 _SCALES: dict[str, float] = {
     "hundred": 1e2,

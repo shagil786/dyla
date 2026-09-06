@@ -328,3 +328,209 @@ def test_orchestrator_persists_run_namespaced_claim_ids(tmp_path):
     ).ask("question"))
 
     assert memory.records == [(f"{result.run_id}:c1", "uncited")]
+
+
+# ---------------------------------------------------------------------------
+# Web-request budget
+#
+# The analyst holds its own searcher/fetcher and bypasses the ToolRegistry
+# whose guarded handlers were the only place before_web_request fired, so
+# max_web_requests was decorative on the stage making the most web calls.
+# ---------------------------------------------------------------------------
+
+class CountingSearcher:
+    def __init__(self):
+        self.searches = 0
+
+    def search(self, query, limit=5):
+        self.searches += 1
+        return []
+
+    def fetch(self, url):
+        raise AssertionError("fetch not expected in this test")
+
+
+class SearchingAnalyst(FakeAnalyst):
+    def __init__(self, events, searcher):
+        super().__init__(events)
+        self.searcher = searcher
+
+    async def run(self, question, run_id):
+        for _ in range(5):
+            self.searcher.search(question, 5)
+        return await super().run(question, run_id)
+
+
+def test_the_web_request_budget_counts_the_analyst_own_providers(tmp_path):
+    events = []
+    searcher = CountingSearcher()
+    analyst = SearchingAnalyst(events, searcher)
+    result = asyncio.run(RunOrchestrator(
+        analyst=analyst, auditor=FakeAuditor(events), memory=FakeMemory(events),
+        trace_writer=FakeTrace(tmp_path, events), quality_gate=None,
+        max_web_requests=2, wall_clock_seconds=2.0,
+    ).ask("question"))
+
+    assert searcher.searches == 2, "the web budget did not stop the analyst's own searcher"
+    assert any("web request budget exceeded" in issue for issue in result.quality.issues), (
+        result.quality.issues
+    )
+    assert not any("wall-clock" in issue for issue in result.quality.issues), (
+        "a budget breach was misreported as a wall-clock overrun"
+    )
+    # The provider is restored after the run, not left wrapped.
+    assert analyst.searcher is searcher
+
+
+class CountingFetcher:
+    def __init__(self):
+        self.fetches = 0
+
+    def search(self, query, limit=5):
+        raise AssertionError("search not expected in this test")
+
+    def fetch(self, url):
+        self.fetches += 1
+        return object()
+
+
+def test_the_auditor_fetcher_is_also_budgeted(tmp_path):
+    events = []
+
+    class FetchingAuditor(FakeAuditor):
+        def __init__(self, events, fetcher):
+            super().__init__(events)
+            self.fetcher = fetcher
+
+        def run(self, answer, run_id):
+            for index in range(4):
+                self.fetcher.fetch(f"https://example.com/{index}")
+            return super().run(answer, run_id)
+
+    fetcher = CountingFetcher()
+    result = asyncio.run(RunOrchestrator(
+        analyst=FakeAnalyst(events), auditor=FetchingAuditor(events, fetcher),
+        memory=FakeMemory(events), trace_writer=FakeTrace(tmp_path, events),
+        quality_gate=None, max_web_requests=1, wall_clock_seconds=2.0,
+    ).ask("question"))
+
+    assert fetcher.fetches == 1, "the web budget did not stop the auditor's fetcher"
+    assert any("web request budget exceeded" in issue for issue in result.quality.issues), (
+        result.quality.issues
+    )
+
+
+# ---------------------------------------------------------------------------
+# Blocking analyst work
+#
+# The analyst's blocking work runs via asyncio.to_thread, which wait_for cannot
+# stop and whose executor asyncio.run joins at shutdown. The stage therefore
+# runs on its own daemon-threaded loop, the same isolation the auditor has.
+# ---------------------------------------------------------------------------
+
+class BlockingAnalyst(FakeAnalyst):
+    def __init__(self, events, delay):
+        super().__init__(events)
+        self.delay = delay
+
+    async def run(self, question, run_id):
+        import time as _time
+        _time.sleep(self.delay)  # blocks whatever thread runs this coroutine
+        return await super().run(question, run_id)
+
+
+def test_a_blocking_analyst_cannot_hold_the_caller_past_the_ceiling(tmp_path):
+    import time as _time
+
+    events = []
+    started = _time.monotonic()
+    result = asyncio.run(RunOrchestrator(
+        analyst=BlockingAnalyst(events, delay=5.0), auditor=FakeAuditor(events),
+        memory=FakeMemory(events), trace_writer=FakeTrace(tmp_path, events),
+        quality_gate=None, wall_clock_seconds=0.25,
+    ).ask("question"))
+    elapsed = _time.monotonic() - started
+
+    assert elapsed < 3.0, f"orchestrator waited {elapsed:.2f}s despite a 0.25s ceiling"
+    assert result.answer.answer == "Insufficient evidence."
+    assert any("wall-clock" in issue for issue in result.quality.issues), result.quality.issues
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: budget wrappers survive a timed-out stage, and failure
+# reasons are reported truthfully in the answer's limitations.
+# ---------------------------------------------------------------------------
+
+def test_a_timed_out_analyst_keeps_its_budget_wrappers_attached(tmp_path):
+    """Restoring the raw providers while the abandoned daemon thread is still
+    running would let its remaining calls bypass the budget entirely; the
+    wrappers are left attached instead (and rewrapped by the next run)."""
+    from dyla.orchestrator import _BudgetedWebProvider
+
+    events = []
+    searcher = CountingSearcher()
+    analyst = BlockingAnalyst(events, delay=5.0)
+    analyst.searcher = searcher
+    orchestrator = RunOrchestrator(
+        analyst=analyst, auditor=FakeAuditor(events), memory=FakeMemory(events),
+        trace_writer=FakeTrace(tmp_path, events), quality_gate=None,
+        wall_clock_seconds=0.25,
+    )
+    asyncio.run(orchestrator.ask("question"))
+
+    assert isinstance(analyst.searcher, _BudgetedWebProvider), (
+        "the timed-out stage's budget wrapper was removed while its thread still runs"
+    )
+
+
+def test_the_next_run_rewraps_a_leftover_budget_wrapper(tmp_path):
+    events = []
+    searcher = CountingSearcher()
+
+    class BlockOnceAnalyst(FakeAnalyst):
+        def __init__(self, events):
+            super().__init__(events)
+            self.calls = 0
+
+        async def run(self, question, run_id):
+            self.calls += 1
+            if self.calls == 1:
+                import time as _time
+                _time.sleep(5.0)  # abandoned past the ceiling
+            return await super().run(question, run_id)
+
+    analyst = BlockOnceAnalyst(events)
+    analyst.searcher = searcher
+    orchestrator = RunOrchestrator(
+        analyst=analyst, auditor=FakeAuditor(events), memory=FakeMemory(events),
+        trace_writer=FakeTrace(tmp_path, events), quality_gate=None,
+        wall_clock_seconds=0.25,
+    )
+    first = asyncio.run(orchestrator.ask("first"))
+    assert first.answer.answer == "Insufficient evidence."
+
+    second = asyncio.run(orchestrator.ask("second"))
+    assert second.answer.answer == "answer", "the leftover wrapper broke the next run"
+    assert searcher.searches == 0, "the wrapper was not rewired to the new ledger"
+
+
+def test_a_budget_breach_is_not_reported_as_a_wall_clock_timeout_in_the_answer(tmp_path):
+    events = []
+    searcher = CountingSearcher()
+    analyst = SearchingAnalyst(events, searcher)
+    result = asyncio.run(RunOrchestrator(
+        analyst=analyst, auditor=FakeAuditor(events), memory=FakeMemory(events),
+        trace_writer=FakeTrace(tmp_path, events), quality_gate=None,
+        max_web_requests=2, wall_clock_seconds=2.0,
+    ).ask("question"))
+
+    assert result.answer.limitations, result.answer
+    assert "web-request budget" not in result.answer.limitations[0] or (
+        "wall-clock" not in result.answer.limitations[0]
+    )
+    assert any("web request budget exceeded" in limitation for limitation in result.answer.limitations), (
+        result.answer.limitations
+    )
+    assert not any("wall-clock" in limitation for limitation in result.answer.limitations), (
+        result.answer.limitations
+    )

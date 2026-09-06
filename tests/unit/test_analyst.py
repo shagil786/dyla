@@ -384,7 +384,18 @@ def test_analyst_reports_unsupported_non_year_date_constraint():
 def test_analyst_notes_undated_sources_when_year_filter_applied():
     plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}], entities=[], date_constraints=["2025"])
     answer = asyncio.run(make_agent(FakeModel(), plan, FakeIndex()).run("Q", "run-undated"))
-    assert "Date filter applied for 2025; sources without a published date were also considered." in answer.limitations
+    assert "Date filter applied to sources published from 2025; sources without a published date were also considered." in answer.limitations
+
+
+def test_analyst_date_limitation_states_the_range_for_multiple_years():
+    """Two constrained years produce a continuous range filter; the limitation
+    text must say the range rather than imply a set of individual years."""
+    plan = ResearchPlan(original_question="Q", subqueries=[{"query": "Q"}], entities=[], date_constraints=["2023", "2025"])
+    answer = asyncio.run(make_agent(FakeModel(), plan, FakeIndex()).run("Q", "run-range"))
+    assert any(
+        "from 2023 and 2025" in limitation and "published" in limitation
+        for limitation in answer.limitations
+    ), answer.limitations
 
 
 def test_analyst_preserves_query_entity_attribution_and_date_filters():
@@ -1297,3 +1308,162 @@ def test_a_rejected_cross_check_is_traced_before_the_rejection(tmp_path):
     assert corroborated[0]["payload"]["source_url"] is None
     names = [event["event"] for event in _read_trace(tmp_path, "run-uncorroborated-traced")]
     assert names.index("claim_corroborated") < names.index("claim_rejected")
+
+
+# ---------------------------------------------------------------------------
+# Shadow policies (ADR-0001 increment 2)
+#
+# A candidate policy runs alongside the live one: decisions are traced under
+# both, behaviour follows only the live policy, and no metric moves.
+# ---------------------------------------------------------------------------
+
+def _reuse_plan():
+    return ResearchPlan(
+        original_question="Q",
+        subqueries=[{"query": "Acme status", "entities": ["Acme"]}],
+        entities=["Acme"],
+        date_constraints=[],
+    )
+
+
+def _shadow_agent(tmp_path, shadow_policies, reuse_enabled=True):
+    writer = TraceWriter(root=tmp_path)
+    return AnalystAgent(
+        model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(),
+        searcher=FakeSearcher(), fetcher=FakeFetcher(), index=FakeIndex(),
+        embedder=FakeEmbedder(), planner=controlled_planner(_reuse_plan()),
+        trace_writer=writer, reuse_enabled=reuse_enabled,
+        shadow_policies=shadow_policies,
+    ), writer
+
+
+def test_shadow_policies_change_no_behaviour():
+    from dyla.policies import Policies
+
+    plain_agent = AnalystAgent(
+        model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(),
+        searcher=FakeSearcher(), fetcher=FakeFetcher(), index=FakeIndex(),
+        embedder=FakeEmbedder(), planner=controlled_planner(_reuse_plan()),
+    )
+    shadow_agent, _ = _shadow_agent(Path("/tmp/dyla-shadow-unused"), Policies(reuse_min_sources=1))
+    plain_answer = asyncio.run(plain_agent.run("Q", "run-shadow-off"))
+    shadow_answer = asyncio.run(shadow_agent.run("Q", "run-shadow-on"))
+
+    counters = ("searches", "fetches", "searches_skipped", "evidence_reused", "memory_hits")
+    assert {key: plain_agent.metrics[key] for key in counters} == {key: shadow_agent.metrics[key] for key in counters}
+    assert shadow_agent.metrics["searches_skipped"] == 0, "the shadow policy leaked into live behaviour"
+    assert shadow_answer == plain_answer
+
+
+def test_shadow_divergence_is_traced_without_changing_behaviour(tmp_path):
+    from dyla.policies import Policies
+
+    # Live policy requires 2 sources (the FakeIndex holds 1), so the subquery
+    # runs. A shadow policy requiring 1 source would have skipped it: exactly
+    # the divergence the event must record, while the search still happens.
+    agent, writer = _shadow_agent(tmp_path, Policies(reuse_min_sources=1))
+    asyncio.run(agent.run("Q", "run-shadow"))
+
+    assert agent.metrics["searches"] == 1, "the shadow policy changed live behaviour"
+    events = [json.loads(line) for line in (tmp_path / "logs" / "run-shadow.jsonl").read_text().splitlines()]
+    shadows = [event["payload"] for event in events if event["event"] == "reuse_shadow_evaluated"]
+    assert len(shadows) == 1
+    assert shadows[0]["divergent"] is True
+    assert shadows[0]["live"]["skipped_queries"] == []
+    assert shadows[0]["shadow"]["skipped_queries"] == ["Acme status"]
+
+
+def test_an_identical_shadow_policy_traces_agreement_not_divergence(tmp_path):
+    from dyla.policies import Policies
+
+    agent, writer = _shadow_agent(tmp_path, Policies())
+    asyncio.run(agent.run("Q", "run-agree"))
+
+    events = [json.loads(line) for line in (tmp_path / "logs" / "run-agree.jsonl").read_text().splitlines()]
+    shadows = [event["payload"] for event in events if event["event"] == "reuse_shadow_evaluated"]
+    assert len(shadows) == 1
+    assert shadows[0]["divergent"] is False
+    assert shadows[0]["shadow"]["reuse_min_sources"] == shadows[0]["live"]["reuse_min_sources"]
+
+
+def test_the_shadow_event_is_on_the_trace_validator_allowlist(tmp_path):
+    """The allowlist is a manual-sync coupling; a new event that isn't added
+    turns every run 'incomplete'. This runs the gate itself."""
+    from dyla.policies import Policies
+    from dyla.reliability import QualityGate
+
+    agent, _ = _shadow_agent(tmp_path, Policies(reuse_min_sources=1))
+    asyncio.run(agent.run("Q", "run-allowlist"))
+
+    issues: set[str] = set()
+    QualityGate._validate_trace(tmp_path / "logs" / "run-allowlist.jsonl", "run-allowlist", issues)
+    assert not any("unknown event" in issue for issue in issues), issues
+
+
+def test_a_budget_exhausted_search_is_not_reported_as_a_provider_failure(tmp_path):
+    """The budget wrapper's ValueError reaching the gather path must surface as
+    'budget was exhausted', not as 'Web search failed' — and must not count
+    against failed_searches."""
+    from dyla.policies import Policies
+
+    class BudgetedSearcher(FakeSearcher):
+        def __init__(self, free_calls):
+            super().__init__()
+            self.free_calls = free_calls
+
+        def search(self, query, limit=5):
+            if self.started >= self.free_calls:
+                raise ValueError("web request budget exceeded")
+            return super().search(query, limit)
+
+    searcher = BudgetedSearcher(free_calls=1)
+    plan = ResearchPlan(
+        original_question="Q",
+        subqueries=[{"query": f"Acme {i}"} for i in range(3)],
+        entities=[],
+        date_constraints=[],
+    )
+    agent = AnalystAgent(
+        model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(),
+        searcher=searcher, fetcher=FakeFetcher(), index=FakeIndex(),
+        embedder=FakeEmbedder(), planner=controlled_planner(plan),
+        trace_writer=TraceWriter(root=tmp_path), reuse_enabled=False,
+        policies=Policies(),
+    )
+    answer = asyncio.run(agent.run("Q", "run-budget"))
+
+    assert any("web-request budget was exhausted" in limitation for limitation in answer.limitations), (
+        answer.limitations
+    )
+    assert not any("Web search failed for query" in limitation for limitation in answer.limitations), (
+        answer.limitations
+    )
+    assert agent.metrics["failed_searches"] == 0, "a budget stop counted as a provider failure"
+
+
+def test_a_disabled_shadow_policy_never_reports_skipped_queries(tmp_path):
+    from dyla.policies import Policies
+
+    # Two sources so the live policy (min 2) covers the entity and skips the
+    # subquery; the shadow policy disables reuse entirely, so it must report
+    # zero skipped queries — a policy that never skips anything.
+    evidence = [
+        Evidence(chunk_id=f"c{i}", source_id=f"s{i}", url=f"https://example.com/{i}",
+                 title="Source", text="evidence", score=0.9, entity_ids=["e1"])
+        for i in range(2)
+    ]
+    agent = AnalystAgent(
+        model=FakeModel(), resolver=FakeResolver(), memory=FakeMemory(),
+        searcher=FakeSearcher(), fetcher=FakeFetcher(), index=FakeIndex(evidence=evidence),
+        embedder=FakeEmbedder(), planner=controlled_planner(_reuse_plan()),
+        trace_writer=TraceWriter(root=tmp_path),
+        shadow_policies=Policies(reuse_enabled=False),
+    )
+    asyncio.run(agent.run("Q", "run-shadow-off"))
+
+    events = [json.loads(line) for line in (tmp_path / "logs" / "run-shadow-off.jsonl").read_text().splitlines()]
+    shadows = [event["payload"] for event in events if event["event"] == "reuse_shadow_evaluated"]
+    assert len(shadows) == 1
+    assert shadows[0]["shadow"]["skipped_queries"] == []
+    assert shadows[0]["shadow"]["covered_entities"] == 0
+    assert shadows[0]["divergent"] is True, "live skipped, the disabled shadow would not"

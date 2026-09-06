@@ -208,3 +208,105 @@ fails; restored → 319 passed. Full record: `runlogs/P5-memory-proof.md`.
    branches — about 830 lines. Defaults for every role are now `local`, so a
    fresh checkout runs with no credentials. Azure endpoints that speak the
    standard OpenAI API still work through the `compatible` adapter.
+
+---
+
+## Part 5 — Session 2026-09-06: independent code review (architecture · agentic-AI · RAG lenses)
+
+**Baseline:** `main` @ `67b9d44`. Suite at review time: **321 passed, 0 failed**.
+Two sources merged here: an independent agent review and a full read of the core
+pipeline (`orchestrator`, `agent_runtime`, `analyst`, `auditor`, `memory`,
+`reliability`, `local_vector`, `qdrant_vector`, `compatible`, `chunking`,
+`config`, `web`). Every code item below was verified by reading the cited lines,
+not taken from the review on faith.
+
+### Reconciling the independent review's claims
+
+Following Part 1's precedent — claims checked, not merged:
+
+| # | Claim in the review | Measured reality |
+|---|---|---|
+| 1 | "Some circular dependencies between components (analyst ↔ memory ↔ entity resolver)" | **Rejected.** `memory.py` imports only `domain`; `analyst.py` imports `ingest`, `models`, `ports`, `query_planner`, `verification`. The analyst *receives* memory and the resolver through its constructor — dependency injection, the opposite of a cycle. No import cycle exists (`grep` over all `from .` imports confirms; the P0-2 sweep-import test would also fail on one). |
+| 2 | "hybrid_search combining vector similarity with metadata filters" listed as a strength | **Mislabelled.** Both adapters' `hybrid_search` is dense similarity + metadata filtering only; there is no keyword/BM25 channel anywhere in the retrieval path (the only lexical scorer is `memory.search_memory`'s substring count). See P6-4. |
+| 3 | "Add A/B testing framework for retrieval strategies" | **Deferred with reason** (same shape as P3-2): the offline model is extractive and provably byte-invariant across prompts (P3-3 measured 8/8 identical), so offline A/B would measure noise. Meaningful policy comparison needs the live key that P2/P3-3 already wait on. Recorded here so it is decided, not forgotten. |
+| 4 | "Add circuit breaker pattern for failing providers" | **DECLINED 2026-09-06** — decided, not forgotten. The `compatible` client already retries timeouts and (since P6-6) all transient transport errors with backoff, and the orchestrator's budget and deadline machinery bounds runaway stages. A circuit breaker adds persistent state and a second failure surface to a single-tenant CLI that runs one question at a time, with no deployment to protect. Revisit only if a long-lived multi-provider deployment exists and shows repeat provider outages degrading runs. |
+| 5 | "AnalystAgent has 7+ dependencies — builder pattern" | Noted, **low priority**. The constructor takes collaborators, which is what makes the test suite able to fake every provider; a builder would add indirection without changing any behaviour the brief grades. |
+| 6 | Adaptive-architecture direction (policy layer, learning layer, dynamic tool discovery) | **DECIDED 2026-09-06 — `docs/ADR-0001-adaptive-architecture.md`.** Strangler-fig, not a redesign: the four-layer proposal is decomposed into three gated increments — (1) policy extraction (behaviour-preserving, tracked below as P7-1), (2) shadow mode, (3) policy selection from effectiveness — with 2 and 3 explicitly gated on the live key that P2/P3-3 already wait on, because offline the model is prompt-invariant (P3-3: byte-identical 8/8) and the embedding is a 2-dim hash (P6-9), so there is no signal to adapt to. A learning layer and dynamic tool discovery are out of scope until increment 3 has data. |
+
+### P6 — Review backlog
+
+Status key as before.
+
+| ID | Item | Status |
+|---|---|---|
+| **P6-1** | **`max_web_requests` is decorative on the analyst path.** The orchestrator configures `DEFAULT_MAX_WEB_REQUESTS = 200` and `BudgetLedger.before_web_request` enforces it — but only for tools invoked through `ToolRegistry`, and `AnalystAgent` holds its own `searcher`/`fetcher` and never touches the registry (its corroborations fetch directly too). The stage that makes the most web calls is the one budget the ledger does not see. Tokens got a deliberate fix (`_attach_ledger` swaps in `BudgetedModel`); web requests get the same treatment: the orchestrator wraps each stage's `searcher`/`fetcher` in a counting proxy for the stage's duration, so `before_web_request` fires on every search and fetch including corroboration. | **DONE** |
+| **P6-2** | **"The analyst is genuinely async and is cancelled properly" is false.** Every blocking call in `AnalystAgent.run` goes through `asyncio.to_thread`, which `wait_for` cannot stop — cancelling the task abandons the thread, and `asyncio.run` joins the default executor at shutdown, so a timed-out analyst still blocks process exit. This is exactly the failure `_run_on_daemon_thread` was built for (Part 1, P1-6 bug 4) but only the auditor was routed through it. The analyst stage now runs the same way: `asyncio.run(self.analyst.run(...))` on a daemon thread, so the caller-visible ceiling holds and process exit is never blocked; the module docstring states the shared honest limitation for both stages instead of claiming an exemption the code does not have. | **DONE** |
+| **P6-3** | **`RunOrchestrator` is not safe to reuse concurrently** (latent): `_run_issues` is reset inside `ask()` on shared state, and `_attach_ledger` monkey-patches the shared agent's `.model` for a stage's duration — two concurrent `ask()` calls would cross-contaminate issues and route both stages through one ledger. Today the CLI builds one orchestrator per invocation, so this is documented, not guarded: the class docstring now states the single-flight constraint. | **DONE** |
+| **P6-4** | **`hybrid_search` does no keyword retrieval.** Both vector adapters are dense-only; for factual recall, hybrid retrieval (vector + lexical, merged) consistently outperforms dense-only, and the method name promises what is not there. Decision recorded: rename is rejected (the call sites and the brief's vocabulary use "hybrid" for vector+filter, and renaming is churn), implementation is taken: `LocalVectorStore.hybrid_search` now blends a token-overlap lexical score with the dense score, so the offline path has a real second channel; Qdrant keeps provider-side dense search (its payload indexes serve the metadata filters, and a lexical channel there needs Qdrant's full-text index — noted as a live-mode follow-up, not silently dropped). | **DONE** |
+| **P6-5** | **Cosine silently truncated on dimension mismatch in `LocalVectorStore.hybrid_search`.** `upsert` validates every vector, but search `zip`s the query vector against stored vectors — `zip` truncates to the shorter side, so a mismatched query embedding yields a plausible-looking garbage score instead of an error. `QdrantVectorStore` raises in the same situation; the local store now matches. | **DONE** |
+| **P6-6** | **Retries do not cover connection errors.** `compatible.post` retries only `httpx.TimeoutException` and 429/5xx; transient `httpx.TransportError` subclasses (`ConnectError`, `ReadError` — a DNS blip, a dropped connection) raise straight out with `max_retries=3` unused. Transport errors now retry with the same backoff. | **DONE** |
+| **P6-7** | **Multi-year date filter admits unrequested intermediate years while the limitation text overstates what was enforced.** Years `[2022, 2024]` become the continuous range Jan-2022..Jan-2025 (2023 sources admitted), yet the limitation says "applied for 2022, 2024". Honest fix chosen over a `SearchFilters` schema change: the limitation text now states the actual range ("between 2022 and 2024, sources without a published date included"), matching what the filters do. Per-year OR filtering is a schema change across both adapters — worth it only with a live corpus that exercises it. | **DONE** |
+| **P6-8** | **`CompatibleEmbeddingProvider.embed` can silently return fewer vectors than inputs** — the final comprehension drops `None` slots, and both stores then raise a confusing count-mismatch error pointing at the store, not the cause. `embed` now raises inside itself when any slot is unfilled. | **DONE** |
+| **P6-9** | **Offline retrieval scores are structurally noise** (noted, no code change): the default `LocalEmbeddingProvider` is a 2-dim hash, so offline dense scores — and reuse-coverage decisions gated on `reuse_min_score` — carry no retrieval-quality signal. Fine for the deterministic replay (WRITEUP already covers determinism), but any offline citation of retrieval *quality* metrics needs the same honesty caveat. **DONE — WRITEUP §6, weakness 6** (the offline 2-dim hash embedding, the lexical channel added in P6-4, and the `reuse_min_score` half of the reuse gate, all stated as one weakness). |
+| **P6-10** | `.github/github-app.yml` (untracked): nothing in the repo reads it — config is env-var-based, CI doesn't reference it. **DECIDED 2026-09-06: left untracked, deliberately not committed and not deleted.** Committing an unparsed config would imply a guarantee no code or workflow honours; deleting it would destroy a file the owner may have created for an external GitHub App (the flags read like "auto-start sessions on issues, remote control off"). To land it: verify the consuming app's expected filename and schema, then commit with a README note naming the consumer. | **DECIDED (untracked pending consumer verification)** |
+| **P7-1** | ADR-0001 increment 1: extract the hardcoded behaviour constants (`reuse_min_sources`, `reuse_min_score`, `min_evidence`, `max_subqueries`, `search_limit`, `evidence_limit`, `verification.py` tolerance floors) into a single typed `Policies` object passed through the agents. Behaviour-preserving: all tests stay green and the suite must regenerate byte-identical in searches/fetches/verdicts. Do not worsen `AnalystAgent`'s constructor surface without a builder (ADR-0001 consequences). **DONE.** New `dyla/policies.py`: frozen `Policies` dataclass owning every threshold (planning, reuse, retrieval, the rejected-claim overlap, all five verification tolerances, the lexical blend weight) with structural validation — including `match_tolerance < conflict_tolerance`, the invariant that keeps the auditor's unverified band open. `verification.py` and `local_vector.py` alias their public constants from `DEFAULT_POLICIES`; `AnalystAgent` takes `policies=` with the pre-existing per-knob kwargs kept as explicit overrides (constructor surface grew by one parameter, not seven). Environment variables deliberately not wired: changing policy is a tested code change, not a flag. Scope correction made during review: per-run injection is implemented for the analyst's knobs only — the verification tolerances and lexical weight bind from `DEFAULT_POLICIES` at import (changing them is a code change to the defaults), and the corroboration gates own no policy knob at all (P7-2 and ADR-0001 say the same; this row originally listed them in error). 8 new tests (`tests/unit/test_policies.py`) pin every default to the literal it replaced and assert the override rules; the suite regenerated byte-identical in both modes — tokens, searches, fetches, `searches_skipped`, verdicts and the 20/20 seeded-defect audit unchanged, only wall-clock moved. | **DONE** |
+| **P7-2** | ADR-0001 increment 2: shadow mode. `AnalystAgent(shadow_policies=...)` runs a candidate policy alongside the live one at the reuse decision — the one behaviour increment 3 would select on: the same probe results are re-classified under the shadow policy (no extra retrievals, no metric moves, behaviour follows the live policy only) and the comparison is traced as `reuse_shadow_evaluated` (live vs shadow covered entities and skipped queries, plus a `divergent` flag; emitted even on agreement so a live run can measure agreement rates). Stated limits, in the code docstring and the ADR: the shadow decision reuses probes fetched under the live `evidence_limit`, so a shadow policy changing that knob is approximated, and the shadow covers the reuse decision only. `reuse_shadow_evaluated` was added to the quality-gate allowlist, and a test runs the gate itself against a shadow trace so the manual-sync coupling cannot regress silently. Four tests: no behaviour change, divergence traced, agreement traced, allowlist in sync. Suite regenerated: byte-identical behaviour, 20/20 audit both modes. | **DONE** |
+
+Note on the review's `valid_events` allowlist concern: already documented as a
+deliberate manual-sync coupling in `reliability.py` itself — intentional, not a
+defect, no action.
+
+**Two bugs the P6 tests caught during the work**, same tradition as the P1 list:
+
+1. `_run_on_daemon_thread`'s exception relay referenced `exc` from inside the
+   `except BaseException as exc:` block, but the relay lambda runs *after* the
+   block exits — and Python deletes the except-variable at block end — so the
+   relay itself raised `NameError` and the awaited future never resolved. Any
+   stage exception (a budget breach, a crash) made the orchestrator hang until
+   the full wall-clock ceiling instead of failing fast. The exception is now
+   bound to a name that outlives the block. Found by
+   `test_the_web_request_budget_counts_the_analyst_own_providers`, which hung
+   120s on first run.
+2. `_run_stage` treated **every** `ValueError` from a stage as a wall-clock
+   overrun — `BudgetLedger` also raises `ValueError` ("web request budget
+   exceeded", "cost budget exceeded"), so a budget breach was reported as a
+   false timeout. `_run_stage` now discriminates on the runtime's
+   deadline-specific message.
+
+Artifact note: because P6-4 changed `LocalVectorStore.hybrid_search` scoring,
+both suite modes were regenerated (established order: no-reuse first, then
+reuse). Searches, fetches, verdicts and the seeded-defect audit (20/20 both
+modes) are unchanged — only run IDs and wall-clock times moved — so every
+figure cited in WRITEUP §2–§3 still holds.
+
+**Review-pipeline follow-ups (same session):** the /code-review pipeline (five
+independent reviewers, confidence-scored) surfaced four findings at 75
+confidence, all fixed here:
+
+1. **Budget wrappers were swapped out from under a timed-out stage.** The
+   `finally: restore()` in `_run_stage` fired while the abandoned daemon
+   thread still ran, so its remaining model/web calls bypassed the budget
+   wrappers entirely. Restore is now skipped on a deadline timeout — the
+   wrappers stay attached and the abandoned work keeps counting against the
+   run's ledger — and `_attach_ledger` unwraps any leftover wrapper and
+   rewraps it against the next stage's ledger. The wrapper `setattr`s are
+   also guarded (degrade, don't crash).
+2. **A web-budget breach in the gather path was misattributed as a search
+   outage.** `_collect_from_web` now recognises the ledger's ValueError and
+   records "the run's web-request budget was exhausted" instead of "Web
+   search failed", without counting it in `failed_searches`.
+3. **The fallback answer still claimed a wall-clock timeout for every failed
+   stage.** `_run_stage` now returns the failure reason, and `ask()` uses it
+   as the limitation — the answer and the run issues tell the same story.
+4. **Shadow mode ignored `shadow.reuse_enabled=False`.** A candidate that
+   disables reuse is now classified as never skipping anything, matching what
+   that policy would actually decide.
+
+Doc corrections from the same review: the dangling "§6.1's caveat" reference
+in WRITEUP §6 (an earlier automated fix had silently failed on a line-wrap
+mismatch — lesson recorded: assert your replacements), the P7-1 claim that
+"corroboration gates" were extracted into Policies (they are not; P7-2 and
+ADR-0001 say so too), and the `policies.py` docstring now states the per-run
+injection scope honestly (analyst knobs only; verification/lexical values
+bind at import). Five regression tests pin all of it; suite 346 passed;
+artifacts regenerated byte-identical, 20/20 audit both modes.
