@@ -9,7 +9,11 @@ and says "insufficient evidence" instead of guessing. Every run writes a full
 JSONL trace: the plan, every tool call, what came back, and every course
 correction.
 
-## Run the evaluation (30 seconds, no API keys)
+## Run the evaluation
+
+Two evidence bases, both runnable from this repo.
+
+### 1. Offline replay — no API keys, ~30 seconds
 
 ```bash
 python -m venv .venv
@@ -44,9 +48,9 @@ reuse cuts total tokens 12.5% (including embedding tokens; model tokens alone
 filing. The saving is real and so is the price — [WRITEUP §3](docs/WRITEUP.md)
 explains the mechanism and why neither number is 50%.
 
-### Run the evaluation live (real providers)
+### 2. Live — real providers
 
-Once `.env` is configured — minimum: `DYLA_MODEL_PROVIDER=compatible` with
+Configure `.env` (minimum: — minimum: `DYLA_MODEL_PROVIDER=compatible` with
 `DYLA_MODEL_BASE_URL` / `DYLA_MODEL_API_KEY` / `DYLA_MODEL_NAME`,
 `DYLA_WEB_PROVIDER=you` with `YOU_API_KEY`, and (for memory) the
 `DYLA_EMBEDDING_*` and `QDRANT_*` sets — the same suite runs against real
@@ -86,14 +90,14 @@ support.
 
 ## Ask it a question
 
-Configure `.env` (see Setup), then:
-
-This runs the full pipeline: plan → web search → page fetch → cited answer →
-independent audit → memory → trace. Real output from a live run:
+With the live configuration from above in `.env`:
 
 ```bash
 dyla ask "What is the current GST rate applied to restaurant services in India?"
 ```
+
+This runs the full pipeline: plan → web search → page fetch → cited answer →
+independent audit → memory → trace. Real output from that run:
 
 ```text
 The GST rate applied to restaurant services in India varies based on the type
@@ -104,9 +108,6 @@ Status: complete
 Run: dfe2657ee0c44e9f9b3971f80f0f20cf
 Trace: logs/dfe2657ee0c44e9f9b3971f80f0f20cf.jsonl
 ```
-
-This needs the live configuration from the previous section in `.env`
-(`.env.example` documents every variable).
 
 Status meanings: `complete` — every claim audited, no issues. `incomplete` —
 the auditor flagged issues (an unsupported claim, for example); the answer is
