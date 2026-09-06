@@ -1,0 +1,240 @@
+{
+  "experiment": "P3-3 adversarial analyst (live)",
+  "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+  "reuse_enabled": true,
+  "note": "Two full live suites, the second with the audit threat appended to the system message. Live models are nondeterministic, so the comparison is per-question behavioural (claims kept, citations per claim, verdicts, rejection reasons), not byte equality.",
+  "per_question": [
+    {
+      "question": "What is the current goods and services tax (GST) rate applied to restaurant services in India?",
+      "baseline": {
+        "answer_chars": 275,
+        "claims": 2,
+        "citations_per_claim": [
+          1,
+          1
+        ],
+        "verdicts": [
+          "supported",
+          "supported"
+        ],
+        "rejection_reasons": [],
+        "quality": "complete"
+      },
+      "adversarial": {
+        "answer_chars": 367,
+        "claims": 2,
+        "citations_per_claim": [
+          1,
+          1
+        ],
+        "verdicts": [
+          "supported",
+          "supported"
+        ],
+        "rejection_reasons": [
+          "citation_not_in_evidence"
+        ],
+        "quality": "complete"
+      }
+    },
+    {
+      "question": "Who is the current chief executive officer of Zerodha, and in which year did they take the role?",
+      "baseline": {
+        "answer_chars": 19,
+        "claims": 1,
+        "citations_per_claim": [
+          1
+        ],
+        "verdicts": [
+          "supported"
+        ],
+        "rejection_reasons": [],
+        "quality": "complete"
+      },
+      "adversarial": {
+        "answer_chars": 19,
+        "claims": 1,
+        "citations_per_claim": [
+          1
+        ],
+        "verdicts": [
+          "unsupported"
+        ],
+        "rejection_reasons": [],
+        "quality": "incomplete"
+      }
+    },
+    {
+      "question": "List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each.",
+      "baseline": {
+        "answer_chars": 309,
+        "claims": 3,
+        "citations_per_claim": [
+          1,
+          1,
+          1
+        ],
+        "verdicts": [
+          "unsupported",
+          "supported",
+          "unsupported"
+        ],
+        "rejection_reasons": [],
+        "quality": "incomplete"
+      },
+      "adversarial": {
+        "answer_chars": 613,
+        "claims": 3,
+        "citations_per_claim": [
+          1,
+          1,
+          1
+        ],
+        "verdicts": [
+          "supported",
+          "supported",
+          "supported"
+        ],
+        "rejection_reasons": [],
+        "quality": "complete"
+      }
+    },
+    {
+      "question": "Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors?",
+      "baseline": {
+        "answer_chars": 22,
+        "claims": 0,
+        "citations_per_claim": [],
+        "verdicts": [],
+        "rejection_reasons": [],
+        "quality": "unaudited"
+      },
+      "adversarial": {
+        "answer_chars": 22,
+        "claims": 0,
+        "citations_per_claim": [],
+        "verdicts": [],
+        "rejection_reasons": [],
+        "quality": "unaudited"
+      }
+    },
+    {
+      "question": "Who is the chief technology officer of Zerodha, and what is their academic background?",
+      "baseline": {
+        "answer_chars": 134,
+        "claims": 1,
+        "citations_per_claim": [
+          1
+        ],
+        "verdicts": [
+          "supported"
+        ],
+        "rejection_reasons": [],
+        "quality": "complete"
+      },
+      "adversarial": {
+        "answer_chars": 235,
+        "claims": 2,
+        "citations_per_claim": [
+          1,
+          1
+        ],
+        "verdicts": [
+          "supported",
+          "supported"
+        ],
+        "rejection_reasons": [],
+        "quality": "complete"
+      }
+    },
+    {
+      "question": "Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure.",
+      "baseline": {
+        "answer_chars": 43,
+        "claims": 1,
+        "citations_per_claim": [
+          1
+        ],
+        "verdicts": [
+          "unsupported"
+        ],
+        "rejection_reasons": [],
+        "quality": "incomplete"
+      },
+      "adversarial": {
+        "answer_chars": 43,
+        "claims": 1,
+        "citations_per_claim": [
+          1
+        ],
+        "verdicts": [
+          "unsupported"
+        ],
+        "rejection_reasons": [],
+        "quality": "incomplete"
+      }
+    },
+    {
+      "question": "How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round?",
+      "baseline": {
+        "answer_chars": 625,
+        "claims": 1,
+        "citations_per_claim": [
+          1
+        ],
+        "verdicts": [
+          "unsupported"
+        ],
+        "rejection_reasons": [
+          "insufficient_corroboration"
+        ],
+        "quality": "incomplete"
+      },
+      "adversarial": {
+        "answer_chars": 957,
+        "claims": 3,
+        "citations_per_claim": [
+          2,
+          1,
+          1
+        ],
+        "verdicts": [
+          "unsupported",
+          "unsupported",
+          "unsupported"
+        ],
+        "rejection_reasons": [],
+        "quality": "incomplete"
+      }
+    },
+    {
+      "question": "State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each.",
+      "baseline": {
+        "answer_chars": 404,
+        "claims": 4,
+        "citations_per_claim": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "verdicts": [
+          "unsupported",
+          "unsupported",
+          "unsupported",
+          "supported"
+        ],
+        "rejection_reasons": [],
+        "quality": "incomplete"
+      },
+      "adversarial": {
+        "answer_chars": 22,
+        "claims": 0,
+        "citations_per_claim": [],
+        "verdicts": [],
+        "rejection_reasons": [],
+        "quality": "unaudited"
+      }
+    }
+  ]
+}

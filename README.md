@@ -38,9 +38,11 @@ It also costs one fact. Answer completeness is **16/21 in the baseline and
 Zepto's filings. The saving is real and so is the price; `docs/WRITEUP.md` §3
 explains the mechanism, §3.3 the trade, and why neither is 50%.
 
-**Read [`docs/WRITEUP.md`](docs/WRITEUP.md) first.** It states up front that
-these results are a deterministic replay of recorded pages, not a live LLM run,
-and explains exactly which conclusions that does and does not support.
+**Read [`docs/WRITEUP.md`](docs/WRITEUP.md) first.** It states up front what
+each evidence base is: the deterministic fixture replay in `reports/` and
+`runs/` (reproducible in seconds, no keys), and the committed live runs in
+`reports-live/` and `runs/live-*/` (real web search, real model, real Qdrant)
+— and explains exactly which conclusions each does and does not support.
 
 To run against real providers instead, configure `.env` (see Setup) and pass
 `--live`.

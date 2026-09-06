@@ -322,6 +322,28 @@ working), searches_skipped 0→16 across the suite as reuse engaged,
 seeded-defect audit 18/20 live. Model: nemotron-3.5-lightning via the
 compatible adapter; stack: You.com search, real embeddings, Qdrant Cloud.
 
+**Live evidence committed (2026-09-06, same session):** the second live pair
+found a second live-only gap — with a fresh database the live path never
+creates entities (`upsert_entity` has no production caller; only the harness
+seed does), so reuse measured a deployment that cannot learn: 0 skips in all
+eight questions. `run_suite.py --live` now seeds the same four entities the
+offline harness does (the documented assumption), and live logs archive under
+`runs/live-*` so a live run can never overwrite the committed offline traces.
+Committed live artifacts: `runs/live-no-reuse/`, `runs/live-reuse/`,
+`reports-live/` (both modes), and the adversarial-analyst experiment re-run
+live with `--live` support added to `scripts/experiment_adversarial_analyst.py`
+(request wrapper rebuilt to carry the full ModelRequest, event capture fixed
+to read the run's real trace path, per-question behavioural comparison for a
+nondeterministic model; offline byte-invariance still pinned and re-verified
+8/8). Live reuse result: searches 15→9, fetches 73→32, skips 0→18 across the
+suite, wall clock falls while the baseline's climbs, accuracy holds (5/8 vs
+4/8 complete, 15/20 vs 14/20 seeded audit); model tokens +3.7% — the same
+"search step, not grounding step" shape as offline. Live adversarial result:
+4/8 questions changed behaviour under the audit threat, in both directions
+(one improved, one bailed out entirely, one got worse) — WRITEUP §4.8, traces
+in `runlogs/P3-3-live-traces/`. WRITEUP §0 and weakness 1 rewritten around the
+live evidence.
+
 Doc corrections from the same review: the dangling "§6.1's caveat" reference
 in WRITEUP §6 (an earlier automated fix had silently failed on a line-wrap
 mismatch — lesson recorded: assert your replacements), the P7-1 claim that

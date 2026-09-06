@@ -136,6 +136,14 @@ def main() -> int:
 
         settings = load_settings()
         orchestrator = _build_orchestrator(settings, reuse=not args.no_reuse)
+        # The first live pair ran without this and reuse never engaged: nothing
+        # in the live path creates entities (upsert_entity has no production
+        # caller; resolution is deliberately deterministic), so on a fresh
+        # database the resolver returns "unknown" for everything and the reuse
+        # probe had nothing to filter on — 0 skips in all eight questions. The
+        # seed is the same documented harness assumption offline makes; without
+        # it the live run measures a deployment that can never learn entities.
+        seed_entities(orchestrator.memory)
         model_name = settings.model_name
         provider = None
     else:
@@ -176,7 +184,9 @@ def main() -> int:
         basename=basename,
     )
 
-    label = "no-reuse" if args.no_reuse else "reuse"
+    # Live runs archive under their own label so a live log never overwrites
+    # the committed offline traces for the same mode.
+    label = ("live-" if args.live else "") + ("no-reuse" if args.no_reuse else "reuse")
 
     archive = archive_logs(root, per_question, label)
 

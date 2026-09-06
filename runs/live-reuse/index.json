@@ -1,0 +1,90 @@
+[
+  {
+    "number": 1,
+    "log": "q01-what-is-the-current-goods-and-services-tax-gst-r.jsonl",
+    "question": "What is the current goods and services tax (GST) rate applied to restaurant services in India?",
+    "run_id": "291fa4a01f514da7a19fd1a82d6085e5",
+    "wall_seconds": 68.667,
+    "web_searches": null,
+    "web_fetches": null,
+    "searches_skipped": 0,
+    "status": "complete"
+  },
+  {
+    "number": 2,
+    "log": "q02-who-is-the-current-chief-executive-officer-of-ze.jsonl",
+    "question": "Who is the current chief executive officer of Zerodha, and in which year did they take the role?",
+    "run_id": "2e0d62497a3d4e6fa2c33f6d604ac39d",
+    "wall_seconds": 50.777,
+    "web_searches": null,
+    "web_fetches": null,
+    "searches_skipped": 4,
+    "status": "complete"
+  },
+  {
+    "number": 3,
+    "log": "q03-list-the-three-largest-software-services-exporte.jsonl",
+    "question": "List the three largest software services exporters by revenue that are headquartered in Bengaluru, with one source for each.",
+    "run_id": "21509cdc91bb42a3a041adc98e6c48cb",
+    "wall_seconds": 35.098,
+    "web_searches": null,
+    "web_fetches": null,
+    "searches_skipped": 4,
+    "status": "complete"
+  },
+  {
+    "number": 4,
+    "log": "q04-which-indian-quick-commerce-startups-raised-fund.jsonl",
+    "question": "Which Indian quick-commerce startups raised funding rounds above 100 million dollars in 2025, and what were the amounts and lead investors?",
+    "run_id": "0a668c1adce5439b9b9f074eb10febb2",
+    "wall_seconds": 11.842,
+    "web_searches": null,
+    "web_fetches": null,
+    "searches_skipped": 4,
+    "status": "unaudited"
+  },
+  {
+    "number": 5,
+    "log": "q05-who-is-the-chief-technology-officer-of-zerodha-a.jsonl",
+    "question": "Who is the chief technology officer of Zerodha, and what is their academic background?",
+    "run_id": "0a569fd9be494dc6934e4b5f7b72f2cb",
+    "wall_seconds": 46.664,
+    "web_searches": null,
+    "web_fetches": null,
+    "searches_skipped": 8,
+    "status": "complete"
+  },
+  {
+    "number": 6,
+    "log": "q06-compare-the-most-recent-full-year-revenues-of-in.jsonl",
+    "question": "Compare the most recent full-year revenues of Infosys and Wipro in rupees, and state which company reported the larger figure.",
+    "run_id": "b8851af7399c43e682c7556528ffa4a5",
+    "wall_seconds": 16.847,
+    "web_searches": null,
+    "web_fetches": null,
+    "searches_skipped": 12,
+    "status": "complete"
+  },
+  {
+    "number": 7,
+    "log": "q07-how-did-zepto-s-valuation-change-across-its-fund.jsonl",
+    "question": "How did Zepto's valuation change across its funding rounds up to its most recent round, and who led that most recent round?",
+    "run_id": "4bdacc5ab4bd48f3bf7594a4675de198",
+    "wall_seconds": 16.182,
+    "web_searches": null,
+    "web_fetches": null,
+    "searches_skipped": 14,
+    "status": "incomplete"
+  },
+  {
+    "number": 8,
+    "log": "q08-state-whether-zerodha-infosys-wipro-and-zepto-ar.jsonl",
+    "question": "State whether Zerodha, Infosys, Wipro, and Zepto are profitable according to their latest published financials, and cite one source for each.",
+    "run_id": "7a6ccc90430c440aa4eac61eeec0fd33",
+    "wall_seconds": 28.96,
+    "web_searches": null,
+    "web_fetches": null,
+    "searches_skipped": 18,
+    "status": "unaudited"
+  }
+]
