@@ -554,3 +554,45 @@ def test_factory_composes_configured_roles_and_rejects_unknown_provider():
 
     with pytest.raises(ValueError, match="unsupported model provider"):
         build_provider_bundle(settings(dyla_model_provider="not-real"))
+
+
+def test_compatible_model_retries_connection_errors_then_succeeds():
+    """A transient ConnectError is the same class of failure as a timeout and
+    gets the same retry-with-backoff, not an immediate abort."""
+    attempts = []
+
+    def handler(request):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise httpx.ConnectError("connection reset by peer", request=request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+        )
+
+    provider = CompatibleModelProvider(
+        "https://host.example/v1", "fake-key", "model",
+        transport=httpx.MockTransport(handler), max_retries=1, sleeper=lambda _seconds: None,
+    )
+    response = provider.complete(ModelRequest([], None, 10, 0.0))
+
+    assert len(attempts) == 2
+    assert response.text == "ok"
+
+
+def test_compatible_model_reports_connection_error_after_retry_exhaustion():
+    attempts = []
+
+    def handler(request):
+        attempts.append(1)
+        raise httpx.ConnectError("connection reset by peer", request=request)
+
+    provider = CompatibleModelProvider(
+        "https://host.example/v1", "fake-key", "model",
+        transport=httpx.MockTransport(handler), max_retries=2, sleeper=lambda _seconds: None,
+    )
+    with pytest.raises(ModelCallError) as error:
+        provider.complete(ModelRequest([], None, 10, 0.0))
+
+    assert len(attempts) == 3, "max_retries was not used for a connection error"
+    assert "connection error" in str(error.value)

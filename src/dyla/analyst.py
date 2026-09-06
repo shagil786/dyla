@@ -11,6 +11,7 @@ from typing import Any
 from .domain import AnalystAnswer, Citation, Evidence, MemoryRecord, RunEvent, SearchFilters
 from .ingest import ingest_document
 from .models import ModelRequest
+from .policies import DEFAULT_POLICIES, Policies
 from .ports import SearchProvider
 from .query_planner import QueryPlanner
 from .resolution import grade_source, resolve_disagreement
@@ -52,14 +53,17 @@ def _claim_fingerprint(text: str) -> frozenset[str]:
     return frozenset(content_words(text))
 
 
-def _restates_rejected_claim(text: str, rejected: list[str], threshold: float = 0.8) -> bool:
+def _restates_rejected_claim(text: str, rejected: list[str], threshold: float | None = None) -> bool:
     """True when `text` substantially restates a previously rejected claim.
 
     Substring matching was the earlier approach and is too weak: a reworded
     restatement of a rejected claim slips straight through. Comparing
-    content-word fingerprints catches paraphrase, and the 0.8 threshold keeps a
-    merely adjacent claim about the same entity from being suppressed.
+    content-word fingerprints catches paraphrase, and the threshold
+    (``Policies.rejected_claim_overlap``, 0.8) keeps a merely adjacent claim
+    about the same entity from being suppressed.
     """
+    if threshold is None:
+        threshold = DEFAULT_POLICIES.rejected_claim_overlap
     current = _claim_fingerprint(text)
     if not current:
         return False
@@ -78,18 +82,40 @@ class AnalystAgent:
     def __init__(
         self, *, model: Any, resolver: Any, memory: Any, searcher: SearchProvider, fetcher: SearchProvider,
         index: Any, embedder: Any, planner: QueryPlanner | None = None,
-        max_subqueries: int = 4, search_limit: int = 5, evidence_limit: int = 8,
-        trace_writer: Any | None = None, reuse_enabled: bool = True,
-        reuse_min_sources: int = 2, reuse_min_score: float = 0.0, min_evidence: int = 1,
-        memory_context_limit: int = 6,
+        max_subqueries: int | None = None, search_limit: int | None = None, evidence_limit: int | None = None,
+        trace_writer: Any | None = None, reuse_enabled: bool | None = None,
+        reuse_min_sources: int | None = None, reuse_min_score: float | None = None, min_evidence: int | None = None,
+        memory_context_limit: int | None = None,
+        policies: Policies | None = None,
+        shadow_policies: Policies | None = None,
     ) -> None:
+        # Behaviour thresholds live in Policies (ADR-0001 increment 1); the
+        # per-knob keyword arguments predate it and still work — an explicitly
+        # passed value overrides the policy for that one knob, so existing call
+        # sites and tests are unchanged. Nothing here reads environment
+        # variables: changing policy is a tested code change, not a flag.
+        #
+        # ``shadow_policies`` (ADR-0001 increment 2) runs a candidate policy
+        # alongside the live one: decisions are traced under both, behaviour
+        # follows only the live policy. It never mutates behaviour or metrics.
+        policy = policies if policies is not None else DEFAULT_POLICIES
         self.model, self.resolver, self.memory = model, resolver, memory
         self.searcher, self.fetcher, self.index = searcher, fetcher, index
-        self.planner = planner or QueryPlanner(max_subqueries=max_subqueries)
-        self.trace_writer, self.search_limit, self.evidence_limit = trace_writer, search_limit, evidence_limit
-        self.reuse_enabled, self.reuse_min_sources = reuse_enabled, reuse_min_sources
-        self.reuse_min_score, self.min_evidence = reuse_min_score, min_evidence
-        self.memory_context_limit = memory_context_limit
+        self.policies = policy
+        self.shadow_policies = shadow_policies
+        self.planner = planner or QueryPlanner(
+            max_subqueries=max_subqueries if max_subqueries is not None else policy.max_subqueries
+        )
+        self.trace_writer = trace_writer
+        self.search_limit = search_limit if search_limit is not None else policy.search_limit
+        self.evidence_limit = evidence_limit if evidence_limit is not None else policy.evidence_limit
+        self.reuse_enabled = reuse_enabled if reuse_enabled is not None else policy.reuse_enabled
+        self.reuse_min_sources = reuse_min_sources if reuse_min_sources is not None else policy.reuse_min_sources
+        self.reuse_min_score = reuse_min_score if reuse_min_score is not None else policy.reuse_min_score
+        self.min_evidence = min_evidence if min_evidence is not None else policy.min_evidence
+        self.memory_context_limit = (
+            memory_context_limit if memory_context_limit is not None else policy.memory_context_limit
+        )
         self.metrics = {"input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0, "duration_ms": 0,
                         "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0,
                         "failed_searches": 0, "failed_fetches": 0, "failed_ingestions": 0,
@@ -110,7 +136,7 @@ class AnalystAgent:
             self.planner.run_id = run_id
             if self.trace_writer is not None:
                 self.planner.trace_writer = self.trace_writer
-        memories = await asyncio.to_thread(self.memory.search_memory, question, 10)
+        memories = await asyncio.to_thread(self.memory.search_memory, question, self.policies.memory_search_limit)
         self._trace(run_id, "memory_retrieved", {"count": len(memories)})
         self.metrics["memory_hits"] += len(memories)
         plan = await asyncio.to_thread(self.planner.expand, question, memories)
@@ -138,7 +164,7 @@ class AnalystAgent:
         if entity_ids:
             entity_memory = []
             for entity in plan.entities:
-                entity_memory.extend(await asyncio.to_thread(self.memory.search_memory, entity, 10))
+                entity_memory.extend(await asyncio.to_thread(self.memory.search_memory, entity, self.policies.memory_search_limit))
             by_id = {record.id: record for record in (*memories, *entity_memory)}
             memories = [record for record in by_id.values() if not record.entity_ids or set(record.entity_ids) & set(entity_ids)]
             self.metrics["memory_hits"] += len(entity_memory)
@@ -255,11 +281,21 @@ class AnalystAgent:
         uncorroborated evidence the analyst is supposed to distrust, so reusing
         it would trade cost for correctness. Requiring two means reuse only
         happens where the earlier run already cross-checked.
+
+        With ``shadow_policies`` set (ADR-0001 increment 2), the same probe
+        results are re-classified under the shadow policy and the comparison is
+        traced as ``reuse_shadow_evaluated`` — no extra retrievals and no
+        behaviour change. The shadow decision is an honest estimate, not a
+        simulation: it reuses probe results retrieved under the live
+        ``evidence_limit``, so a shadow policy that changes that knob is
+        approximated. The event is emitted even when the two agree, so a later
+        live run can measure agreement rates, not just divergences.
         """
         subqueries = list(plan.subqueries)
         if not entity_ids or not self.reuse_enabled:
             return {"to_run": subqueries, "skipped": [], "covered": []}
 
+        probes: dict[str, list] = {}
         covered: list[str] = []
         for entity_id in entity_ids:
             try:
@@ -270,15 +306,37 @@ class AnalystAgent:
             except Exception as exc:
                 self._trace(run_id, "reuse_probe_failed", {"entity_id": entity_id, "error": str(exc)})
                 continue
-            sources = {item.source_id for item in prior if item.score >= self.reuse_min_score}
-            if len(sources) >= self.reuse_min_sources:
+            probes[entity_id] = prior
+            if self._is_covered(prior, self.reuse_min_sources, self.reuse_min_score):
                 covered.append(entity_id)
+
+        self._trace_shadow(run_id, entity_ids, probes, covered, plan, resolved, subqueries)
 
         if not covered:
             self._trace(run_id, "memory_reuse_evaluated", {"covered_entities": 0, "skipped_queries": 0})
             return {"to_run": subqueries, "skipped": [], "covered": []}
 
         covered_set = set(covered)
+        to_run, skipped = self._classify_subqueries(subqueries, covered_set, entity_ids, plan, resolved)
+
+        self.metrics["searches_skipped"] += len(skipped)
+        self.metrics["evidence_reused"] += len(covered)
+        self._trace(run_id, "memory_reuse_evaluated", {
+            "covered_entities": len(covered),
+            "skipped_queries": [item["query"] for item in skipped],
+            "remaining_queries": [item["query"] for item in to_run],
+        })
+        return {"to_run": to_run, "skipped": skipped, "covered": covered}
+
+    @staticmethod
+    def _is_covered(prior: list, min_sources: int, min_score: float) -> bool:
+        sources = {item.source_id for item in prior if item.score >= min_score}
+        return len(sources) >= min_sources
+
+    def _classify_subqueries(
+        self, subqueries: list[dict], covered_set: set[str],
+        entity_ids: list[str], plan: Any, resolved: dict[str, str],
+    ) -> tuple[list[dict], list[dict]]:
         all_covered = covered_set >= set(entity_ids)
         to_run, skipped = [], []
         for item in subqueries:
@@ -289,15 +347,47 @@ class AnalystAgent:
                 # The bare question carries no entity of its own; it is only
                 # redundant when every entity in the plan is already covered.
                 (skipped if all_covered else to_run).append(item)
+        return to_run, skipped
 
-        self.metrics["searches_skipped"] += len(skipped)
-        self.metrics["evidence_reused"] += len(covered)
-        self._trace(run_id, "memory_reuse_evaluated", {
-            "covered_entities": len(covered),
-            "skipped_queries": [item["query"] for item in skipped],
-            "remaining_queries": [item["query"] for item in to_run],
+    def _trace_shadow(
+        self, run_id: str, entity_ids: list[str], probes: dict[str, list],
+        live_covered: list[str], plan: Any, resolved: dict[str, str],
+        subqueries: list[dict],
+    ) -> None:
+        shadow = self.shadow_policies
+        if shadow is None:
+            return
+        if not shadow.reuse_enabled:
+            # A candidate that disables reuse never skips anything; classifying
+            # its probes under the thresholds would describe a policy it is not.
+            shadow_covered: set[str] = set()
+            shadow_skipped: list[dict] = []
+        else:
+            shadow_covered = {
+                entity_id for entity_id, prior in probes.items()
+                if self._is_covered(prior, shadow.reuse_min_sources, shadow.reuse_min_score)
+            }
+            _, shadow_skipped = self._classify_subqueries(
+                subqueries, shadow_covered, entity_ids, plan, resolved,
+            )
+        _, live_skipped = self._classify_subqueries(
+            subqueries, set(live_covered), entity_ids, plan, resolved,
+        )
+        self._trace(run_id, "reuse_shadow_evaluated", {
+            "live": {
+                "reuse_min_sources": self.reuse_min_sources,
+                "reuse_min_score": self.reuse_min_score,
+                "covered_entities": len(live_covered),
+                "skipped_queries": [item["query"] for item in live_skipped],
+            },
+            "shadow": {
+                "reuse_min_sources": shadow.reuse_min_sources,
+                "reuse_min_score": shadow.reuse_min_score,
+                "covered_entities": len(shadow_covered),
+                "skipped_queries": [item["query"] for item in shadow_skipped],
+            },
+            "divergent": live_skipped != shadow_skipped,
         })
-        return {"to_run": to_run, "skipped": skipped, "covered": covered}
 
     @staticmethod
     def _subquery_entity_ids(item: dict, plan: Any, resolved: dict[str, str]) -> list[str]:
@@ -322,6 +412,15 @@ class AnalystAgent:
         hits_by_url: dict[str, tuple[Any, list[str]]] = {}
         for item, batch in zip(subqueries, search_results):
             if isinstance(batch, Exception):
+                if "budget exceeded" in str(batch):
+                    # A budget stop is not a provider failure: recording it as
+                    # one misattributed the breach as an ordinary search outage
+                    # and hid it from the run report.
+                    limitations.append(
+                        f"Web search for query '{item['query']}' was skipped because "
+                        "the run's web-request budget was exhausted."
+                    )
+                    continue
                 self.metrics["failed_searches"] += 1
                 self._trace(run_id, "web_search_failed", {"query": item["query"], "error": str(batch)})
                 limitations.append(f"Web search failed for query '{item['query']}'; its results were excluded.")
@@ -340,6 +439,12 @@ class AnalystAgent:
         ], return_exceptions=True)
         for document, (hit, ids) in zip(documents, hits_by_url.values()):
             if isinstance(document, Exception):
+                if "budget exceeded" in str(document):
+                    limitations.append(
+                        f"Page fetch for {hit.url} was skipped because the run's "
+                        "web-request budget was exhausted."
+                    )
+                    continue
                 self.metrics["failed_fetches"] += 1
                 self._trace(run_id, "page_fetch_failed", {"url": hit.url, "error": str(document)})
                 limitations.append(f"Page fetch failed for {hit.url}; it was excluded from evidence.")
@@ -376,8 +481,13 @@ class AnalystAgent:
         after = datetime(years[0], 1, 1, tzinfo=UTC) if years else None
         before = datetime(years[-1] + 1, 1, 1, tzinfo=UTC) if years else None
         if years:
+            # The filter is a continuous range from the first constrained year
+            # through the last, so sources from intermediate years are admitted
+            # too. The limitation text must say the range, not imply a set of
+            # individual years the filter does not enforce.
+            through = f" and {years[-1]}" if len(years) > 1 else ""
             limitations.append(
-                f"Date filter applied for {', '.join(str(year) for year in years)}; "
+                f"Date filter applied to sources published from {years[0]}{through}; "
                 "sources without a published date were also considered."
             )
         return SearchFilters(entity_ids=entity_ids or None, published_after=after, published_before=before), limitations

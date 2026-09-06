@@ -1316,7 +1316,25 @@ Ranked by how much they would bother me in review.
    `evidence_limit` at 8 is an unmeasured risk, argued in §3, not a measured
    harm. Two smaller amounts were also measured and left: ~3 points from the
    memory-budget sweep.
-6. **Answer completeness is 71%, and that is now measured rather than
+6. **Offline retrieval scores carry no quality signal — and the memory-reuse
+   gate sits on top of them.** The default `LocalEmbeddingProvider` maps text to
+   a two-dimensional hash (`[sum(bytes) mod 997, length]`), so offline cosine
+   similarity between two chunks is structurally meaningless: it measures byte
+   sums, not semantic proximity. The offline suite is a deterministic replay,
+   so this is fine for what it claims — but two things downstream of the scores
+   deserve the sharper statement. First, "hybrid search" was, until this
+   session, dense-only despite its name; a token-overlap lexical channel now
+   exists in `LocalVectorStore` (blended at 0.3, dense dominant) precisely so
+   retrieval is not solely a function of a noise embedding — and its rescue
+   behaviour is pinned by a test that flips a ranking dense-only scoring gets
+   wrong. Second, memory-reuse coverage decisions are gated on
+   `reuse_min_score`, which offline compares against noise; the gate is saved
+   by its other condition — two *distinct sources* — but a reader should know
+   that offline, the score half of that comparison filters nothing. A live run
+   with a real embedding model is the only setting in which retrieval-quality
+   numbers from this harness would mean anything (weakness 1's caveat, one level
+   deeper).
+7. **Answer completeness is 71%, and that is now measured rather than
    assumed.** `src/dyla/recall.py` scores each answer against a hand-written
    key of the facts its question demands. It started at 13/21; three defects it
    exposed are fixed (§3.1) and it now reads **15/21, with Q7 and Q8 still at
@@ -1327,30 +1345,30 @@ Ranked by how much they would bother me in review.
    `max_claims` cap makes no difference (recall is flat while claim count grows
    to 49), and resolving the co-reference actively broke the suite by making a
    true claim unverifiable. Both are written up as failed attempts.
-7. **The recall key is mine, and it does not generalise.** 21 facts,
+8. **The recall key is mine, and it does not generalise.** 21 facts,
    hand-written against eight questions and 14 fixture pages. A reviewer may
    disagree with individual entries — it lives in `ANSWER_KEY` so that
    disagreement is cheap. It cannot score a live run, where supportable facts
    are not enumerable, and the obvious workaround (derive expectations from
    what was retrieved) is circular in exactly the way that hid Q8.
-8. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
+9. **The suite seeds four entities before running.** `scripts/run_suite.py::seed_entities`
    pre-registers Zerodha, Infosys, Wipro and Zepto, because entity resolution is
    deterministic and does not invent entities from free text. Without it the
    resolver returns "unknown" and reuse can never engage. A real deployment
    accumulates these over time; doing it up front keeps the harness honest about
    what it measures rather than silently measuring nothing. But it *is* a
    thumb on the scale and it belongs in this list.
-9. **The cross-check's notion of corroboration is lexical** (§4.7). The old
+10. **The cross-check's notion of corroboration is lexical** (§4.7). The old
    high-confidence bypass is closed — the gate is now model-independent — but
    "independently states the figure" is decided by numeric-fact and overlap
    matching, and the offline corpus is single-source-per-fact, so the cross-check
    rejects genuine single-source claims it cannot confirm. Live search is the
    real test and remains unavailable.
-10. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
+11. **`search_memory` full-scans in Python.** Fine at 14 pages, not at 14,000.
    The scan is now documented as deliberate (the dead `memory_records_text`
    index was removed rather than kept as decoration); the replacement is FTS5
    or the embedding store when the corpus outgrows it.
-11. **The disagreement resolver fires exactly once on this corpus** (§4.10). One
+12. **The disagreement resolver fires exactly once on this corpus** (§4.10). One
    planted conflict, correctly resolved on authority. That demonstrates the
    mechanism; it does not validate the tier table, and a single positive is not
    a measurement. The two false-positive classes I found and fixed on the way
@@ -1358,13 +1376,13 @@ Ranked by how much they would bother me in review.
    labelled disagreement set to score against. Its authority ordering is my
    judgement written down (`resolution.AUTHORITY_TIERS`) — legible and
    arguable, but not derived from anything.
-12. **The counterfactual column prices a harness, not a run** (§2.4). The
+13. **The counterfactual column prices a harness, not a run** (§2.4). The
    arithmetic is exact and the rates are real, but the token counts come from
    an extractive model that quotes rather than reasons. A live model would emit
    more output tokens and likely take more turns, so ₹0.1252 is a floor on a
    floor. It answers "show the trend in rupees"; it does not answer "what does
    this agent cost".
-13. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
+14. **Memory that remembers makes the planner thirstier.** Fixing the claim-ID
    overwrite (memory now holds all eight answers, not one) raised retrieval
    searches in *both* modes — Q3 plans 3 subqueries where it planned 1 —
    because the planner expands entity-prefixed subqueries from everything it

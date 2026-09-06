@@ -86,6 +86,8 @@ class QualityGate:
             "memory_retrieved", "memory_saved", "memory_reuse_evaluated",
             "memory_context_trimmed",
             "reuse_probe_failed", "reuse_insufficient",
+            # policy shadow (ADR-0001 increment 2): candidate-policy comparison
+            "reuse_shadow_evaluated",
             # results and course corrections
             "evidence_selected", "claim_audited", "claim_rejected",
             "claim_corroborated", "disagreement_resolved",
