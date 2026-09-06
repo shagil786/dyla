@@ -41,7 +41,7 @@ def _build_memory(settings: Settings) -> MemoryStore:
     return store
 
 
-def _build_analyst(settings: Settings) -> AnalystAgent:
+def _build_analyst(settings: Settings, *, reuse: bool = True) -> AnalystAgent:
     memory = _build_memory(settings)
     provider = build_search_provider(settings)
     model = build_model_provider(settings)
@@ -50,12 +50,20 @@ def _build_analyst(settings: Settings) -> AnalystAgent:
     return AnalystAgent(
         model=model, resolver=EntityResolver(memory), memory=memory,
         searcher=provider, fetcher=provider, index=index, embedder=embedder,
-        trace_writer=TraceWriter(),
+        trace_writer=TraceWriter(), reuse_enabled=reuse,
     )
 
 
-def _build_orchestrator(settings: Settings) -> RunOrchestrator:
-    analyst = _build_analyst(settings)
+def _build_orchestrator(settings: Settings, *, reuse: bool = True) -> RunOrchestrator:
+    """Build the live stack.
+
+    ``reuse`` has to be threaded through here, not just in the offline builder.
+    Without it ``run_suite.py --live --no-reuse`` silently ran *with* memory
+    reuse and labelled the output a baseline, which would have reported a ~0%
+    saving against itself -- a fabricated comparison in the one table the whole
+    cost argument rests on.
+    """
+    analyst = _build_analyst(settings, reuse=reuse)
     return RunOrchestrator(
         analyst=analyst,
         auditor=AuditorAgent(

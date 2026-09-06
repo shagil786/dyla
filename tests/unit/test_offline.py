@@ -91,3 +91,71 @@ def test_the_system_prompt_is_not_a_source_of_question_or_evidence():
     assert question == "Any question?"
     assert len(evidence) == 1
     assert evidence[0]["url"] == "https://example.com/markets-wire/zerodha-profile"
+
+
+def test_claim_selection_covers_each_entity_the_question_asks_about():
+    """Regression: the selector ranked by raw overlap and lost the whole answer.
+
+    Asked whether four companies are profitable, the old top-k selector
+    returned four *revenue* sentences: one sentence naming two asked-about
+    companies scored 2 while every profitability sentence scored 1. It then
+    scored 4/4 supported -- 100% precision on 0% of what was asked. Selection
+    is greedy on newly covered question terms so the uncovered entities pull
+    their own sentences in.
+    """
+    from dyla.offline import CORPUS, OfflineModel, _source_id
+
+    evidence = [
+        {"text": page.text, "url": page.url, "title": page.title,
+         "source_id": _source_id(page.url), "chunk_id": "c0"}
+        for page in CORPUS
+    ]
+    question = ("State whether Zerodha, Infosys, Wipro, and Zepto are profitable "
+                "according to their latest published financials, and cite one source for each.")
+    text = " ".join(claim.text for claim in OfflineModel()._claims(question, evidence))
+
+    assert "profit" in text.lower()
+    assert "Zerodha" in text
+    assert "Zepto" in text
+
+
+def test_the_questions_vocabulary_matches_the_evidences():
+    """``profitable`` must reach ``profit``; ``Zepto's`` must reach ``Zepto``."""
+    from dyla.offline import _matching_terms, _tokens
+
+    wanted = _tokens("Is Zepto profitable and how did Zepto's valuation change?")
+    matched = _matching_terms(wanted, "Zepto reported a net profit and was valued at 5 billion.")
+    assert "profitable" in matched
+    assert "zepto's" in matched or "zepto" in matched
+    assert "valuation" in matched
+
+
+def test_selected_claims_are_verbatim_from_their_cited_source():
+    """The auditor re-fetches the cited page, so claims must be literally in it.
+
+    Tried and reverted: resolving "The company reported a net profit ..." to
+    name the company makes the claim readable standalone, and makes it
+    *unverifiable* -- the rewritten sentence is no longer in the source the
+    claim cites. Measured cost was 8/8 -> 7/8 with a true statement marked
+    unsupported, and measured benefit on recall was zero.
+
+    Any future paraphrasing of evidence has to solve attribution first. This
+    test exists so that gets rediscovered at the point of change rather than in
+    the auditor's verdicts.
+    """
+    from dyla.offline import CORPUS, OfflineModel, _source_id
+
+    by_url = {page.url: page.text for page in CORPUS}
+    evidence = [
+        {"text": page.text, "url": page.url, "title": page.title,
+         "source_id": _source_id(page.url), "chunk_id": "c0"}
+        for page in CORPUS
+    ]
+    question = ("State whether Zerodha, Infosys, Wipro, and Zepto are profitable "
+                "according to their latest published financials, and cite one source for each.")
+
+    for claim in OfflineModel()._claims(question, evidence):
+        source_text = by_url[claim.citations[0].url]
+        assert claim.text in source_text, (
+            f"claim is not verbatim in its cited source: {claim.text!r}"
+        )

@@ -84,10 +84,11 @@ class QualityGate:
             "source_fetch_retried", "source_fetch_recovered",
             # memory
             "memory_retrieved", "memory_saved", "memory_reuse_evaluated",
+            "memory_context_trimmed",
             "reuse_probe_failed", "reuse_insufficient",
             # results and course corrections
             "evidence_selected", "claim_audited", "claim_rejected",
-            "claim_corroborated",
+            "claim_corroborated", "disagreement_resolved",
             "answer_synthesized", "answer_withheld", "auditor_failed",
             "quality_completed",
         }

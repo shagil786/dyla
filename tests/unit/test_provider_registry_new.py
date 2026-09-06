@@ -31,7 +31,6 @@ def settings(**updates):
         embedding_api_key="fake-embed-key",
         embedding_model="embed-x",
         you_api_key="fake-you",
-        azure_search_vector_dimensions=2,
     )
     values.update(updates)
     # _env_file=None keeps programmatic construction independent of the developer's

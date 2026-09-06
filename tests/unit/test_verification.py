@@ -477,3 +477,35 @@ def test_a_sentence_initial_ordinary_word_is_not_an_entity():
     )
 
     assert result.status == "supported"
+
+
+def test_a_page_that_never_names_the_subject_is_not_on_topic():
+    """Regression: financial boilerplate is near-identical across companies.
+
+    Infosys's filing shares 0.88 of its content words with a claim about
+    *Zerodha's* profit -- "reported a net profit of N crore rupees for the
+    financial year 2025" is the same sentence with the name swapped -- while
+    sharing no entity with it. The old ``max(word, entity)`` rule called that
+    on topic, the corroboration scan then found it silent on Zerodha's figure,
+    and used that silence to reject a true, correctly cited claim. Q8 lost
+    every profitability claim it had this way.
+    """
+    from dyla.verification import on_topic
+
+    claim = "Zerodha reported a net profit of 4,700 crore rupees for the financial year 2025."
+    infosys = ("Infosys Limited reported consolidated revenue of 1,62,990 crore rupees "
+               "for the financial year 2025. The company reported a net profit of "
+               "26,713 crore rupees and remains profitable.")
+    assert not on_topic(claim, infosys)
+
+    zerodha = ("Zerodha reported a net profit of 4,700 crore rupees for the financial "
+               "year 2025. The brokerage remains profitable.")
+    assert on_topic(claim, zerodha)
+
+
+def test_on_topic_still_uses_word_overlap_when_the_claim_names_no_entity():
+    """The entity requirement must not break claims that name nobody."""
+    from dyla.verification import on_topic
+
+    claim = "The tax rate applied to restaurant services is 5 percent without input tax credit."
+    assert on_topic(claim, "Restaurant services are taxed at 5 percent without input tax credit.")
