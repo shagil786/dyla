@@ -64,9 +64,17 @@ def test_run_evaluation_reports_per_question_costs_totals_and_trend(tmp_path):
         # No model name is supplied here, so no price can be established. The
         # report says so rather than reporting 0, which would read as "free".
         "cost_in_rupees": None, "cost_in_usd": None,
+        # The counterfactual is always computable: it prices real token counts
+        # at a reference model's published rate, independent of what ran.
+        # 180 input @ $0.15/1M + 110 output @ $0.60/1M = $9.3e-05, x94.5 INR.
+        "counterfactual_inr": 0.008789, "counterfactual_usd": 9.3e-05,
     }
     assert cost["pricing"]["resolved"] is False
     assert "DYLA_PRICE_INPUT_PER_MTOK_USD" in cost["pricing"]["note"]
+    # The measured column stays empty while the projection is populated: the
+    # two must never collapse into one another.
+    assert cost["counterfactual"]["resolved"] is True
+    assert cost["counterfactual"]["model"] == "gpt-4o-mini"
 
     stored = json.loads(Path(tmp_path, "evaluation.json").read_text())
     assert stored["total"] == 2
@@ -110,8 +118,14 @@ def test_run_evaluation_cost_rows_default_to_zero_without_metrics(tmp_path):
         "duration_ms": 0, "memory_hits": 0,
         "embedding_tokens": 0, "searches": 0, "fetches": 0, "searches_skipped": 0,
         "cost_in_rupees": None, "cost_in_usd": None,
+        # Zero tokens genuinely cost zero on the reference model, so 0.0 here is
+        # a measurement and not the "unpriced rendered as free" failure.
+        "counterfactual_inr": 0.0, "counterfactual_usd": 0.0,
     }
-    assert "| | **Total** | | 0 | 0 | 0 | 0 | 0 | 0 | 0 | unpriced |" in Path(tmp_path, "evaluation.md").read_text()
+    assert (
+        "| | **Total** | | 0 | 0 | 0 | 0 | 0 | 0 | 0 | unpriced | 0.0000 |"
+        in Path(tmp_path, "evaluation.md").read_text()
+    )
 
 
 def test_every_module_imports_on_this_interpreter():
@@ -143,3 +157,108 @@ def test_markdown_escape_handles_pipes_without_pep701_syntax():
     assert _md_escape("a|b") == "a\\|b"
     assert _md_escape("plain") == "plain"
     assert _md_escape(7) == "7"
+
+
+def test_the_quality_gate_cannot_see_an_answer_that_omits_claims(tmp_path):
+    """Pins the residual scope of the support-rate blind spot.
+
+    Both answers below score identically -- 100% supported, status complete --
+    but the second asserts half as much. ``dyla.recall`` now closes this for the
+    eight default questions, and the real instance it caught is Q8: four claims,
+    4/4 supported, and 0/4 of the profitability facts the question asked for.
+
+    The gap this test pins is what recall scoring does *not* cover. The answer
+    key is hand-written against the default suite, so a custom
+    ``--questions-file`` -- which is what the questions below simulate -- still
+    gets a pure support-rate score with nothing measuring omission. Deliberate:
+    a fabricated key would be worse than a missing one. This test documents the
+    boundary, and should be revisited only if recall is ever generalised beyond
+    the fixture suite.
+
+    Note the earlier version of this docstring justified itself with the
+    ``evidence_limit=3`` sweep "quietly dropping 4 of 28 claims". That reading
+    was wrong: recall is flat across the sweep and the dropped claims were
+    duplicates. See WRITEUP section 3.
+    """
+    from dyla.domain import AnalystAnswer, AuditVerdict, Citation, Claim
+
+    def result_with(claim_count: int, tokens: int) -> SimpleNamespace:
+        claims = [
+            Claim(id=f"c{n}", text=f"claim {n}",
+                  citations=[Citation(url=f"https://example.com/{n}", title="S",
+                                      source_id=f"s{n}", chunk_id=None)],
+                  confidence="high")
+            for n in range(1, claim_count + 1)
+        ]
+        verdicts = [
+            AuditVerdict(claim_id=claim.id, status="supported", explanation="ok",
+                         citations_checked=claim.citations)
+            for claim in claims
+        ]
+        return SimpleNamespace(
+            quality=QualityResult("complete", []),
+            run_id="run",
+            metrics=Metrics(input_tokens=tokens, output_tokens=tokens // 2,
+                            estimated_cost=0.0, duration_ms=10, searches=1,
+                            fetches=1, memory_hits=0, parallel_calls=1),
+            answer=AnalystAnswer(answer="a", claims=claims, limitations=[]),
+            verdicts=verdicts,
+        )
+
+    full = run_evaluation(questions=("Q",), runner=lambda _q: result_with(4, 100),
+                          output_dir=tmp_path / "full")
+    thin = run_evaluation(questions=("Q",), runner=lambda _q: result_with(2, 50),
+                          output_dir=tmp_path / "thin")
+
+    assert full["passed"] == thin["passed"] == 1
+
+    def support_rate(report):
+        return [
+            (sum(1 for v in item["verdicts"] if v["status"] == "supported"),
+             len(item["verdicts"]))
+            for item in report["results"]
+        ]
+
+    # Same perfect support rate, different completeness. Nothing distinguishes
+    # them, and the thinner answer is strictly cheaper.
+    assert support_rate(full) == [(4, 4)]
+    assert support_rate(thin) == [(2, 2)]
+    assert (thin["cost_report"]["totals"]["counterfactual_inr"]
+            < full["cost_report"]["totals"]["counterfactual_inr"]), (
+        "the cheaper answer is cheaper precisely because it says less, and no "
+        "reported metric penalises it"
+    )
+
+
+def test_each_mode_writes_its_own_report_and_history(tmp_path):
+    """Regression: the baseline run used to destroy the main report.
+
+    README documents `run_suite.py` then `run_suite.py --no-reuse`. Under the
+    previous implementation the second command renamed evaluation.{json,md}
+    to evaluation-no-reuse.*, so a reviewer following the README in the *other*
+    order -- baseline first -- ended up with no evaluation.json at all. Found
+    by running the documented commands against a clean clone of the pushed
+    branch rather than against my own working tree, where the order I happened
+    to use hid it.
+
+    Separately, sharing one filename meant both modes appended to the same
+    run-history list, so the trend table mixed two different configurations.
+    """
+    metrics = Metrics(input_tokens=10, output_tokens=5, estimated_cost=0.0,
+                      duration_ms=1, searches=1, fetches=1, memory_hits=0,
+                      parallel_calls=1)
+
+    reuse = run_evaluation(questions=("Q",), runner=lambda q: _stub_result(q, metrics),
+                           output_dir=tmp_path, model_name="m")
+    baseline = run_evaluation(questions=("Q",), runner=lambda q: _stub_result(q, metrics),
+                              output_dir=tmp_path, model_name="m",
+                              basename="evaluation-no-reuse")
+
+    assert (tmp_path / "evaluation.json").exists()
+    assert (tmp_path / "evaluation.md").exists()
+    assert (tmp_path / "evaluation-no-reuse.json").exists()
+    assert (tmp_path / "evaluation-no-reuse.md").exists()
+
+    # Each report keeps its own history rather than appending to the other's.
+    assert len(reuse["history"]) == 1
+    assert len(baseline["history"]) == 1

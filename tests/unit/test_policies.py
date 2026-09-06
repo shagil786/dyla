@@ -23,6 +23,7 @@ def test_defaults_are_the_literals_the_refactor_replaced():
     assert policy.reuse_min_sources == 2
     assert policy.reuse_min_score == 0.0
     assert policy.memory_search_limit == 10
+    assert policy.memory_context_limit == 6
     assert policy.rejected_claim_overlap == 0.8
     assert policy.match_tolerance == 0.01
     assert policy.conflict_tolerance == 0.05

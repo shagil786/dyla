@@ -18,7 +18,8 @@ writes:
 | Artifact | Contents |
 | --- | --- |
 | `runs/reuse/qNN-*.jsonl` | Full log per question: plan, every tool call, every result, every course correction |
-| `reports/evaluation.md` | Cost per question in tokens and rupees, plus the trend across the eight questions |
+| `reports/evaluation.md` | Cost per question in tokens and rupees, plus the trend across the eight questions. The measured rupee column reads `unpriced` for the offline model — no price is ever invented — alongside a separately-named **Projected ₹** column pricing the same real token counts at `gpt-4o-mini` list rates (override with `DYLA_COUNTERFACTUAL_MODEL`) |
+| `reports/evaluation.md` (recall section) | Answer completeness: what each answer *omitted*, scored against a hand-written key of the facts each question demands. Currently **15/21 (71%)** — see `src/dyla/recall.py` |
 | `reports/auditor-findings.md` | What the auditor caught, including a seeded-defect audit of the auditor itself |
 | `reports/run-summary.json` | Machine-readable totals |
 
@@ -28,12 +29,46 @@ To reproduce the memory-transfer comparison, run the baseline too:
 .venv/bin/python scripts/run_suite.py --no-reuse   # writes runs/no-reuse/ and reports/*-no-reuse.*
 ```
 
+Comparing the two gives the headline result: **−12.5% total tokens across all
+eight questions, −25.0% across the four that can reuse anything**, with 8/8
+questions complete and 20/20 seeded defects caught in both modes.
+
+It also costs one fact. Answer completeness is **16/21 in the baseline and
+15/21 with memory on**: reuse skips the searches that would have fetched one of
+Zepto's filings. The saving is real and so is the price; `docs/WRITEUP.md` §3
+explains the mechanism, §3.3 the trade, and why neither is 50%.
+
 **Read [`docs/WRITEUP.md`](docs/WRITEUP.md) first.** It states up front that
 these results are a deterministic replay of recorded pages, not a live LLM run,
 and explains exactly which conclusions that does and does not support.
 
 To run against real providers instead, configure `.env` (see Setup) and pass
 `--live`.
+
+**`--live` has now been executed — once, for a single question, by the
+project owner on their own machine.** `dyla ask "Who is the current CEO of
+Microsoft?"` returned *Satya Nadella* with one citation and one supported
+verdict, having really called You.com search, fetched Wikipedia and
+microsoft.com, embedded through NVIDIA nemotron-3-embed-1b and written to
+Qdrant Cloud. The trace is a normal run log.
+
+Scope that precisely, because it is a single data point:
+
+- **The suite has now run live once, and scored 4/8 questions and 15/20 on the
+  seeded-defect audit** (against 8/8 and 20/20 offline). One cause is fixed: a
+  claim missing its `citations` field failed validation for the *entire*
+  answer, so good cited claims were discarded — a parser failure reported as a
+  research failure (WRITEUP §4.12). The other reported causes, evidence
+  selection quality and the audit drop, are named but **not** fixed, and the
+  4/8 has not been re-measured since. Every number in this repo is still an
+  offline-fixture measurement.
+- **It found a real bug.** Live mode ignored `--no-reuse`: `_build_orchestrator`
+  never took a reuse flag, so a live baseline would have run *with* memory
+  reuse and been compared against itself, reporting a fabricated ~0% saving in
+  the one table the cost argument depends on. Fixed and pinned by a test. That
+  is what one real execution bought, and it is an argument for running the rest.
+- **The environment this was built in still has no egress** (§0), so live mode
+  is not reproducible from here and is not part of the gate.
 
 ## Setup
 

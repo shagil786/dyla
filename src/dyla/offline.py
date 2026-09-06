@@ -195,6 +195,32 @@ def _tokens(text: str) -> set[str]:
     }
 
 
+def _stem(word: str) -> str:
+    """Crudest possible suffix strip, enough to tie 'profitable' to 'profit'.
+
+    Deliberately not a real stemmer: this is a fixture model, and a dependency
+    on nltk or an aggressive Porter implementation would buy accuracy nobody
+    here can spend. It only needs to stop the question's own vocabulary from
+    missing the evidence that answers it.
+    """
+    word = word.removesuffix("'s").removesuffix("s'")
+    for suffix in ("ability", "ations", "ation", "able", "ings", "ing", "ies",
+                   "ed", "es", "s"):
+        if len(word) > len(suffix) + 2 and word.endswith(suffix):
+            return word[: -len(suffix)]
+    return word
+
+
+def _matching_terms(wanted: set[str], sentence: str) -> set[str]:
+    """Question terms this sentence covers, comparing on stems.
+
+    Returns the matched *question* terms rather than a count, because the
+    selector needs to know which terms remain unspoken, not merely how many.
+    """
+    stems = {_stem(token) for token in _tokens(sentence)}
+    return {term for term in wanted if _stem(term) in stems}
+
+
 def _source_id(url: str) -> str:
     return hashlib.sha256(url.encode()).hexdigest()[:16]
 
@@ -293,24 +319,69 @@ class OfflineModel:
         return _Response(parsed, input_tokens, output_tokens)
 
     def _claims(self, question: str, evidence: list[dict[str, str]]) -> list[Claim]:
+        """Select sentences to assert, covering the question's terms.
+
+        Two properties matter here, and the obvious implementation (rank every
+        sentence by raw token overlap, take the top ``max_claims``) has neither.
+        It scored 0/4 on the recall key for "state whether Zerodha, Infosys,
+        Wipro and Zepto are profitable", answering instead with revenue figures
+        -- and scored 4/4 supported while doing it. See ``dyla.recall``.
+
+        1. *Stem-aware matching.* ``profitable`` in the question did not match
+           ``profit`` in the evidence under exact token equality, so the only
+           sentences that actually answered the question scored zero for the
+           question's own predicate.
+        2. *Coverage, not top-k.* Raw overlap is a popularity contest that a
+           single sentence naming two asked-about companies always wins. One
+           sentence mentioning Infosys and Wipro scored 2; every profitability
+           sentence scored 1; the top four were all revenue. Selection is now
+           greedy on *newly covered* question terms, so once a term is spoken
+           for, further sentences repeating it stop earning credit for it and
+           the still-uncovered terms pull their own sentences in.
+
+        Ties break on the original ranking (raw overlap, then text) so the
+        ordering stays deterministic.
+        """
         wanted = _tokens(question)
-        ranked = []
+        candidates = []
         for item in evidence:
             for sentence in re.split(r"(?<=[.!?])\s+", item["text"]):
                 sentence = sentence.strip()
                 if len(sentence) < 25:
                     continue
-                overlap = len(wanted & _tokens(sentence))
-                if overlap:
-                    ranked.append((overlap, sentence, item))
-        ranked.sort(key=lambda row: (-row[0], row[1]))
+                matched = _matching_terms(wanted, sentence)
+                if matched:
+                    candidates.append((len(matched), sentence, item, matched))
+        candidates.sort(key=lambda row: (-row[0], row[1]))
 
         claims: list[Claim] = []
         seen: set[str] = set()
-        for _, sentence, item in ranked:
-            if sentence in seen:
-                continue
+        covered: set[str] = set()
+        while candidates and len(claims) < self.max_claims:
+            # Recompute gain every round: what a sentence is worth depends on
+            # what has already been said.
+            best_index, best_gain = None, 0
+            for index, (overlap, sentence, _item, matched) in enumerate(candidates):
+                if sentence in seen:
+                    continue
+                gain = len(matched - covered)
+                if gain > best_gain:
+                    best_index, best_gain = index, gain
+            if best_index is None:
+                # Coverage is exhausted: every remaining sentence only repeats
+                # terms already spoken for. Stopping here would be wrong -- Q7
+                # asks how a valuation *changed*, and the sentences carrying the
+                # earlier valuations add no new question terms yet are most of
+                # the answer. Fall back to raw overlap for the unused slots.
+                for index, (_o, sentence, item, matched) in enumerate(candidates):
+                    if sentence not in seen:
+                        best_index = index
+                        break
+                if best_index is None:
+                    break
+            _overlap, sentence, item, matched = candidates.pop(best_index)
             seen.add(sentence)
+            covered |= matched
             claims.append(Claim(
                 id=f"c{len(claims) + 1}",
                 text=sentence,
@@ -318,8 +389,6 @@ class OfflineModel:
                                     source_id=item["source_id"], chunk_id=item["chunk_id"])],
                 confidence="high",
             ))
-            if len(claims) == self.max_claims:
-                break
         return claims
 
 

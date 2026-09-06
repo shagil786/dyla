@@ -50,6 +50,9 @@ class Policies:
     reuse_min_score: float = 0.0
     # How many memory records are fetched per query when gathering context.
     memory_search_limit: int = 10
+    # How many of those records may reach the model as context (the
+    # analyst's memory budget — see ``AnalystAgent._memory_context``).
+    memory_context_limit: int = 6
     # A claim whose content words overlap a previously *rejected* claim by at
     # least this share is treated as a restatement and blocked.
     rejected_claim_overlap: float = 0.8
@@ -80,6 +83,8 @@ class Policies:
             raise ValueError("search_limit, evidence_limit and min_evidence must be positive")
         if self.memory_search_limit < 1:
             raise ValueError("memory_search_limit must be positive")
+        if self.memory_context_limit < 1:
+            raise ValueError("memory_context_limit must be positive")
         if self.reuse_min_sources < 1:
             raise ValueError("reuse_min_sources must be positive")
         if self.reuse_min_score < 0.0:

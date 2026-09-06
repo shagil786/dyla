@@ -42,8 +42,11 @@ from dyla.orchestrator import RunOrchestrator  # noqa: E402
 from dyla.tracing import TraceWriter  # noqa: E402
 
 
-def build_offline(root: Path, reuse: bool = True):
-    memory = MemoryStore(root / "dyla.db")
+def build_offline(root: Path, reuse: bool = True, db_path: Path | None = None):
+    # db_path lets an experiment run against its own database instead of the
+    # suite's dyla.db. Default is unchanged, so every existing caller behaves
+    # exactly as before.
+    memory = MemoryStore(db_path or (root / "dyla.db"))
     memory.initialize()
     provider = OfflineResearchProvider()
     embedder = OfflineEmbedder()
@@ -132,7 +135,7 @@ def main() -> int:
         from dyla.config import load_settings
 
         settings = load_settings()
-        orchestrator = _build_orchestrator(settings)
+        orchestrator = _build_orchestrator(settings, reuse=not args.no_reuse)
         model_name = settings.model_name
         provider = None
     else:
@@ -160,12 +163,21 @@ def main() -> int:
         })
         return result
 
+    # Each mode owns its own report files. Two earlier attempts at this were
+    # both wrong: writing evaluation.{json,md} in *both* modes meant the
+    # baseline silently overwrote the main report, and renaming the file after
+    # the fact (the previous fix) meant running --no-reuse first -- the order
+    # the README gives -- left a reviewer with no evaluation.json at all, and
+    # also let the two modes append to each other's run history.
+    basename = "evaluation-no-reuse" if args.no_reuse else "evaluation"
     report = run_evaluation(
         questions=DEFAULT_QUESTIONS, runner=runner,
         output_dir=root / args.out, model_name=model_name,
+        basename=basename,
     )
 
     label = "no-reuse" if args.no_reuse else "reuse"
+
     archive = archive_logs(root, per_question, label)
 
     # Probes audit read-only: the auditor still fetches sources and compares

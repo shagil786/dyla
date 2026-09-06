@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from typing import Any
@@ -15,6 +16,19 @@ from .domain import Evidence, EvidenceChunk, SearchFilters
 
 
 _QDRANT_POINT_NAMESPACE = UUID("b4f0d8f6-0d71-4ad0-bf3a-8dbf7e6f2b0e")
+
+
+def _sentinel_vector(dimensions: int) -> list[float]:
+    """A well-formed unit vector for the metadata point.
+
+    The value is irrelevant -- the point exists to carry a payload and is
+    filtered out of every search result -- but it has to be a vector the engine
+    will accept and can compute a cosine against.
+    """
+    vector = [0.0] * dimensions
+    if dimensions:
+        vector[0] = 1.0
+    return vector
 
 
 def qdrant_point_id(chunk_id: str) -> str:
@@ -66,8 +80,51 @@ class QdrantVectorStore:
                 raise self._safe_error("creating Qdrant collection", exc) from exc
             self._create_published_at_index()
             return
+        self._assert_dimensions_match(info)
         if "published_at" not in (getattr(info, "payload_schema", None) or {}):
             self._create_published_at_index()
+
+    def _assert_dimensions_match(self, info: Any) -> None:
+        """Refuse to reuse a collection built for a different embedding model.
+
+        ``create_collection`` sizes the collection from
+        ``QDRANT_VECTOR_DIMENSIONS``, but that only runs on the 404 path. When
+        the collection already exists its configured size was never checked
+        against the current setting, so switching embedding models against a
+        live Qdrant Cloud collection was accepted silently at startup.
+
+        The failure that follows is not a clean one. Writes raise "vector
+        dimension does not match index configuration" from ``upsert``, which
+        reads as a bug in this code rather than a configuration mismatch. Worse
+        is the case where dimensions *happen* to agree: two different embedding
+        models produce vectors of the same width in incomparable spaces, so
+        cosine similarity against the older vectors is meaningless and memory
+        reuse serves confidently-scored nonsense. Nothing downstream can detect
+        that, because a number comes back and it looks like a distance.
+
+        Checked once at startup where it is cheap and the message can name both
+        numbers. A dimension the client does not report is left alone rather
+        than guessed at.
+        """
+        self._assert_embedder_matches(info)
+        configured = self.vector_dimensions
+        vectors = getattr(getattr(getattr(info, "config", None), "params", None), "vectors", None)
+        if vectors is None:
+            return
+        # Qdrant reports either a single unnamed vector config or a mapping of
+        # named ones; only the unnamed form is used here.
+        existing = getattr(vectors, "size", None)
+        if not isinstance(existing, int) or existing == configured:
+            return
+        raise ValueError(
+            f"Qdrant collection {self.collection_name!r} stores "
+            f"{existing}-dimensional vectors but QDRANT_VECTOR_DIMENSIONS is "
+            f"{configured}. This usually means the embedding model changed "
+            f"(DYLA_EMBEDDING_MODEL) without the collection being migrated. "
+            f"Point QDRANT_COLLECTION at a new collection, or delete and "
+            f"re-ingest this one; vectors from different embedding models are "
+            f"not comparable even when their dimensions agree."
+        )
 
     def _create_published_at_index(self) -> None:
         try:
@@ -78,6 +135,100 @@ class QdrantVectorStore:
             )
         except Exception as exc:
             raise self._safe_error("creating Qdrant payload index", exc) from exc
+
+    def _embedder_fingerprint(self) -> str | None:
+        """Identity of the embedding model, when the embedder reports one.
+
+        Dimension equality is necessary but not sufficient: two models can both
+        emit 1536-dimensional vectors into completely different spaces, and
+        cosine similarity across them returns a plausible number with no
+        meaning. ``CompatibleEmbeddingProvider`` already namespaces its own
+        *cache* on endpoint+model for exactly this reason; the vector store had
+        no equivalent, so the same swap that invalidates the cache silently
+        poisoned the index instead.
+        """
+        model = getattr(self.embedder, "model", None)
+        if not model:
+            return None
+        client = getattr(self.embedder, "_client", None)
+        endpoint = getattr(client, "base_url", "") or ""
+        return hashlib.sha256(
+            json.dumps({"endpoint": endpoint, "model": model}, sort_keys=True).encode()
+        ).hexdigest()
+
+    def _assert_embedder_matches(self, info: Any) -> None:
+        """Compare the collection's recorded embedder against the current one.
+
+        The fingerprint is stored on first write (``_stamp_embedder``) rather
+        than at creation, so pre-existing collections carry no stamp and are
+        left alone: refusing to start against every collection built before
+        this check existed would be a worse failure than the one it prevents.
+        Once stamped, a mismatch is fatal.
+        """
+        current = self._embedder_fingerprint()
+        if current is None:
+            return
+        recorded = self._recorded_embedder(info)
+        if recorded is None or recorded == current:
+            return
+        raise ValueError(
+            f"Qdrant collection {self.collection_name!r} was built with a "
+            f"different embedding model (recorded fingerprint {recorded[:12]}, "
+            f"current {current[:12]}). Vectors from different embedding models "
+            f"are not comparable even at identical dimensions, so similarity "
+            f"search would return confident nonsense. Point QDRANT_COLLECTION "
+            f"at a new collection, or delete and re-ingest this one."
+        )
+
+    def _recorded_embedder(self, _info: Any) -> str | None:
+        """Read the fingerprint from the sentinel point, if one was written.
+
+        Qdrant has no collection-level metadata field, so the stamp lives in a
+        reserved point whose ID is derived from the collection name. It is
+        excluded from search by ``_SENTINEL_FILTER``.
+        """
+        try:
+            found = self.client.retrieve(
+                collection_name=self.collection_name,
+                ids=[self._sentinel_id()],
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception:
+            # A metadata read must never be the thing that takes the run down.
+            return None
+        for point in found or []:
+            recorded = (getattr(point, "payload", None) or {}).get("embedder_fingerprint")
+            if recorded:
+                return str(recorded)
+        return None
+
+    def _sentinel_id(self) -> str:
+        return str(uuid5(_QDRANT_POINT_NAMESPACE, f"__dyla_meta__:{self.collection_name}"))
+
+    def _stamp_embedder(self) -> None:
+        """Record the current embedder on first write, if not already recorded."""
+        fingerprint = self._embedder_fingerprint()
+        if fingerprint is None or self._recorded_embedder(None) is not None:
+            return
+        try:
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=[models.PointStruct(
+                    id=self._sentinel_id(),
+                    # A unit vector, not a zero vector. The collection is
+                    # created with Distance.COSINE, whose denominator is
+                    # ||a||*||b||; a zero vector makes that zero, so cosine
+                    # against it is undefined and an engine is entitled to
+                    # reject the insert rather than silently special-case it.
+                    # Storing metadata must not depend on how a particular
+                    # Qdrant version handles a degenerate vector.
+                    vector=_sentinel_vector(self.vector_dimensions),
+                    payload={"embedder_fingerprint": fingerprint, "dyla_meta": True},
+                )],
+            )
+        except Exception:
+            return
 
     def upsert(self, chunks: list[EvidenceChunk], vectors: list[list[float]] | None = None) -> None:
         if vectors is None:
@@ -161,6 +312,7 @@ class QdrantVectorStore:
         return found
 
     def _upsert_points(self, points: list[models.PointStruct]) -> None:
+        self._stamp_embedder()
         try:
             self.client.upsert(collection_name=self.collection_name, points=points, wait=True)
         except Exception as exc:
@@ -181,7 +333,13 @@ class QdrantVectorStore:
             )
         except Exception as exc:
             raise self._safe_error("querying Qdrant points", exc) from exc
-        return [_to_evidence(point) for point in response.points]
+        # The metadata sentinel is a real point in the collection, so it can be
+        # returned by a query like any other. It carries no evidence payload and
+        # must never surface as a result.
+        return [
+            _to_evidence(point) for point in response.points
+            if not (getattr(point, "payload", None) or {}).get("dyla_meta")
+        ]
 
     def close(self) -> None:
         close = getattr(self.client, "close", None)

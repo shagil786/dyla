@@ -14,7 +14,15 @@ from .models import ModelRequest
 from .policies import DEFAULT_POLICIES, Policies
 from .ports import SearchProvider
 from .query_planner import QueryPlanner
-from .verification import corroborates, extract_numbers, extract_years, on_topic
+from .resolution import grade_source, resolve_disagreement
+from .verification import (
+    content_words,
+    corroborates,
+    extract_numbers,
+    extract_years,
+    on_topic,
+    rival_figure,
+)
 
 _REJECTED_VERDICTS = frozenset({"unsupported", "contradicted"})
 
@@ -77,6 +85,7 @@ class AnalystAgent:
         max_subqueries: int | None = None, search_limit: int | None = None, evidence_limit: int | None = None,
         trace_writer: Any | None = None, reuse_enabled: bool | None = None,
         reuse_min_sources: int | None = None, reuse_min_score: float | None = None, min_evidence: int | None = None,
+        memory_context_limit: int | None = None,
         policies: Policies | None = None,
         shadow_policies: Policies | None = None,
     ) -> None:
@@ -104,14 +113,22 @@ class AnalystAgent:
         self.reuse_min_sources = reuse_min_sources if reuse_min_sources is not None else policy.reuse_min_sources
         self.reuse_min_score = reuse_min_score if reuse_min_score is not None else policy.reuse_min_score
         self.min_evidence = min_evidence if min_evidence is not None else policy.min_evidence
+        self.memory_context_limit = (
+            memory_context_limit if memory_context_limit is not None else policy.memory_context_limit
+        )
         self.metrics = {"input_tokens": 0, "output_tokens": 0, "estimated_cost": 0.0, "duration_ms": 0,
                         "searches": 0, "fetches": 0, "memory_hits": 0, "parallel_calls": 0,
                         "failed_searches": 0, "failed_fetches": 0, "failed_ingestions": 0,
                         "claims_blocked_by_audit_feedback": 0,
                         "corroboration_searches": 0, "corroboration_fetches": 0,
                         "searches_skipped": 0, "evidence_reused": 0, "reuse_corrections": 0,
-                        "embedding_tokens": 0}
+                        "embedding_tokens": 0,
+                        "disagreements_resolved": 0, "disagreements_won": 0,
+                        "disagreements_lost": 0, "memory_records_dropped": 0}
         self.embedder = _CountingEmbedder(embedder, self.metrics)
+        # Publication dates of pages already fetched this run, so resolving a
+        # disagreement does not re-fetch a page purely to read its date.
+        self._published: dict[str, Any] = {}
 
     async def run(self, question: str, run_id: str) -> AnalystAnswer:
         started = time.monotonic()
@@ -433,6 +450,7 @@ class AnalystAgent:
                 limitations.append(f"Page fetch failed for {hit.url}; it was excluded from evidence.")
                 continue
             self._trace(run_id, "page_fetched", {"url": hit.url, "chars": len(document.text)})
+            self._published[hit.url] = getattr(document, "published_at", None)
             content_ids = await asyncio.to_thread(self._entity_ids_from_content, document.text)
             ids = list(dict.fromkeys([*ids, *content_ids]))
             try:
@@ -501,7 +519,18 @@ class AnalystAgent:
             and (record.verdict_status or "") in _REJECTED_VERDICTS
         ]
 
-        context = "\n".join([*(f"Memory: {m.text}" for m in memories), evidence_context])
+        memory_lines, memory_dropped = self._memory_context(question, memories)
+        if memories:
+            # The saving has to be auditable, so what was withheld from the
+            # prompt is recorded rather than silently absent.
+            self._trace(run_id, "memory_context_trimmed", {
+                "available": len(memories),
+                "included": len(memory_lines),
+                "dropped": memory_dropped,
+                "limit": self.memory_context_limit,
+            })
+        self.metrics["memory_records_dropped"] += memory_dropped
+        context = "\n".join([*memory_lines, evidence_context])
         system_prompt = (
             "Answer using only supplied evidence. Return AnalystAnswer JSON. "
             "For every citation, copy source_id, chunk_id, URL, and title exactly "
@@ -698,6 +727,12 @@ class AnalystAgent:
             }
         self.metrics["corroboration_searches"] += 1
         relevant_but_silent: list[str] = []
+        # A source that states a *different* figure is not the same thing as a
+        # source that stays silent, and collapsing the two is how a filing gets
+        # discarded because a summary disagrees with it. Disagreements are held
+        # aside and resolved on provenance after the loop.
+        disagreements: list[tuple[str, Any, Any]] = []
+        corroborated_by: list[str] = []
         for hit in hits:
             if hit.url in cited_urls:
                 continue
@@ -712,13 +747,38 @@ class AnalystAgent:
             if not on_topic(claim.text, text):
                 continue
             if corroborates(claim.text, text):
-                return {
-                    "accepted": True, "source_url": hit.url,
-                    "detail": f"Cross-checked against {hit.url}, which independently "
-                              "states the claim's facts.",
-                    "checked": len(relevant_but_silent) + 1,
-                }
+                # Recorded, not returned. Returning here would end the scan at
+                # the first agreeing source and never look at the rest, so a
+                # source that flatly contradicts the claim would go unexamined
+                # purely because a corroborating one was ranked above it. A
+                # disagreement the agent never saw cannot be resolved, and
+                # "one source agreed" is not an answer to "another disagreed".
+                corroborated_by.append(hit.url)
+                continue
+            rival = rival_figure(claim.text, text)
+            if rival is not None:
+                disagreements.append((hit.url, rival, document))
+                continue
             relevant_but_silent.append(hit.url)
+
+        checked = len(relevant_but_silent) + len(disagreements) + len(corroborated_by)
+        # Disagreements are adjudicated before corroboration is credited. A
+        # source that outranks the citation and contradicts it defeats the
+        # claim even when some third page agrees: the question is which figure
+        # is right, and a headcount of agreeing pages does not answer it.
+        if disagreements:
+            resolved = self._resolve_disagreements(
+                claim, disagreements, run_id, corroborated_by=corroborated_by
+            )
+            if resolved is not None:
+                return resolved
+        if corroborated_by:
+            return {
+                "accepted": True, "source_url": corroborated_by[0],
+                "detail": f"Cross-checked against {corroborated_by[0]}, which "
+                          "independently states the claim's facts.",
+                "checked": checked,
+            }
         if relevant_but_silent:
             return {
                 "accepted": False, "source_url": None,
@@ -743,6 +803,164 @@ class AnalystAgent:
                       "is left to the auditor.",
             "checked": 0,
         }
+
+    def _memory_context(
+        self, question: str, memories: list[MemoryRecord]
+    ) -> tuple[list[str], int]:
+        """The memory lines worth paying for, most relevant first.
+
+        Why this is not simply every memory
+        -----------------------------------
+        Memory used to be pasted into the prompt in full, one line per record.
+        That is fine while memory is small and quietly self-defeating once it
+        is not: on Q8 the store returned 30 records and the prompt grew to
+        1,534 input tokens against a 1,485-token no-memory baseline. The
+        feature sold as a cost reduction was, on the most expensive question in
+        the suite, a cost *increase* -- and it was the only question where
+        reuse lost, which is exactly the shape of bug that hides inside a
+        favourable average.
+
+        Two rules, both cheap:
+
+        * **Relevance.** Keep records sharing a content word with the question.
+          A claim about Zepto's valuation does not help answer a question about
+          Infosys's revenue, and paying input tokens to say so is waste.
+        * **A budget.** Keep at most ``memory_context_limit`` records. Memory
+          grows without bound across runs; a per-prompt cap is what stops
+          prompt size growing with it.
+
+        On the choice of 6: the limit was swept over 3, 4, 6, 8 and 12 against
+        the full suite. Accuracy was *identical* at every value -- 8/8
+        complete, 28/28 claims supported, 20/20 seeded defects -- while Q5-8
+        tokens moved between -36.9% and -31.1%. A limit of 3 is therefore the
+        cheapest measured setting, and tuning to it would be overfitting to a
+        fixture corpus that cannot tell these settings apart: the extractive
+        offline model quotes evidence rather than reasoning over memory, so
+        this sweep does not measure what a real model would lose when starved
+        of context. 6 is kept as the conservative end of the flat region, and
+        the 3-point saving is left on the table deliberately rather than
+        claimed. If accuracy had varied, the cheapest *non-degrading* value
+        would have been the honest pick.
+
+        Dropped records are reported, not hidden: the count goes into the trace
+        so the saving is visible as a decision rather than as a number that
+        improved for unstated reasons. Records still reach corroboration and
+        the feedback filter -- this trims only what is *quoted to the model*.
+        """
+        if not memories:
+            return [], 0
+        wanted = content_words(question)
+        scored: list[tuple[int, int, MemoryRecord]] = []
+        for position, record in enumerate(memories):
+            text = record.text or ""
+            if not text:
+                continue
+            overlap = len(wanted & content_words(text))
+            if overlap:
+                # Original order breaks ties, so equally relevant memories keep
+                # the store's own ranking rather than an arbitrary one.
+                scored.append((-overlap, position, record))
+        scored.sort()
+        kept = [record for _, _, record in scored[: self.memory_context_limit]]
+        usable = sum(1 for record in memories if record.text)
+        return [f"Memory: {record.text}" for record in kept], usable - len(kept)
+
+    def _resolve_disagreements(
+        self, claim: Any, disagreements: list[tuple[str, Any, Any]], run_id: str,
+        corroborated_by: list[str] | None = None,
+    ) -> dict | None:
+        """Adjudicate sources that state a figure different from the claim's.
+
+        Returns a ``_corroborate``-shaped outcome, or ``None`` to fall through
+        to the normal "no corroboration" handling when nothing here settles it.
+
+        The policy is authority first, recency within a tier
+        (``dyla.resolution``). Losing a resolution is a *stronger* reason to
+        reject than mere silence, and winning one is genuine grounds to keep a
+        single-sourced claim: an outranked contradiction has been examined and
+        set aside for a stated reason, which is what the brief asks for
+        instead of reporting both figures and shrugging.
+        """
+        cited = claim.citations[0] if claim.citations else None
+        if cited is None:
+            return None
+        claim_grade = grade_source(cited.url, self._published_at(cited.url))
+        claim_value = ", ".join(fact.raw for fact in extract_numbers(claim.text))
+
+        lost_to: list[str] = []
+        standoffs: list[str] = []
+        beaten: list[str] = []
+        for url, rival, document in disagreements:
+            rival_grade = grade_source(url, getattr(document, "published_at", None))
+            resolution = resolve_disagreement(
+                claim_source=claim_grade,
+                rival_source=rival_grade,
+                claim_value=claim_value,
+                rival_value=rival.raw,
+            )
+            self._trace(run_id, "disagreement_resolved", {
+                "claim_id": claim.id, **resolution.as_event(),
+            })
+            self.metrics["disagreements_resolved"] += 1
+            if resolution.winner == "claim":
+                beaten.append(resolution.justification)
+            elif resolution.winner == "rival":
+                lost_to.append(resolution.justification)
+            else:
+                standoffs.append(resolution.justification)
+
+        # A single loss is decisive: a source that outranks the citation and
+        # disagrees with it means the claim's figure is the weaker one.
+        if lost_to:
+            self.metrics["disagreements_lost"] += 1
+            return {
+                "accepted": False, "source_url": None,
+                "detail": "A better-sourced figure contradicts this claim. "
+                          + " ".join(lost_to),
+                "checked": len(disagreements),
+            }
+        if standoffs:
+            # Provenance ties, but if a third independent source states the
+            # claim's figure, the claim is 2-1 on sources of equal standing.
+            # That is a stated reason to prefer it, and it is reported as such
+            # rather than as clean confirmation.
+            if corroborated_by:
+                self.metrics["disagreements_won"] += 1
+                return {
+                    "accepted": True, "source_url": corroborated_by[0],
+                    "detail": "Provenance did not separate the disagreeing sources, "
+                              f"but {corroborated_by[0]} independently states the "
+                              "claim's figure, so the claim is carried on weight of "
+                              "independent agreement. " + " ".join(standoffs),
+                    "checked": len(disagreements) + len(corroborated_by),
+                }
+            return {
+                "accepted": False, "source_url": None,
+                "detail": "Credible sources disagree and provenance does not "
+                          "separate them, so the figure is not asserted. "
+                          + " ".join(standoffs),
+                "checked": len(disagreements),
+            }
+        if beaten:
+            self.metrics["disagreements_won"] += 1
+            return {
+                "accepted": True, "source_url": cited.url,
+                "detail": "A conflicting figure was found and set aside on "
+                          "provenance. " + " ".join(beaten),
+                "checked": len(disagreements),
+            }
+        return None
+
+    def _published_at(self, url: str) -> Any:
+        """Publication date for an already-fetched cited page, if it is knowable.
+
+        Reads the date recorded when the page was fetched during collection.
+        Re-fetching purely to read a date would add a network round trip to
+        every disagreement, and the cited page is by definition one this run
+        already downloaded. An unknown date yields ``None``, which the resolver
+        treats as "cannot be shown to be newer" rather than guessing.
+        """
+        return self._published.get(url)
 
     @staticmethod
     def _citation_maps(citation: Citation, keys: set[tuple[str, str, str | None]]) -> bool:

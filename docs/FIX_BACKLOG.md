@@ -120,8 +120,8 @@ The brief: *"Your run logs matter as much as your answers here."*
 
 | ID | Item | Notes |
 |---|---|---|
-| **P3-1** | ⚠️ **PARTIAL — 24.1%, not 50%.** Measured and reported as a shortfall in `docs/WRITEUP.md` §3, not rounded up. (Was 27.8% / 13.5% before the P5-3 memory fix; memory that actually accumulates feeds the planner more subqueries, so both modes cost more and the net saving re-measured at 24.1% / 12.7%.) Searches fall 68% (19→6) and four of eight questions do zero searches; total tokens fall 12.7% over all eight and 24.1% over the four that can reuse anything. Memory removes the search step, not the grounding step. **Cost falls by half with accuracy held.** Make `memory_hits` actually suppress redundant search/fetch: before dispatching a subquery, check whether resolved entities already have verified claims covering it, and skip the web round-trip | This is the strongest candidate. It is the one the brief describes most concretely, memory infrastructure already exists, and "memory that transfers to an unseen question" is exactly what Q5–Q8 were designed to demonstrate. `memory_hits` now changes behaviour (reuse skips), and since P5-3 the hits themselves are real history rather than one overwritten run. |
-| **P3-2** | ⏸️ **DEFERRED — decided, not forgotten.** Source conflict auto-resolution — pick a number and justify it, rather than reporting both | Needs recency, primary-vs-secondary and publisher weighting that does not exist anywhere in the tree, and a naive "newer page wins" rule would be untestable: the offline corpus has dates but no publisher-authority signal, so the rule could only be exercised against fixtures that assume the conclusion. The shipped behaviour is P4-2's conservative resolution instead: a figure no independent page states is rejected with `insufficient_corroboration` (no-reuse 3, reuse 4 — the planted 1,53,670-crore figure among them), the corroborated figure is kept, and `claim_corroborated` now traces every accepted cross-check with its confirming source. Auto-resolution that *picks* rather than *rejects* stays a live-data feature: it needs real publisher signals to be anything but a coin flip with a justification attached. |
+| **P3-1** | ⚠️ **PARTIAL — 25.0%, not 50%.** Measured and reported as a shortfall in `docs/WRITEUP.md` §3, not rounded up. (Was 27.8% / 13.5% before the P5-3 memory fix; memory that actually accumulates feeds the planner more subqueries, so both modes cost more and the net saving re-measured at 24.1% / 12.7%.) Searches fall 68% (19→6) and four of eight questions do zero searches; total tokens fall **17.9%** over all eight and **34.0%** over the four that can reuse anything. The move from 24.1% to 34.0% came from budgeting the memory *prompt context*: every retrieved record used to be quoted to the model, so prompt size grew with memory and Q8 — the most expensive question — was a net cost under reuse (1,534 input tokens vs a 1,485 no-memory baseline). At most 6 question-relevant records are now quoted, Q8 went +3% → −33%, and accuracy is unchanged at 8/8, 28/28 and 20/20. Memory removes the search step, not the grounding step. **Cost falls by half with accuracy held.** Make `memory_hits` actually suppress redundant search/fetch: before dispatching a subquery, check whether resolved entities already have verified claims covering it, and skip the web round-trip | This is the strongest candidate. It is the one the brief describes most concretely, memory infrastructure already exists, and "memory that transfers to an unseen question" is exactly what Q5–Q8 were designed to demonstrate. `memory_hits` now changes behaviour (reuse skips), and since P5-3 the hits themselves are real history rather than one overwritten run. |
+| **P3-2** | ✅ **DONE — the deferral was wrong, and re-reading it is what reopened this.** The deferral argued a resolution rule "could only be exercised against fixtures that assume the conclusion". That reasoning covered a real defect it never named: the shipped behaviour did not merely decline to *pick* between conflicting figures, it **actively discarded the better-sourced one**. A source stating a different figure and a source saying nothing were the same branch — both fell through to `insufficient_corroboration` — so a tier-1 summary vetoed a tier-4 filing by disagreeing with it. "Conservative resolution" was the wrong name for it. Now `src/dyla/resolution.py` grades provenance into four tiers and resolves authority-first, recency-within-tier, emitting a `disagreement_resolved` trace event carrying the rule that fired, both tiers, both dates and both values. The unresolved standoff is reachable and directly tested, because a resolver that always produces a winner is as uninformative as an auditor that approves everything. The old objection stands where it is true and is now recorded as a limit rather than a reason not to build: tiering is substring matching on URLs, the table is hand-built for Indian filings and press, and the corpus exercises it exactly once. Two defects found while building it are pinned as tests — the first detector reported 6 conflicts of which 1 was real, and the fix for that then rejected the one true positive because "Infosys Limited" extracted as `{'limited'}`, which "Wipro Limited" satisfies. See WRITEUP §4.10. | **DONE** |
 | **P3-3** | ✅ **DONE — negative result, measured and pinned.** Adversarial analyst — tell it an auditor will check every claim, measure whether citation quality improves or whether it starts citing authoritative-looking sources that don't support the claim. `scripts/experiment_adversarial_analyst.py` runs the full suite twice (baseline vs an audit-threat system prompt) and diffs answers, claims, citations and verdicts: **8/8 questions byte-identical** in reuse and no-reuse modes (`runlogs/P3-3-result-*.txt`). That is the expected offline result: `OfflineModel` is extractive — it recovers the `Question:` line and evidence blocks by marker and ignores the system message, so it structurally cannot change its citations under threat. The invariance is pinned by `tests/unit/test_offline.py`. Offline, the experiment cannot demonstrate model honesty either way; the real run needs a live key, which remains unavailable (see WRITEUP §4.8). |  |
 | **P3-4** | ✅ **DONE.** Auditor findings feed back automatically into the next run | P1-5 is the completed form, and the tests prove the loop rather than asserting its parts: `test_claim_rejected_by_a_previous_audit_is_blocked_on_the_next_run`, `test_a_paraphrase_of_a_rejected_claim_is_also_blocked` (fingerprint, not substring), `test_rejected_claims_are_named_in_the_system_prompt`, plus `test_audit_feedback_blocking_is_traced_with_its_reason_code` driving `blocked_by_audit_feedback` through a real two-run trace. Caveat closed this session: the loop used to see only the previous run, because every run overwrote the last run's claim rows (see Part 4, P5-3); feedback now reads the full run history. |
 
@@ -175,21 +175,29 @@ fails; restored → 319 passed. Full record: `runlogs/P5-memory-proof.md`.
 
 ## Part 3 — Decisions needed before P1/P2 start
 
-1. **Live API access.** P2-1 through P2-4 and all of P3 need working keys for the
-   model, embedding and You.com search providers. Without them the ceiling is a
-   recorded-fixture harness — defensible, but it must be stated plainly in the
-   write-up rather than presented as a live run.
+1. **Live API access — and egress.** P2-1 through P2-4 and all of P3 need
+   working keys for the model, embedding and You.com search providers. They
+   also need something this backlog previously failed to name: **outbound
+   network access**. Measured on this environment — `pypi.org` and
+   `files.pythonhosted.org` return 200; `en.wikipedia.org`, `example.com`,
+   `google.com`, `api.openai.com` and `api.you.com` all have the TLS
+   connection closed. DNS resolves and `validate_external_url` passes, so the
+   failure surfaces late, at handshake. A key alone therefore unblocks
+   nothing. Without both, the ceiling is a recorded-fixture harness —
+   defensible, but it must be stated plainly in the write-up rather than
+   presented as a live run.
 2. ~~**P1-4** — is `local` a credible default auditor, or an offline stub?~~
    **Resolved:** it stays the default, now that it is credible.
 3. ~~**P1-7** — wire in `agent_runtime.py`, or delete it?~~ **Resolved:** wired in.
 4. **Scope.** P0, P1, P2, P3-1 (partial — see its row), P3-3 (negative result,
    measured and pinned), P3-4 (closed — P1-5 is the completed form, see its
-   row) and all of P4 are done. P3-2 is **DEFERRED** with a recorded reason,
-   not silently dropped — see its row. This session (Part 4) closed P5-1
+   row) and all of P4 are done. P3-2 is **DONE** — it had been deferred, and
+   revisiting the stated reason showed the deferral was masking a defect
+   rather than scoping out a feature; see its row. This session (Part 4) closed P5-1
    through P5-8, including P5-6 (dead `add_memory` API removed per explicit
    call) and P5-8 (verified completion receipt). No code items remain open:
    the only outstanding prerequisite is a live key for P3-3's real
-   experiment, P3-2's authority signals, and P2's live mode.
+   experiment and P2's live mode.
 
 5. ✅ **Qdrant entity-overwrite bug FIXED.** `QdrantVectorStore.upsert()` now
    reads the stored `entity_ids` for each point and unions them before writing.

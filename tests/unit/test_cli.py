@@ -43,7 +43,7 @@ def test_analyst_command_runs_only_the_analyst_stage(monkeypatch):
             return AnalystAnswer(answer="analyst answer", claims=[], limitations=[])
 
     monkeypatch.setattr("dyla.cli.load_settings", lambda: object())
-    monkeypatch.setattr("dyla.cli._build_analyst", lambda settings: Analyst())
+    monkeypatch.setattr("dyla.cli._build_analyst", lambda settings, **_kwargs: Analyst())
 
     result = CliRunner().invoke(app, ["analyst", "question"])
 
@@ -128,7 +128,7 @@ def test_build_orchestrator_wires_configured_auditor_timeout_and_retries(monkeyp
         fetcher = object()
         memory = object()
 
-    monkeypatch.setattr("dyla.cli._build_analyst", lambda settings: Analyst())
+    monkeypatch.setattr("dyla.cli._build_analyst", lambda settings, **_kwargs: Analyst())
     monkeypatch.setattr("dyla.cli.build_auditor_provider", lambda settings: object())
     settings = SimpleNamespace(auditor_timeout_seconds=123.5, auditor_retries=4)
 
@@ -228,3 +228,36 @@ def test_evaluate_rejects_empty_questions_file(tmp_path):
 
     assert result.exit_code != 0
     assert "no questions" in result.output
+
+
+def test_live_orchestrator_threads_the_reuse_flag_into_the_analyst(monkeypatch):
+    """Regression: `run_suite.py --live --no-reuse` ignored --no-reuse.
+
+    The offline builder took `reuse`; the live one did not. So the live
+    baseline would have run *with* memory reuse while being written to
+    evaluation-no-reuse.* and compared against the reuse run -- a ~0% saving
+    measured against itself, in the one table the entire cost argument rests
+    on. Nobody had run live mode, so nothing caught it.
+    """
+    from dyla import cli
+
+    captured: dict[str, object] = {}
+
+    class Analyst:
+        fetcher = object()
+        memory = object()
+
+    def fake_build_analyst(settings, *, reuse: bool = True):
+        captured["reuse"] = reuse
+        return Analyst()
+
+    monkeypatch.setattr("dyla.cli._build_analyst", fake_build_analyst)
+    monkeypatch.setattr("dyla.cli.build_auditor_provider", lambda settings: object())
+
+    settings = SimpleNamespace(auditor_retries=1, auditor_timeout_seconds=5)
+
+    cli._build_orchestrator(settings, reuse=False)
+    assert captured["reuse"] is False
+
+    cli._build_orchestrator(settings)
+    assert captured["reuse"] is True

@@ -78,12 +78,75 @@ def _parse_structured(text: str, schema: Any) -> Any:
         return schema.model_validate_json(text)
     except ValidationError as exc:
         failure = exc
-    for candidate in _json_candidates(text):
+    candidates = _json_candidates(text)
+    for candidate in candidates:
         try:
             return schema.model_validate(candidate)
         except ValidationError as exc:
             failure = exc
+    # Salvage is a last resort, attempted only after every candidate has failed
+    # to validate outright. Running it inline with the loop above regressed the
+    # truncation repair: for a response cut off mid-claim, the *first* candidate
+    # is the raw truncated parse and a later one is the cleanly drop-repaired
+    # version. Salvaging the first would keep a half-written claim in preference
+    # to the repair that correctly discards it.
+    for candidate in candidates:
+        salvaged = _salvage_claims(candidate, schema)
+        if salvaged is not None:
+            return salvaged
     raise failure
+
+
+# Keys a claim must carry to be worth keeping. ``citations`` is deliberately
+# absent: a claim missing it is kept *without* citations so the analyst's
+# existing no_citations gate rejects it and traces the rejection.
+_CLAIM_REQUIRED = ("id", "text")
+
+
+def _salvage_claims(candidate: Any, schema: Any) -> Any:
+    """Recover the well-formed claims from an otherwise-valid answer.
+
+    Observed live: a model returns a good answer where *one* claim omits
+    ``citations``. Pydantic rejects the whole object, the adapter raises, and
+    the question fails outright -- so one malformed claim out of four discards
+    the three that were perfectly cited. That is a parser failure being
+    reported as a research failure.
+
+    The repair is deliberately narrow, because the tempting version is
+    dangerous. **A missing ``citations`` field is never defaulted to anything
+    that looks cited.** The claim is passed through with an empty citation
+    list, which routes it straight into the analyst's existing ``no_citations``
+    rejection and a traced course correction. Inventing ``citations: []`` as a
+    schema default would have the same parse result and a much worse meaning:
+    an uncited assertion would become a *valid* claim object, and the one thing
+    this system must never do is manufacture provenance.
+
+    Claims missing ``id`` or ``text`` are dropped entirely -- there is nothing
+    to audit and no way to name what was lost. If nothing survives, the caller
+    still raises the original error rather than returning an empty answer that
+    would read as "the model found nothing".
+    """
+    if not isinstance(candidate, dict) or not isinstance(candidate.get("claims"), list):
+        return None
+    kept: list[dict] = []
+    for claim in candidate["claims"]:
+        if not isinstance(claim, dict):
+            continue
+        if any(not claim.get(field) for field in _CLAIM_REQUIRED):
+            continue
+        repaired = dict(claim)
+        citations = repaired.get("citations")
+        if not isinstance(citations, list):
+            repaired["citations"] = []
+        else:
+            repaired["citations"] = [c for c in citations if isinstance(c, dict) and c.get("url")]
+        kept.append(repaired)
+    if not kept:
+        return None
+    try:
+        return schema.model_validate({**candidate, "claims": kept})
+    except ValidationError:
+        return None
 
 
 def _json_candidates(text: str) -> list[Any]:

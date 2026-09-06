@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -371,3 +372,157 @@ def test_a_client_without_retrieve_still_works():
     store.upsert([chunk()], vectors=[[0.1] * 3])
 
     assert _upserted_payloads(client)[0]["entity_ids"] == ["entity-1"]
+
+
+def _info(dim, payload_schema=None):
+    return SimpleNamespace(
+        payload_schema=payload_schema if payload_schema is not None else {"published_at": 1},
+        config=SimpleNamespace(params=SimpleNamespace(vectors=SimpleNamespace(size=dim))),
+    )
+
+
+class _DimClient:
+    def __init__(self, existing_dim, points=None):
+        self._info = _info(existing_dim)
+        self.points = points or []
+        self.upserted = []
+
+    def get_collection(self, collection_name):
+        return self._info
+
+    def create_collection(self, **kwargs):
+        raise AssertionError("existing collection must not be recreated")
+
+    def create_payload_index(self, **kwargs):
+        pass
+
+    def retrieve(self, collection_name, ids, with_payload=True, with_vectors=False):
+        return [p for p in self.points if str(getattr(p, "id", "")) in {str(i) for i in ids}]
+
+    def upsert(self, collection_name, points, wait=None):
+        self.upserted.extend(points)
+        self.points.extend(points)
+
+
+def _settings(dim=1536):
+    return SimpleNamespace(
+        qdrant_url="http://qdrant.invalid", qdrant_api_key="k",
+        qdrant_collection="dyla", qdrant_vector_dimensions=dim,
+        qdrant_upsert_batch_size=64, qdrant_upsert_batch_bytes=1_000_000,
+    )
+
+
+def test_reusing_a_collection_of_the_wrong_dimension_fails_at_startup():
+    """Regression: only the 404 path ever consulted QDRANT_VECTOR_DIMENSIONS.
+
+    An existing collection's configured size was never compared against the
+    current setting, so switching embedding models against live Qdrant Cloud
+    was accepted silently and then failed at write time with a message that
+    reads like an internal bug rather than a config mismatch.
+    """
+    from dyla.qdrant_vector import QdrantVectorStore
+
+    with pytest.raises(ValueError) as excinfo:
+        QdrantVectorStore(_settings(dim=2048), embedder=None, client=_DimClient(1536))
+
+    message = str(excinfo.value)
+    assert "1536" in message and "2048" in message
+    assert "DYLA_EMBEDDING_MODEL" in message
+
+
+def test_matching_dimensions_are_accepted():
+    from dyla.qdrant_vector import QdrantVectorStore
+
+    store = QdrantVectorStore(_settings(dim=1536), embedder=None, client=_DimClient(1536))
+    assert store.vector_dimensions == 1536
+
+
+def test_a_different_embedding_model_at_the_same_dimension_is_rejected():
+    """Dimension equality is necessary but not sufficient.
+
+    Two models can both emit 1536-dimensional vectors into unrelated spaces.
+    Cosine similarity across them returns a plausible number with no meaning,
+    which nothing downstream can detect -- so the embedder identity is stamped
+    into the collection and checked on startup.
+    """
+    from dyla.qdrant_vector import QdrantVectorStore
+
+    class Embedder:
+        model = "model-a"
+        _client = SimpleNamespace(base_url="https://api.example.com")
+
+        def embed(self, texts):
+            return [[0.0] * 1536 for _ in texts]
+
+    client = _DimClient(1536)
+    store = QdrantVectorStore(_settings(), embedder=Embedder(), client=client)
+    store._stamp_embedder()
+    assert client.upserted, "first write should record the embedder fingerprint"
+
+    class OtherEmbedder(Embedder):
+        model = "model-b"
+
+    with pytest.raises(ValueError) as excinfo:
+        QdrantVectorStore(_settings(), embedder=OtherEmbedder(), client=client)
+    assert "different embedding model" in str(excinfo.value)
+
+
+def test_an_unstamped_collection_is_left_alone():
+    """Collections built before the stamp existed must still open."""
+    from dyla.qdrant_vector import QdrantVectorStore
+
+    class Embedder:
+        model = "model-a"
+        _client = SimpleNamespace(base_url="https://api.example.com")
+
+    store = QdrantVectorStore(_settings(), embedder=Embedder(), client=_DimClient(1536))
+    assert store.vector_dimensions == 1536
+
+
+def test_the_metadata_sentinel_never_surfaces_as_evidence():
+    """The stamp is a real point, so a query can return it like any other.
+
+    It carries no evidence payload, so letting it through would either crash
+    _to_evidence or produce a junk citation. This asserts the filter, which was
+    previously written but untested -- the fake client in the other tests never
+    exercised hybrid_search at all.
+    """
+    from dyla.domain import SearchFilters
+    from dyla.qdrant_vector import QdrantVectorStore
+
+    real_payload = {
+        "chunk_id": "c1", "source_id": "s1", "url": "https://example.com/a",
+        "title": "A", "section": None, "text": "Zerodha is profitable.",
+        "position": 0, "entity_ids": ["e1"], "content_hash": "h1",
+        "published_at": None,
+    }
+
+    class Client(_DimClient):
+        def query_points(self, **kwargs):
+            return SimpleNamespace(points=[
+                SimpleNamespace(payload={"embedder_fingerprint": "abc", "dyla_meta": True},
+                                id="sentinel", score=1.0),
+                SimpleNamespace(payload=real_payload, id="c1", score=0.9),
+            ])
+
+    store = QdrantVectorStore(_settings(), embedder=None, client=Client(1536))
+    results = store.hybrid_search("q", [0.1] * 1536, SearchFilters(), limit=5)
+
+    assert len(results) == 1
+    assert results[0].source_id == "s1"
+
+def test_the_sentinel_vector_is_well_formed_for_cosine_distance():
+    """Collections use Distance.COSINE, whose denominator is ||a||*||b||.
+
+    A zero vector makes that zero, so cosine against it is undefined and a real
+    engine may reject the insert rather than special-case it. Storing metadata
+    must not depend on how a given Qdrant version treats a degenerate vector.
+    """
+    import math
+
+    from dyla.qdrant_vector import _sentinel_vector
+
+    for dimensions in (1536, 2048):
+        vector = _sentinel_vector(dimensions)
+        assert len(vector) == dimensions
+        assert math.isclose(math.sqrt(sum(x * x for x in vector)), 1.0)
