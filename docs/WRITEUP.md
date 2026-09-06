@@ -1273,10 +1273,12 @@ Ranked by how much they would bother me in review.
 2. **No session logs.** The brief weighs three things: *"The session logs tell
    us how you work. The write-up tells us how you think. The code tells us what
    you can build. We weigh all three."* One of those three axes is not
-   represented in this repository. What is committed under that name is not it:
-   `runs/*.jsonl` are **agent** traces — the program's own tool calls — and
-   `.superpowers/sdd/` holds 11 implementation reports (`task-1`…`task-8` plus
-   three investigations) recording files changed and TDD history. Neither is a
+   represented in this repository. What the working tree holds under that name
+   is not it: `runs/*.jsonl` are **agent** traces — the program's own tool
+   calls — and `.superpowers/sdd/` holds 11 implementation reports
+   (`task-1`…`task-8` plus three investigations) recording files changed and
+   TDD history; those are kept locally and deliberately untracked, as tooling
+   notes rather than submission evidence. Neither is a
    record of the human↔AI working session, and no transcript is committed
    anywhere. `grep -ril "overruled\|I disagreed\|the tool suggested"
    .superpowers/ docs/superpowers/` returns nothing — this file is deliberately
